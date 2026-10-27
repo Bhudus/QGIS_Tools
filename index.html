@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QGIS Tools · Richard Cooke</title>
+<meta name="description" content="QGIS tools, plugins and scripts by Richard Cooke.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,650&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f6f4ee;
+    --surface: #ffffff;
+    --ink: #1d2a24;
+    --muted: #5b6a62;
+    --line: #dcd8cc;
+    --accent: #2f6b4f;
+    --accent-ink: #ffffff;
+    --contour: rgba(47, 107, 79, 0.13);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141a17;
+      --surface: #1c2420;
+      --ink: #e8ece9;
+      --muted: #9eaca4;
+      --line: #2e3a34;
+      --accent: #7fc4a0;
+      --accent-ink: #10201a;
+      --contour: rgba(127, 196, 160, 0.12);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 400 17px/1.6 Inter, system-ui, sans-serif;
+  }
+  a { color: var(--accent); }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 20px; }
+
+  header.top {
+    border-bottom: 1px solid var(--line);
+  }
+  header.top .wrap {
+    display: flex; align-items: center; justify-content: space-between;
+    height: 64px; gap: 16px;
+  }
+  .brand { font-weight: 600; text-decoration: none; color: var(--ink); letter-spacing: .01em; }
+  nav a { margin-left: 20px; text-decoration: none; color: var(--muted); font-weight: 500; font-size: 15px; }
+  nav a:hover { color: var(--ink); }
+
+  .hero {
+    position: relative; overflow: hidden;
+    padding: 88px 0 80px;
+    border-bottom: 1px solid var(--line);
+  }
+  .hero svg.contours {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    pointer-events: none;
+  }
+  .hero .wrap { position: relative; }
+  .eyebrow {
+    text-transform: uppercase; letter-spacing: .14em;
+    font-size: 13px; font-weight: 600; color: var(--accent);
+    margin: 0 0 14px;
+  }
+  h1, h2 { font-family: Fraunces, Georgia, serif; font-weight: 650; line-height: 1.12; margin: 0; }
+  h1 { font-size: clamp(36px, 6vw, 60px); max-width: 18ch; }
+  .lede { font-size: 19px; color: var(--muted); max-width: 52ch; margin: 22px 0 32px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 12px; }
+  .btn {
+    display: inline-block; padding: 12px 20px; border-radius: 8px;
+    font-weight: 600; font-size: 15px; text-decoration: none;
+    border: 1px solid var(--accent);
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); }
+  .btn.ghost { color: var(--accent); background: transparent; }
+
+  section { padding: 72px 0; border-bottom: 1px solid var(--line); }
+  h2 { font-size: 32px; margin-bottom: 12px; }
+  .sub { color: var(--muted); margin: 0 0 32px; max-width: 60ch; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 18px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 22px;
+  }
+  .card h3 { margin: 0 0 8px; font-size: 18px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+  .tag {
+    display: inline-block; font-size: 12px; font-weight: 600; letter-spacing: .04em;
+    padding: 3px 8px; border-radius: 999px; margin-bottom: 12px;
+    background: var(--contour); color: var(--accent);
+  }
+
+  .about { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; }
+  .about p { margin: 0 0 14px; }
+  @media (max-width: 720px) {
+    .about { grid-template-columns: 1fr; gap: 8px; }
+    nav a { margin-left: 14px; }
+    .hero { padding: 64px 0 56px; }
+  }
+
+  footer { padding: 32px 0 48px; color: var(--muted); font-size: 14px; }
+  footer .wrap { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#">QGIS Tools</a>
+    <nav>
+      <a href="#tools">Tools</a>
+      <a href="#about">About</a>
+      <a href="#contact">Contact</a>
+    </nav>
+  </div>
+</header>
+
+<div class="hero">
+  <svg class="contours" viewBox="0 0 1200 500" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <g fill="none" stroke="var(--contour)" stroke-width="2">
+      <path d="M760 250c0-90 80-150 180-150s200 60 200 150-90 160-200 160-180-70-180-160z"/>
+      <path d="M700 250c0-125 105-200 240-200s260 80 260 200-120 215-260 215-240-90-240-215z"/>
+      <path d="M640 250c0-160 130-250 300-250s320 100 320 250-150 270-320 270-300-110-300-270z"/>
+      <path d="M580 250c0-195 155-300 360-300s380 120 380 300-180 325-380 325-360-130-360-325z"/>
+      <path d="M840 250c0-50 45-85 100-85s110 35 110 85-50 90-110 90-100-40-100-90z"/>
+      <path d="M520 250c0-230 180-350 420-350s440 140 440 350-210 380-440 380-420-150-420-380z"/>
+    </g>
+  </svg>
+  <div class="wrap">
+    <p class="eyebrow">Richard Cooke</p>
+    <h1>Practical drainage-related tools for working in QGIS</h1>
+    <p class="lede">Plugins, processing scripts and how-to guides that make everyday GIS work faster and more repeatable.</p>
+    <div class="btns">
+      <a class="btn primary" href="#tools">Browse the tools</a>
+      <a class="btn ghost" href="https://github.com/Bhudus/QGIS_Tools">View on GitHub</a>
+    </div>
+  </div>
+</div>
+
+<section id="tools">
+  <div class="wrap">
+    <h2>Tools</h2>
+    <p class="sub">The first tools are on their way. Each one will have its own page with downloads, install steps and examples.</p>
+    <div class="grid">
+      <div class="card">
+        <span class="tag">Coming soon</span>
+        <h3>Plugins</h3>
+        <p>QGIS plugins you can install straight into your project.</p>
+      </div>
+      <div class="card">
+        <span class="tag">Coming soon</span>
+        <h3>Processing scripts</h3>
+        <p>Python scripts for the QGIS Processing Toolbox.</p>
+      </div>
+      <div class="card">
+        <span class="tag">Coming soon</span>
+        <h3>Guides</h3>
+        <p>Step-by-step walkthroughs for common GIS tasks.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="about">
+  <div class="wrap about">
+    <h2>About</h2>
+    <div>
+      <p>I'm Richard Cooke. This site collects the QGIS tools I've built and the notes I've written along the way.</p>
+      <p>Everything here is free to use. The source lives in the <a href="https://github.com/Bhudus/QGIS_Tools">QGIS_Tools repository</a> on GitHub.</p>
+    </div>
+  </div>
+</section>
+
+<section id="contact">
+  <div class="wrap about">
+    <h2>Contact</h2>
+    <div>
+      <p>Found a bug or have an idea for a tool? <a href="https://github.com/Bhudus/QGIS_Tools/issues">Open an issue on GitHub</a>.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 Richard Cooke</span>
+    <span>Hosted on GitHub Pages</span>
+  </div>
+</footer>
+
+</body>
+</html>
