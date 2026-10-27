@@ -55,4 +55,3 @@ coordinates are averaged.
 
 `mincurv_core.py` and `natneigh_core.py` are pure numpy and usable outside QGIS
 (`tests/test_core.py`, `tests/test_natneigh.py`).
-Edit `author`, `email` and URLs in `metadata.txt` before publishing.
