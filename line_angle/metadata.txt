@@ -1,0 +1,19 @@
+[general]
+name=Line Angle
+qgisMinimumVersion=3.16
+description=Returns the angle of a line segment in degrees, relative to the positive horizontal direction.
+about=Activate the Line Angle tool and click on any line feature. The nearest segment is highlighted and its angle is shown in the message bar: measured counter-clockwise from the positive horizontal (east) axis in the map canvas CRS, in the range 0-360 degrees, following the segment's vertex order. The undirected orientation (0-180 degrees) is shown too, and the angle is copied to the clipboard.
+version=1.2.0
+hasProcessingProvider=yes
+changelog=1.2.0 - Added two-point tool: click a start and end point to get the angle between them (with snapping).
+    1.1.0 - Added Processing algorithm "Segment angles" that writes each segment's angle to a field.
+author=Richard Cooke
+email=bhudus@yahoo.com
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+tags=line,angle,azimuth,direction,measure,segment
+category=Vector
+icon=icon.png
+experimental=False
+deprecated=False
