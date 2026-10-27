@@ -20,4 +20,4 @@ The algorithm also returns the number of selected points for use in models.
 
 ## Install
 `Plugins → Manage and Install Plugins → Install from ZIP`, choose `random_point_selection.zip`, tick the plugin.
-Requires QGIS ≥ 3.16. Edit `author`, `email` and URLs in `metadata.txt` before publishing.
+Requires QGIS ≥ 3.16.
