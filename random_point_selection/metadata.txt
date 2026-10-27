@@ -1,0 +1,18 @@
+[general]
+name=Random Point Selection
+qgisMinimumVersion=3.16
+description=Randomly select a specified number or percentage of points from a point layer.
+version=1.0.0
+author=Richard Cooke
+email=bhudus@yahoo.com
+about=Adds a "Random Point Selection" algorithm to the Processing Toolbox (Random Point Selection > Random selection). It randomly selects a given number, or a given percentage, of the points of a point layer (sampling without replacement), with an optional random seed for reproducible results and an optional second output holding the points that were not selected.
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+tags=random, selection, sampling, points, processing, vector
+category=Vector
+icon=icon.svg
+experimental=False
+deprecated=False
+hasProcessingProvider=yes
+changelog=1.0.0 - Initial release
