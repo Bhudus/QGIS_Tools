@@ -91,6 +91,8 @@
   }
   .card h3 { margin: 0 0 8px; font-size: 18px; }
   .card p { margin: 0; color: var(--muted); font-size: 15px; }
+  a.card { display: block; text-decoration: none; color: var(--ink); transition: border-color .15s, transform .15s; }
+  a.card:hover { border-color: var(--accent); transform: translateY(-2px); }
   .tag {
     display: inline-block; font-size: 12px; font-weight: 600; letter-spacing: .04em;
     padding: 3px 8px; border-radius: 999px; margin-bottom: 12px;
@@ -147,23 +149,23 @@
 <section id="tools">
   <div class="wrap">
     <h2>Tools</h2>
-    <p class="sub">The first tools are on their way. Each one will have its own page with downloads, install steps and examples.</p>
+    <p class="sub">QGIS plugins for drainage and terrain work. Each link opens the plugin's folder on GitHub, with its README, install steps and source code.</p>
     <div class="grid">
-      <div class="card">
-        <span class="tag">Coming soon</span>
-        <h3>Plugins</h3>
-        <p>QGIS plugins you can install straight into your project.</p>
-      </div>
-      <div class="card">
-        <span class="tag">Coming soon</span>
-        <h3>Processing scripts</h3>
-        <p>Python scripts for the QGIS Processing Toolbox.</p>
-      </div>
-      <div class="card">
-        <span class="tag">Coming soon</span>
-        <h3>Guides</h3>
-        <p>Step-by-step walkthroughs for common GIS tasks.</p>
-      </div>
+      <a class="card" href="https://github.com/Bhudus/QGIS_Tools/tree/main/min_curvature">
+        <span class="tag">Plugin · v1.1.0</span>
+        <h3>Surface Interpolation</h3>
+        <p>Grids scattered point data into a raster using minimum curvature (with optional tension) or natural neighbor interpolation.</p>
+      </a>
+      <a class="card" href="https://github.com/Bhudus/QGIS_Tools/tree/main/line_angle">
+        <span class="tag">Plugin · v1.2.0</span>
+        <h3>Line Angle</h3>
+        <p>Click a line segment, or two points, to get its angle in degrees. Includes a Processing tool that writes every segment's angle to a field.</p>
+      </a>
+      <a class="card" href="https://github.com/Bhudus/QGIS_Tools/tree/main/random_point_selection">
+        <span class="tag">Plugin · v1.0.0</span>
+        <h3>Random Point Selection</h3>
+        <p>Randomly selects a set number or percentage of points from a layer, with an optional seed for repeatable results.</p>
+      </a>
     </div>
   </div>
 </section>
