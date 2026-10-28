@@ -21,7 +21,7 @@
  *                                                                         *
  ***************************************************************************/
 
- System Design: runs routines E through K as a single tool.
+ Drainage System Design: runs routines E through K as a single tool.
 
    e. Hydraulic Network Fixer
    f. Network Flow-Path Generator
@@ -130,7 +130,7 @@ class SystemDesignAlgorithm(QgsProcessingAlgorithm):
         return SystemDesignAlgorithm()
 
     def name(self):
-        return 'System Design'
+        return 'Drainage System Design'
 
     def displayName(self):
         return self.tr(self.name())
@@ -165,8 +165,6 @@ class SystemDesignAlgorithm(QgsProcessingAlgorithm):
         6. Click on \"Run\"
 
         The main output is \"Network Pipe Sizings\". Field names are passed between the steps automatically.
-
-        Note: Step H uses the SAGA NextGen provider (Install the "Processing Saga NextGen Provider" plugin).
 
         The help link in the Graphical User Interface (GUI) provides more information about the plugin.
         """)

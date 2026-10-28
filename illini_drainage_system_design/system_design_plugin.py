@@ -9,7 +9,7 @@ import processing
 from .system_design_provider import SystemDesignProvider
 
 PLUGIN_DIR = os.path.dirname(__file__)
-MENU = '&Illini System Design'
+MENU = '&Illini Drainage System Design'
 
 
 class SystemDesignPlugin(object):
@@ -26,7 +26,7 @@ class SystemDesignPlugin(object):
     def initGui(self):
         self.initProcessing()
         self.action = QAction(QIcon(os.path.join(PLUGIN_DIR, 'icon.svg')),
-                              'System Design (Tile Drainage E-K)', self.iface.mainWindow())
+                              'Drainage System Design (Tile Drainage E-K)', self.iface.mainWindow())
         self.action.triggered.connect(self.run)
         self.iface.addPluginToMenu(MENU, self.action)
         self.iface.addToolBarIcon(self.action)
@@ -39,4 +39,4 @@ class SystemDesignPlugin(object):
             self.iface.removeToolBarIcon(self.action)
 
     def run(self):
-        processing.execAlgorithmDialog('illinisystemdesign:System Design')
+        processing.execAlgorithmDialog('illinidrainagesystemdesign:Drainage System Design')
