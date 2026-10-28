@@ -1,0 +1,23 @@
+[general]
+name=Illini Drainage System Design
+qgisMinimumVersion=3.16
+description=Designs a complete subsurface tile drainage system in one run (Illini Drainage Tools routines E-K combined).
+version=2.0.0
+author=Anamelechi FALASY & Richard COOKE
+email=bhudus@yahoo.com
+
+about=Runs, as a single Processing tool, the Illini Drainage Tools routines: e. Hydraulic Network Fixer, f. Network Flow-Path Generator, g. Tile Network Ordering, h. Network Elevation Exports, i. Network Flow Lengths, j. Tile Burying System and k. Network Pipe Sizing. No additional Processing providers (such as SAGA) are required.
+
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+
+changelog=2.0.0 - Renamed to Illini Drainage System Design. Step H (Network Elevation Exports) no longer needs SAGA: end point elevations and terrain profiles are sampled from the DEM directly. Fixed missing Point_ID in End Point Elevations.
+    1.0.0 - First standalone release. Includes the fix for per-segment drainage coefficient and spacing in pipe sizing.
+
+tags=python, drainage, tile drainage, pipe sizing, network, burying, Strahler
+category=Analysis
+icon=icon.svg
+experimental=False
+deprecated=False
+hasProcessingProvider=yes

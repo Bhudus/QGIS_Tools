@@ -1,4 +1,4 @@
-# Illini System Design (QGIS 3 plugin)
+# Illini Drainage System Design (QGIS 3 plugin)
 
 Designs a complete subsurface tile drainage system in one run. It chains the Illini Drainage Tools routines **E to K** into a single Processing tool, passing each step's output and field names to the next:
 
@@ -7,12 +7,12 @@ Designs a complete subsurface tile drainage system in one run. It chains the Ill
 | E | Hydraulic Network Fixer | Cleans the proposed lines into topologically-sound, exploded segments |
 | F | Network Flow-Path Generator | Connects the segments into a network flowing to the outlet |
 | G | Tile Network Ordering | Assigns flow, burying and Strahler orders |
-| H | Network Elevation Exports | Samples the DEM; segment lengths and slopes |
+| H | Network Elevation Exports | Samples the DEM; segment lengths and slopes, end point elevations and terrain profile points |
 | I | Network Flow Lengths | Accumulates segment lengths downstream |
 | J | Tile Burying System | Buried elevations, depths and slopes |
 | K | Network Pipe Sizing | Drainage areas, flows, actual and nominal pipe sizes |
 
-**Processing Toolbox → Illini System Design → System Design** (also on the toolbar)
+**Processing Toolbox → Illini Drainage System Design → Drainage System Design** (also on the toolbar)
 
 | Parameter | Notes |
 |---|---|
@@ -29,8 +29,9 @@ Designs a complete subsurface tile drainage system in one run. It chains the Ill
 Defaults match the individual Illini Drainage Tools. Pipe sizing uses a single drain spacing.
 
 ## Install
-`Plugins → Manage and Install Plugins → Install from ZIP`, choose `illini_system_design.zip`, tick the plugin.
-Requires QGIS ≥ 3.16 and the **Processing Saga NextGen Provider** plugin (used by step H).
+`Plugins → Manage and Install Plugins → Install from ZIP`, choose `illini_drainage_system_design.zip`, tick the plugin.
+Requires QGIS ≥ 3.16. No SAGA or other add-on Processing provider is needed.
+If the earlier **Illini System Design** plugin is installed, uninstall it first; this version replaces it.
 Can be installed alongside Illini Drainage Tools.
 
 ## Credits

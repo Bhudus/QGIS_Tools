@@ -71,6 +71,111 @@ from qgis.core import QgsProcessingLayerPostProcessorInterface
 
 
 from qgis.core import (edit,QgsField, QgsFeature, QgsPointXY, QgsWkbTypes, QgsGeometry, QgsFields)
+from qgis.core import (QgsCoordinateTransform, QgsProcessingException, QgsProcessingUtils)
+
+
+class DemSampler(object):
+    """Reads elevations from a DEM at points given in another layer's CRS.
+
+    Replaces the SAGA routines previously used in this step
+    ("Add Raster Values to Points" and "Profiles from Lines") with plain QGIS calls,
+    so no external Processing provider is needed.
+    """
+
+    def __init__(self, raster_layer, points_crs, context, band=1):
+        self.provider = raster_layer.dataProvider()
+        self.band = band
+        extent = raster_layer.extent()
+        self.x0 = extent.xMinimum()
+        self.y0 = extent.yMaximum()
+        self.rx = raster_layer.rasterUnitsPerPixelX()
+        self.ry = raster_layer.rasterUnitsPerPixelY()
+        self.ncols = raster_layer.width()
+        self.nrows = raster_layer.height()
+        self.nodata = self.provider.sourceNoDataValue(band) if self.provider.sourceHasNoDataValue(band) else None
+        self.to_dem = None
+        self.from_dem = None
+        dem_crs = raster_layer.crs()
+        if points_crs.isValid() and dem_crs.isValid() and points_crs != dem_crs:
+            self.to_dem = QgsCoordinateTransform(points_crs, dem_crs, context.transformContext())
+            self.from_dem = QgsCoordinateTransform(dem_crs, points_crs, context.transformContext())
+        self._cache = {}
+
+    def step_length(self):
+        """One DEM cell, expressed in the units of the points' CRS."""
+        cell = min(self.rx, self.ry)
+        if self.from_dem is None:
+            return cell
+        cx = self.x0 + self.ncols * self.rx / 2.0
+        cy = self.y0 - self.nrows * self.ry / 2.0
+        a = self.from_dem.transform(QgsPointXY(cx, cy))
+        b = self.from_dem.transform(QgsPointXY(cx + cell, cy))
+        return a.distance(b) or cell
+
+    def _to_dem(self, point):
+        return self.to_dem.transform(point) if self.to_dem is not None else point
+
+    def _cell(self, col, row):
+        if col < 0 or row < 0 or col >= self.ncols or row >= self.nrows:
+            return None
+        key = (col, row)
+        if key in self._cache:
+            return self._cache[key]
+        centre = QgsPointXY(self.x0 + (col + 0.5) * self.rx, self.y0 - (row + 0.5) * self.ry)
+        value, ok = self.provider.sample(centre, self.band)
+        if not ok or value is None or math.isnan(value) or (self.nodata is not None and value == self.nodata):
+            value = None
+        self._cache[key] = value
+        return value
+
+    def nearest(self, point):
+        """Value of the DEM cell containing the point (None outside the DEM or on NoData)."""
+        p = self._to_dem(point)
+        return self._cell(int(math.floor((p.x() - self.x0) / self.rx)),
+                          int(math.floor((self.y0 - p.y()) / self.ry)))
+
+    def bilinear(self, point):
+        """Bilinear interpolation between the four nearest cell centres.
+        Falls back to the containing cell next to NoData or at the DEM edge."""
+        p = self._to_dem(point)
+        fc = (p.x() - self.x0) / self.rx - 0.5
+        fr = (self.y0 - p.y()) / self.ry - 0.5
+        c0 = int(math.floor(fc))
+        r0 = int(math.floor(fr))
+        dx = fc - c0
+        dy = fr - r0
+        v00 = self._cell(c0, r0)
+        v10 = self._cell(c0 + 1, r0)
+        v01 = self._cell(c0, r0 + 1)
+        v11 = self._cell(c0 + 1, r0 + 1)
+        if None in (v00, v10, v01, v11):
+            return self.nearest(point)
+        top = v00 * (1.0 - dx) + v10 * dx
+        bottom = v01 * (1.0 - dx) + v11 * dx
+        return top * (1.0 - dy) + bottom * dy
+
+
+def profile_points(geometry, step):
+    """Points along a (multi)line every `step` map units, plus every vertex and the final end point.
+    Yields (QgsPointXY, distance along the line)."""
+    if geometry is None or geometry.isEmpty():
+        return
+    parts = geometry.asMultiPolyline() if geometry.isMultipart() else [geometry.asPolyline()]
+    travelled = 0.0
+    for part in parts:
+        if len(part) < 2:
+            continue
+        for a, b in zip(part[:-1], part[1:]):
+            seg = a.distance(b)
+            if seg <= 0:
+                continue
+            k = 0
+            while k * step < seg - 1e-9:
+                t = k * step / seg
+                yield QgsPointXY(a.x() + (b.x() - a.x()) * t, a.y() + (b.y() - a.y()) * t), travelled + k * step
+                k += 1
+            travelled += seg
+        yield QgsPointXY(part[-1]), travelled
 
 class NetworkElevationAlgorithm(QgsProcessingAlgorithm):
 
@@ -118,6 +223,10 @@ class NetworkElevationAlgorithm(QgsProcessingAlgorithm):
         Some significant fields are:
         \"Length", with the current length of the segmentation (note that there might be residual segments, of less than the chosen length);
         \"Slope_%", with the longitudinal slope of each segment, in percentage.
+        \"SURF_ELEV" in "End Point Elevations", with the DEM value of the cell containing each vertex;
+        \"Network Elevation Points": a point every DEM cell along each line, with ID, the reference field, D (distance along the line), X, Y and SURF_ELEV (bilinear DEM value).
+
+        No SAGA or other add-on Processing provider is required.
 
         The help link in the Graphical User Interface (GUI) provides more information about the plugin.
         """)
@@ -136,8 +245,8 @@ class NetworkElevationAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterCrs('CRS', 'Coordinate Reference System', defaultValue='EPSG:3435'))
 
         self.addParameter(QgsProcessingParameterVectorDestination('FinalFields', 'Reference Fields with Elevation Statistics', type=QgsProcessing.TypeVectorAnyGeometry, createByDefault=True, defaultValue=None))
-        self.addParameter(QgsProcessingParameterVectorDestination('EndpointElevations', 'End Point Elevations', type=QgsProcessing.TypeVectorAnyGeometry, createByDefault=True, defaultValue=None))
-        self.addParameter(QgsProcessingParameterVectorDestination('TerrainProfiles', 'Network Elevation Points', type=QgsProcessing.TypeVectorAnyGeometry, createByDefault=True, defaultValue=None))
+        self.addParameter(QgsProcessingParameterFeatureSink('EndpointElevations', 'End Point Elevations', type=QgsProcessing.TypeVectorPoint, createByDefault=True, defaultValue=None))
+        self.addParameter(QgsProcessingParameterFeatureSink('TerrainProfiles', 'Network Elevation Points', type=QgsProcessing.TypeVectorPoint, createByDefault=True, defaultValue=None))
 
 
     def processAlgorithm(self, parameters, context, feedback):
@@ -207,7 +316,7 @@ class NetworkElevationAlgorithm(QgsProcessingAlgorithm):
         'INPUT': results_h, 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT},
         context=context, feedback=feedback, is_child_algorithm=True) #9
 
-        results_i = xyadds_params['OUTPUT']
+        results_i = idz_params['OUTPUT']
 
         # Endpoint Fields of Interest
         endpoint_params = processing.run('native:retainfields',
@@ -216,26 +325,65 @@ class NetworkElevationAlgorithm(QgsProcessingAlgorithm):
 
         results_j = endpoint_params['OUTPUT']
 
-        # Add Raster Values to Points
-        elevation_params = processing.run('sagang:addrastervaluestopoints',
-        {'SHAPES': results_j, 'GRIDS': parameters['MDFT'], 'RESAMPLING': 0, 'RESULT': parameters['EndpointElevations']},
-        context=context, feedback=feedback, is_child_algorithm=True) #11
+        dem = self.parameterAsRasterLayer(parameters, 'MDFT', context)
+        if dem is None:
+            raise QgsProcessingException('Could not load the DEM layer.')
 
-        results_k = elevation_params['RESULT']
+        # Add Raster Values to Points (nearest cell, as SAGA did with RESAMPLING 0)
+        points_layer = QgsProcessingUtils.mapLayerFromString(results_j, context)
+        sampler = DemSampler(dem, points_layer.crs(), context)
+        point_fields = QgsFields(points_layer.fields())
+        point_fields.append(QgsField('SURF_ELEV', QVariant.Double, '', 18, 3))
+        (point_sink, results_k) = self.parameterAsSink(parameters, 'EndpointElevations', context,
+                                                       point_fields, QgsWkbTypes.Point, points_layer.crs())
+        missing = 0
+        for feature in points_layer.getFeatures():
+            if feedback.isCanceled():
+                return {}
+            out = QgsFeature(point_fields)
+            geom = feature.geometry()
+            value = None
+            if geom is not None and not geom.isEmpty():
+                xy = geom.asPoint()
+                out.setGeometry(QgsGeometry.fromPointXY(xy))
+                value = sampler.nearest(xy)
+            if value is None:
+                missing += 1
+            out.setAttributes(feature.attributes() + [value])
+            point_sink.addFeature(out, QgsFeatureSink.FastInsert)
+        del point_sink
+        if missing:
+            feedback.pushInfo('Warning: {0} end point(s) fall outside the DEM or on NoData; their SURF_ELEV is empty.'.format(missing))
 
-        # Line Terrain Profiles
-        terrain_params = processing.run('sagang:profilesfromlines',
-        {'DEM': parameters['MDFT'], 'LINES': results_f, 'NAME': parameters['FGHTY'], 'PROFILE': QgsProcessing.TEMPORARY_OUTPUT, 'PROFILES': QgsProcessing.TEMPORARY_OUTPUT},
-        context=context, feedback=feedback, is_child_algorithm=True) #12
-
-        results_l = terrain_params['PROFILE']
-
-        # Rename Field Name
-        rename_params = processing.run('qgis:renametablefield',
-        {'INPUT': results_l, 'FIELD': 'Z', 'NEW_NAME': 'SURF_ELEV', 'OUTPUT': parameters['TerrainProfiles']},
-        context=context, feedback=feedback, is_child_algorithm=True) #13
-
-        results_m = rename_params['OUTPUT']
+        # Line Terrain Profiles: a point every DEM cell along each line, with its distance and elevation
+        lines_layer = QgsProcessingUtils.mapLayerFromString(results_f, context)
+        sampler = DemSampler(dem, lines_layer.crs(), context)
+        step = sampler.step_length()
+        name_field = self.parameterAsString(parameters, 'FGHTY', context)
+        name_idx = lines_layer.fields().lookupField(name_field) if name_field else -1
+        if name_field and name_idx < 0:
+            feedback.pushInfo('Warning: Field "{0}" is not in the elevation statistics layer; profile points will not carry it.'.format(name_field))
+        profile_fields = QgsFields()
+        profile_fields.append(QgsField('ID', QVariant.Int))
+        if name_idx >= 0:
+            profile_fields.append(QgsField(lines_layer.fields().at(name_idx)))
+        for fname in ('D', 'X', 'Y'):
+            profile_fields.append(QgsField(fname, QVariant.Double, '', 18, 3))
+        profile_fields.append(QgsField('SURF_ELEV', QVariant.Double, '', 18, 3))
+        (profile_sink, results_m) = self.parameterAsSink(parameters, 'TerrainProfiles', context,
+                                                         profile_fields, QgsWkbTypes.Point, lines_layer.crs())
+        total = lines_layer.featureCount() or 1
+        for line_no, feature in enumerate(lines_layer.getFeatures()):
+            if feedback.isCanceled():
+                return {}
+            label = [feature.attributes()[name_idx]] if name_idx >= 0 else []
+            for xy, dist in profile_points(feature.geometry(), step):
+                out = QgsFeature(profile_fields)
+                out.setGeometry(QgsGeometry.fromPointXY(xy))
+                out.setAttributes([line_no] + label + [dist, xy.x(), xy.y(), sampler.bilinear(xy)])
+                profile_sink.addFeature(out, QgsFeatureSink.FastInsert)
+            feedback.setProgress(100.0 * (line_no + 1) / total)
+        del profile_sink
 
         if context.willLoadLayerOnCompletion(results_f):
             global renamer_a

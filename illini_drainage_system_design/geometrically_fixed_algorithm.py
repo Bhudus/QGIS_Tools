@@ -229,7 +229,7 @@ class GeometricallyFixedAlgorithm(QgsProcessingAlgorithm):
 
         results_o = final_params['OUTPUT']
 
-        # Only rename when this layer is going to be loaded (it is not when run inside System Design)
+        # Only rename when this layer is going to be loaded (it is not when run inside Drainage System Design)
         if context.willLoadLayerOnCompletion(results_o):
             global renamer
             renamer = Renamer('Topologically-Sound Network')

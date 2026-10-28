@@ -16,10 +16,10 @@ class SystemDesignProvider(QgsProcessingProvider):
 
     def id(self):
         # Different from Illini Drainage Tools so both plugins can be installed together
-        return 'illinisystemdesign'
+        return 'illinidrainagesystemdesign'
 
     def name(self):
-        return self.tr('Illini System Design')
+        return self.tr('Illini Drainage System Design')
 
     def longName(self):
         return self.name()
