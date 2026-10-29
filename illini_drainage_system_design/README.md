@@ -9,7 +9,7 @@ Designs a complete subsurface tile drainage system in one run. It chains the Ill
 | G | Tile Network Ordering | Assigns flow, burying and Strahler orders |
 | H | Network Elevation Exports | Samples the DEM; segment lengths and slopes, end point elevations and terrain profile points |
 | I | Network Flow Lengths | Accumulates segment lengths downstream |
-| J | Tile Burying System | Buried elevations, depths and slopes |
+| J | Tile Burying System | Buried elevations, depths and slopes; BURY_CHECK flags segments outside the slope limits |
 | K | Network Pipe Sizing | Drainage areas, flows, actual and nominal pipe sizes |
 
 **Processing Toolbox → Illini Drainage System Design → Drainage System Design** (also on the toolbar)
