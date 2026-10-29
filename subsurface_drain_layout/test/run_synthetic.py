@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from illini_subsurface_drain_layout.core import Grid, LayoutParams, run_layout  # noqa: E402
+from subsurface_drain_layout.core import Grid, LayoutParams, run_layout  # noqa: E402
 
 OUT = os.path.join(os.getcwd(), "out")
 os.makedirs(OUT, exist_ok=True)

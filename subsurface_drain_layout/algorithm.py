@@ -20,7 +20,6 @@ from qgis.core import (
     QgsProcessingLayerPostProcessorInterface,
     QgsProcessingOutputNumber,
     QgsProcessingOutputString,
-    QgsProcessingParameterBoolean,
     QgsProcessingParameterDefinition,
     QgsProcessingParameterEnum,
     QgsProcessingParameterFeatureSink,
@@ -98,22 +97,16 @@ class _Styler(QgsProcessingLayerPostProcessorInterface):
         for kind, color, width, label in styles:
             sym = QgsLineSymbol.createSimple({"color": color, "width": width})
             root.appendChild(QgsRuleBasedRenderer.Rule(
-                sym, 0, 0, "\"kind\" = '{}' AND (\"flag\" IS NULL OR \"flag\" = '') AND NOT "
-                "(\"BURY_CHECK\" LIKE '%grade%' OR \"BURY_CHECK\" LIKE '%Not connected%')"
+                sym, 0, 0, "\"kind\" = '{}' AND (\"flag\" IS NULL OR \"flag\" = '')"
                 .format(kind), label))
         flagged = QgsLineSymbol.createSimple({"color": "217,119,6", "width": "0.5"})
         root.appendChild(QgsRuleBasedRenderer.Rule(
             flagged, 0, 0, "\"flag\" <> ''", "Pipe to check (see flag)"))
-        grade = QgsLineSymbol.createSimple({"color": "147,51,234", "width": "0.6"})
-        root.appendChild(QgsRuleBasedRenderer.Rule(
-            grade, 0, 0, "(\"flag\" IS NULL OR \"flag\" = '') AND "
-            "(\"BURY_CHECK\" LIKE '%grade%' OR \"BURY_CHECK\" LIKE '%Not connected%')",
-            "Grade problem (see BURY_CHECK)"))
         layer.setRenderer(QgsRuleBasedRenderer(root))
         layer.triggerRepaint()
 
 
-class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
+class SubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
     DEM = "DEM"
     FIELD = "FIELD"
     OUTLET = "OUTLET"
@@ -130,14 +123,6 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
     MIN_MAIN_GRADE = "MIN_MAIN_GRADE"
     MIN_COVER = "MIN_COVER"
     MAX_DEPTH = "MAX_DEPTH"
-    UPPER_DEPTH = "UPPER_DEPTH"
-    LOWER_DEPTH = "LOWER_DEPTH"
-    MAX_GRADE = "MAX_GRADE"
-    OFFSET = "OFFSET"
-    USE_CONST = "USE_CONST"
-    CONST_GRADE = "CONST_GRADE"
-    LOWER_OUTLET = "LOWER_OUTLET"
-    GRADE_BREAK = "GRADE_BREAK"
     OUTLET_INVERT = "OUTLET_INVERT"
     SETBACK = "SETBACK"
     CELL_SIZE = "CELL_SIZE"
@@ -150,16 +135,16 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
 
     # ------------------------------------------------------------ metadata
     def tr(self, s):
-        return QCoreApplication.translate("IlliniSubsurfaceDrainLayout", s)
+        return QCoreApplication.translate("SubsurfaceDrainLayout", s)
 
     def createInstance(self):
-        return IlliniSubsurfaceDrainLayoutAlgorithm()
+        return SubsurfaceDrainLayoutAlgorithm()
 
     def name(self):
-        return "illinisubsurfacedrainlayout"
+        return "subsurfacedrainlayout"
 
     def displayName(self):
-        return self.tr("Illini subsurface drain layout")
+        return self.tr("Subsurface drainage layout")
 
     def group(self):
         return ""
@@ -194,21 +179,10 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             "lateral to run parallel to its neighbour at exactly one spacing: 0 follows "
             "the terrain freely, 1 makes each lateral an offset of its neighbour; 0.9 keeps "
             "laterals near parallel while still bending with the land.</p>"
-            "<p><b>Tile burying</b> follows Routine J (Tile Burying System) of the Illini "
-            "Drainage Tools. Every pipe is cut at its junctions and at grade breaks, and "
-            "the segments are buried from the outlet upstream. The outlet tile sits at the "
-            "middle of the target band (upper and lower tile depth) plus the offset; each "
-            "segment starts from the tile already set at its downstream junction, aims for "
-            "the middle of the band at its upstream end, keeps its slope between the "
-            "minimum and maximum (or at the constant slope), and stays between the "
-            "absolute upper and lower tile depths. <i>Lower the outlet</i> deepens the "
-            "outlet, down to the lower tile depth, when low ground upstream cannot keep "
-            "the minimum slope. Results are in the Routine J fields ElevDepth1/2, "
-            "BuryDepth1/2, InSlope, OutSlope and BURY_CHECK (1 = upstream end of the line, "
-            "2 = downstream end).</p>"
-            "<p>Long connectors, laterals with no collector downstream and cover outside "
-            "the absolute depths between grade breaks are flagged in the <i>flag</i> "
-            "field.</p>"
+            "<p>Inverts are designed from the upstream ends at the minimum cover and "
+            "grade, and each junction is kept below the incoming pipe. Pipes deeper "
+            "than the maximum depth, long connectors and laterals with no collector "
+            "downstream are flagged in the <i>flag</i> field.</p>"
             "<p><b>Output</b>: one connected network. Mains, submains and laterals are "
             "split at every junction into links that run node to node, with "
             "<i>from_node</i>, <i>to_node</i> and the downstream link (<i>ds_link</i>, 0 at "
@@ -218,10 +192,7 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             "sizing.</p>"
             "<p>All lengths, depths and elevations on this form and in the outputs are in "
             "the chosen design units. The DEM must be in a projected CRS. Grades are in "
-            "percent. Depth defaults are in feet; enter metre values if you design in "
-            "metres.</p>"
-            "<p>The burying scheme is ported from the Illini Drainage Tools by Anamelechi "
-            "Falasy and Richard Cooke, University of Illinois Urbana-Champaign (GPL v3).</p>")
+            "percent.</p>")
 
     # ------------------------------------------------------------ parameters
     def initAlgorithm(self, config=None):
@@ -257,43 +228,18 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
                     "(0 = follow terrain, 1 = strictly parallel)"),
             QgsProcessingParameterNumber.Double, defaultValue=0.9,
             minValue=0.0, maxValue=1.0))
-        # tile burying, after Routine J (Tile Burying System) of the Illini Drainage Tools
         self.addParameter(QgsProcessingParameterNumber(
-            self.UPPER_DEPTH, self.tr("Burying: upper tile depth (target band)"),
-            QgsProcessingParameterNumber.Double, defaultValue=3.25, minValue=0.0))
-        self.addParameter(QgsProcessingParameterNumber(
-            self.LOWER_DEPTH, self.tr("Burying: lower tile depth (target band)"),
-            QgsProcessingParameterNumber.Double, defaultValue=4.25, minValue=0.0))
-        self.addParameter(QgsProcessingParameterNumber(
-            self.MIN_COVER, self.tr("Burying: absolute upper tile depth (minimum cover)"),
+            self.MIN_COVER, self.tr("Minimum cover over pipe invert"),
             QgsProcessingParameterNumber.Double, defaultValue=2.5, minValue=0.0))
         self.addParameter(QgsProcessingParameterNumber(
-            self.MAX_DEPTH, self.tr("Burying: absolute lower tile depth (maximum depth)"),
+            self.MAX_DEPTH, self.tr("Maximum installation depth"),
             QgsProcessingParameterNumber.Double, defaultValue=6.0, minValue=0.1))
         self.addParameter(QgsProcessingParameterNumber(
-            self.MAX_GRADE, self.tr("Burying: maximum slope (%)"),
-            QgsProcessingParameterNumber.Double, defaultValue=5.0, minValue=0.01,
-            maxValue=100.0))
-        self.addParameter(QgsProcessingParameterNumber(
-            self.MIN_LAT_GRADE, self.tr("Burying: minimum slope, laterals (%)"),
+            self.MIN_LAT_GRADE, self.tr("Minimum lateral grade (%)"),
             QgsProcessingParameterNumber.Double, defaultValue=0.1, minValue=0.0))
         self.addParameter(QgsProcessingParameterNumber(
-            self.MIN_MAIN_GRADE, self.tr("Burying: minimum slope, mains and submains (%)"),
+            self.MIN_MAIN_GRADE, self.tr("Minimum main grade (%)"),
             QgsProcessingParameterNumber.Double, defaultValue=0.1, minValue=0.0))
-        self.addParameter(QgsProcessingParameterNumber(
-            self.OFFSET, self.tr("Burying: offset depth at the outlet (+ lowers the outlet)"),
-            QgsProcessingParameterNumber.Double, defaultValue=0.0))
-        self.addParameter(QgsProcessingParameterBoolean(
-            self.USE_CONST, self.tr("Burying: use constant slope (flat terrain only)"),
-            defaultValue=False))
-        self.addParameter(QgsProcessingParameterNumber(
-            self.CONST_GRADE, self.tr("Burying: constant slope (%)"),
-            QgsProcessingParameterNumber.Double, defaultValue=0.5, minValue=0.0,
-            maxValue=100.0))
-        self.addParameter(QgsProcessingParameterBoolean(
-            self.LOWER_OUTLET,
-            self.tr("Burying: lower the outlet for low ground (down to the lower tile depth)"),
-            defaultValue=False))
         self.addParameter(QgsProcessingParameterNumber(
             self.OUTLET_INVERT,
             self.tr("Outlet invert elevation, in DEM elevation units [optional]"),
@@ -311,9 +257,6 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             self.tr("Herringbone angle between lateral and main (degrees)"),
             QgsProcessingParameterNumber.Double, defaultValue=60.0,
             minValue=15.0, maxValue=90.0)))
-        self.addParameter(_advanced(QgsProcessingParameterNumber(
-            self.GRADE_BREAK, self.tr("Burying: longest segment between grade breaks"),
-            QgsProcessingParameterNumber.Double, defaultValue=50.0, minValue=0.1)))
         self.addParameter(_advanced(QgsProcessingParameterNumber(
             self.SETBACK, self.tr("Boundary setback [optional, default half the spacing]"),
             QgsProcessingParameterNumber.Double, optional=True, minValue=0.0)))
@@ -348,8 +291,7 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
                           ("LATERAL_LENGTH", "Lateral length"),
                           ("COLLECTOR_LENGTH", "Main and submain length"),
                           ("COVERAGE_PCT", "Drainable area within half a spacing of a pipe (%)"),
-                          ("N_LATERALS", "Number of laterals"),
-                          ("OUTLET_DEPTH", "Outlet tile depth")):
+                          ("N_LATERALS", "Number of laterals")):
             self.addOutput(QgsProcessingOutputNumber(key, self.tr(desc)))
         self.addOutput(QgsProcessingOutputString("WARNINGS", self.tr("Warnings")))
 
@@ -498,14 +440,6 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             min_main_grade=num(self.MIN_MAIN_GRADE) / 100.0,
             min_cover=num(self.MIN_COVER) * uf,
             max_depth=num(self.MAX_DEPTH) * uf,
-            target_upper=num(self.UPPER_DEPTH) * uf,
-            target_lower=num(self.LOWER_DEPTH) * uf,
-            max_grade=num(self.MAX_GRADE) / 100.0,
-            outlet_offset=num(self.OFFSET) * uf,
-            use_constant=self.parameterAsBool(parameters, self.USE_CONST, context),
-            constant_grade=num(self.CONST_GRADE) / 100.0,
-            lower_outlet=self.parameterAsBool(parameters, self.LOWER_OUTLET, context),
-            grade_break=num(self.GRADE_BREAK) * uf,
             outlet_invert=outlet_inv * zf if outlet_inv is not None else None,
             setback=setback * uf if setback is not None else None,
             smooth_radius=smooth_m,
@@ -528,7 +462,7 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
 
         # ---------------------------------------------------- outputs
         lengths = ("length_m", "ground_us", "ground_ds", "invert_us", "invert_ds",
-                   "max_depth_m", "min_depth_m", "depth_ds_m")
+                   "max_depth_m", "depth_ds_m")
         u_lbl = "m" if uf == 1.0 else "ft"
 
         def conv(attrs):
@@ -548,15 +482,10 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             ("id", I), ("pipe_id", I), ("kind", S), ("pipe", S), ("from_node", I), ("to_node", I),
             ("ds_link", I), ("length", D), ("ground_us", D), ("ground_ds", D),
             ("terrain_grade_pct", D), ("invert_us", D), ("invert_ds", D),
-            ("design_grade_pct", D), ("max_depth", D), ("min_depth", D), ("depth_ds", D),
-            ("upstream_length", D), ("drained_area", D),
-            # Routine J (Illini Drainage Tools) fields: 1 = first vertex (upstream end)
-            ("ElevDepth1", D), ("BuryDepth1", D), ("ElevDepth2", D), ("BuryDepth2", D),
-            ("InSlope", D), ("OutSlope", D), ("BURY_CHECK", S),
-            ("flag", S)])
+            ("design_grade_pct", D), ("max_depth", D), ("depth_ds", D),
+            ("upstream_length", D), ("drained_area", D), ("flag", S)])
         area_f = 1.0 if uf == 1.0 else 2.4710538     # ha, or acres in feet mode
-        rename = {"length_m": "length", "max_depth_m": "max_depth", "min_depth_m": "min_depth",
-                  "depth_ds_m": "depth_ds"}
+        rename = {"length_m": "length", "max_depth_m": "max_depth", "depth_ds_m": "depth_ds"}
 
         sink, net_id = self.parameterAsSink(parameters, self.NETWORK, context,
                                             net_fields, QgsWkbTypes.LineString, crs)
@@ -570,13 +499,6 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             a = {rename.get(k, k): v for k, v in a.items()}
             a["upstream_length"] = round(it["attrs"]["upstream_m"] / uf, 1)
             a["drained_area"] = round(it["attrs"]["drained_ha"] * area_f, 3)
-            a["ElevDepth1"] = a["invert_us"]
-            a["BuryDepth1"] = round(a["ground_us"] - a["invert_us"], 3)
-            a["ElevDepth2"] = a["invert_ds"]
-            a["BuryDepth2"] = round(a["ground_ds"] - a["invert_ds"], 3)
-            a["InSlope"] = it["attrs"]["in_slope"]
-            a["OutSlope"] = it["attrs"]["out_slope"]
-            a["BURY_CHECK"] = it["attrs"]["bury_check"]
             f = QgsFeature(net_fields)
             f.setGeometry(QgsGeometry.fromPolylineXY(
                 [QgsPointXY(x / xf, y / xf) for x, y in it["coords"]]))
@@ -603,14 +525,6 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
         feedback.pushInfo(self.tr("Mean field slope: {:.2f}%; dominant contour bearing "
                                   "{:.0f} degrees").format(s["mean_slope_pct"],
                                                            s["contour_azimuth_deg"]))
-        if s.get("outlet_depth_m") is not None:
-            od, sd = s["outlet_depth_m"] / uf, s["outlet_start_depth_m"] / uf
-            if od > sd + 1e-6:
-                feedback.pushInfo(self.tr("Outlet lowered from {:.2f} {} to {:.2f} {} deep to "
-                                          "serve low ground.").format(sd, u_lbl, od, u_lbl))
-            feedback.pushInfo(self.tr("Outlet tile depth: {:.2f} {}.").format(od, u_lbl))
-        feedback.pushInfo(self.tr("Buried {} segments between junctions and grade breaks.")
-                          .format(s["bury_segments"]))
         for w in res["warnings"]:
             feedback.pushWarning(w)
 
@@ -621,8 +535,6 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
                "COLLECTOR_LENGTH": s["collector_length_m"] / uf,
                "COVERAGE_PCT": s["coverage_pct"],
                "N_LATERALS": s["laterals"],
-               "OUTLET_DEPTH": (s["outlet_depth_m"] / uf
-                                if s.get("outlet_depth_m") is not None else None),
                "WARNINGS": "\n".join(res["warnings"])}
         if report:
             self._write_report(report, res, params, uf, u_lbl)
@@ -645,10 +557,6 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             ("Whole field within half a spacing of a pipe",
              "{:.1f}%".format(s["field_coverage_pct"])),
             ("Mean field slope", "{:.2f}%".format(s["mean_slope_pct"])),
-            ("Outlet tile depth", "{:.2f} {}".format(s["outlet_depth_m"] / uf, u)
-             if s.get("outlet_depth_m") is not None else "–"),
-            ("Burying segments / flagged in BURY_CHECK",
-             "{} / {}".format(s["bury_segments"], s["bury_flagged"])),
             ("Dominant contour bearing", "{:.0f}°".format(s["contour_azimuth_deg"])),
             ("Laterals deeper than the maximum", str(s["deep_laterals"])),
             ("Laterals without a collector", str(s["unconnected_laterals"])),
@@ -669,9 +577,9 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
         summary = "".join("<tr><th>{}</th><td>{}</td></tr>".format(
             html.escape(a), html.escape(b)) for a, b in rows)
         doc = (
-            "<html><head><meta charset='utf-8'><title>Illini subsurface drain layout report</title>"
+            "<html><head><meta charset='utf-8'><title>Drainage layout report</title>"
             "<style>" + css + "</style></head><body>"
-            "<h2>Illini subsurface drain layout</h2><table>" + summary + "</table>"
+            "<h2>Subsurface drainage layout</h2><table>" + summary + "</table>"
             "<h3>Mains and submains</h3><table><tr><th>Name</th><th>Flows to</th>"
             "<th>Length</th><th>Design grade %</th><th>Max depth</th><th>Flag</th></tr>"
             + cols + "</table><h3>Warnings</h3><ul>" + warn + "</ul></body></html>")

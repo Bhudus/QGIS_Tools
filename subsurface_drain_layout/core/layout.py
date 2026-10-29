@@ -21,7 +21,6 @@ from typing import Optional
 
 import numpy as np
 
-from .bury import BuryParams, Segment, bury_network
 from .geometry import (
     SegmentHash,
     cumulative_length,
@@ -65,16 +64,8 @@ class LayoutParams:
     contour_grade: float = 0.002         # target lateral grade, contour-following (m/m)
     min_lateral_grade: float = 0.001     # m/m
     min_main_grade: float = 0.001        # m/m
-    min_cover: float = 0.75              # m, absolute upper tile depth (Routine J)
-    max_depth: float = 1.5               # m, absolute lower tile depth (Routine J)
-    target_upper: float = 3.25 * 0.3048  # m, upper tile depth of the target band (Routine J)
-    target_lower: float = 4.25 * 0.3048  # m, lower tile depth of the target band (Routine J)
-    max_grade: float = 0.05              # m/m, maximum slope (Routine J)
-    outlet_offset: float = 0.0           # m, + lowers the outlet (Routine J)
-    use_constant: bool = False           # constant slope, for flat terrain (Routine J)
-    constant_grade: float = 0.005        # m/m
-    lower_outlet: bool = False           # lower the outlet for low ground (Routine J)
-    grade_break: float = 50 * 0.3048     # m, longest burying segment between grade breaks
+    min_cover: float = 0.75              # m, ground to invert at the shallowest point
+    max_depth: float = 1.5               # m, ground to invert
     outlet_invert: Optional[float] = None
     setback: Optional[float] = None      # default: spacing / 2
     smooth_radius: Optional[float] = None  # default: spacing
@@ -844,144 +835,76 @@ class DrainageLayout:
         self._infill()
 
     # ------------------------------------------------------------ inverts
-    def _junction_sets(self):
-        """Vertex indices where other pipes join each collector and lateral."""
-        col_fixed = [set() for _ in self.cols]
-        lat_fixed = [set() for _ in self.lats]
-        for L in self.lats:
-            if L["conn"] and L["conn"][0] == "collector":
-                col_fixed[L["conn"][1]].add(L["conn"][2])
-            elif L["conn"]:
-                lat_fixed[L["conn"][1]].add(L["conn"][2])
-        for c in self.cols:
-            if c["to"] is not None:
-                col_fixed[c["to"][0]].add(c["to"][1])
-        return col_fixed, lat_fixed
+    @staticmethod
+    def _invert_profile(z, s, cover, grade, caps):
+        inv = np.empty(len(z))
+        for i in range(len(z)):
+            v = z[i] - cover
+            if i > 0:
+                v = min(v, inv[i - 1] - grade * (s[i] - s[i - 1]))
+            c = caps.get(i)
+            if c is not None:
+                v = min(v, c)
+            inv[i] = v
+        return inv
 
     def _design(self):
-        """Bury the network with the Routine J scheme (Illini Drainage Tools).
-
-        Every pipe is cut at its junctions and at grade breaks no longer than
-        `grade_break`; these burying segments are ordered from the outlet
-        upstream (BURY_ORDER) and buried one by one, each starting from the tile
-        elevation already set at its downstream junction. Between grade breaks
-        the tile runs at a constant grade.
-        """
         p = self.p
-        col_fixed, lat_fixed = self._junction_sets()
-        nc = len(self.cols)
-        pipes = []
-        for k, c in enumerate(self.cols):
-            pts = np.asarray(c["pts"])
-            end = None if c["to"] is None else (c["to"][0], c["to"][1])
-            pipes.append({"obj": c, "pts": pts, "end": end, "fixed": col_fixed[k],
-                          "min": p.min_main_grade, "root": c["to"] is None})
+        # laterals: tees first
+        tees = {}
         for lid, L in enumerate(self.lats):
+            if L["conn"] and L["conn"][0] == "lateral":
+                tees.setdefault(L["conn"][1], []).append(lid)
+        done = [False] * len(self.lats)
+
+        def solve(lid, depth=0):
+            if done[lid]:
+                return
+            caps = {}
+            for t in tees.get(lid, []):
+                if depth < 200:
+                    solve(t, depth + 1)
+                v = self.lats[t]["conn"][2]
+                ds = self.lats[t].get("inv")
+                if ds is not None:
+                    caps[v] = min(caps.get(v, 1e18), ds[-1])
+            L = self.lats[lid]
             pts = np.asarray(L["pts"])
-            if L["conn"] is None:
-                end = None
-            elif L["conn"][0] == "collector":
-                end = (L["conn"][1], L["conn"][2])
-            else:
-                end = (nc + L["conn"][1], L["conn"][2])
-            pipes.append({"obj": L, "pts": pts, "end": end, "fixed": lat_fixed[lid],
-                          "min": p.min_lateral_grade, "root": L["conn"] is None})
+            z = self.ground(pts)
+            s = cumulative_length(pts)
+            L["z"], L["s"] = z, s
+            L["inv"] = self._invert_profile(z, s, p.min_cover, p.min_lateral_grade, caps)
+            done[lid] = True
 
-        alias = {}
-        for P, pp in enumerate(pipes):
-            pp["z"] = self.ground(pp["pts"])
-            pp["s"] = cumulative_length(pp["pts"])
-            if pp["end"] is not None:
-                alias[(P, len(pp["pts"]) - 1)] = pp["end"]
+        for lid in range(len(self.lats)):
+            solve(lid)
 
-        def canon(key):
-            seen = 0
-            while key in alias and seen < 1000:
-                key = alias[key]
-                seen += 1
-            return key
+        # collectors: deepest branches first
+        def tree_depth(k):
+            d = 0
+            while self.cols[k]["to"] is not None and d < 100:
+                k = self.cols[k]["to"][0]
+                d += 1
+            return d
 
-        # burying segments: junctions plus grade breaks
-        Lb = max(float(p.grade_break), 1e-3)
-        segs, meta = [], []
-        by_down = {}
-        for P, pp in enumerate(pipes):
-            n = len(pp["pts"])
-            s = pp["s"]
-            cuts = sorted({0, n - 1} | {int(v) for v in pp["fixed"] if 0 < int(v) < n - 1})
-            B = set(cuts)
-            for a, b in zip(cuts[:-1], cuts[1:]):
-                m = int(math.ceil((s[b] - s[a]) / Lb - 1e-9))
-                for k in range(1, m):
-                    target = s[a] + k * (s[b] - s[a]) / m
-                    i = a + int(np.argmin(np.abs(s[a:b + 1] - target)))
-                    if a < i < b:
-                        B.add(i)
-            B = sorted(B)
-            pp["B"] = B
-            z = pp["z"]
-            for up, dn in zip(B[:-1], B[1:]):
-                if s[dn] - s[up] < 1e-6:
-                    continue
-                seg = Segment(canon((P, dn)), canon((P, up)), float(z[dn]), float(z[up]),
-                              float(s[dn] - s[up]), pp["min"])
-                by_down.setdefault(seg.down_key, []).append(len(segs))
-                segs.append(seg)
-                meta.append((P, up, dn))
-
-        # BURY_ORDER: breadth first from the outlet, then any disconnected parts
-        roots = [canon((0, len(pipes[0]["pts"]) - 1))]
-        roots += [canon((P, len(pp["pts"]) - 1)) for P, pp in enumerate(pipes)
-                  if P > 0 and pp["root"]]
-        order, used = [], set()
-        for root in roots:
-            queue = deque([root])
-            while queue:
-                node = queue.popleft()
-                for idx in by_down.get(node, ()):
-                    if idx in used:
-                        continue
-                    used.add(idx)
-                    order.append(idx)
-                    queue.append(segs[idx].up_key)
-        order += [i for i in range(len(segs)) if i not in used]
-        rows = [segs[i] for i in order]
-        if rows and rows[0].down_key == roots[0]:
-            rows[0].outlet = True
-
-        bp = BuryParams(upper_depth=p.target_upper, lower_depth=p.target_lower,
-                        abs_upper=p.min_cover, abs_lower=p.max_depth,
-                        max_slope=p.max_grade, offset=p.outlet_offset,
-                        use_constant=p.use_constant, constant_slope=p.constant_grade,
-                        lower_outlet=p.lower_outlet)
-        results, flagged, outlet_depth, start_depth, tiles = bury_network(
-            rows, bp, cancel=self._cancel_cb)
-        mid = 0.5 * (p.target_upper + p.target_lower)
-
-        for pp in pipes:
-            pp["steps"] = []
-        for i, res in zip(order, results):
-            P, up, dn = meta[i]
-            pipes[P]["steps"].append((up, dn, res[4]))
-        for P, pp in enumerate(pipes):
-            B, s, z = pp["B"], pp["s"], pp["z"]
-            tB = np.array([tiles.get(canon((P, i)), z[i] - mid) for i in B], dtype=float)
-            o = pp["obj"]
-            o["z"], o["s"] = z, s
-            o["inv"] = np.interp(s, s[B], tB)
-            o["bury_steps"] = pp["steps"]
-
-        nlat = [0] * nc
+        caps = [dict() for _ in self.cols]
+        nlat = [0] * len(self.cols)
         for L in self.lats:
             if L["conn"] and L["conn"][0] == "collector":
-                nlat[L["conn"][1]] += 1
-        for k, c in enumerate(self.cols):
+                c, v = L["conn"][1], L["conn"][2]
+                caps[c][v] = min(caps[c].get(v, 1e18), L["inv"][-1])
+                nlat[c] += 1
+        for k in sorted(range(len(self.cols)), key=tree_depth, reverse=True):
+            c = self.cols[k]
+            pts = c["pts"]
+            z = self.ground(pts)
+            s = cumulative_length(pts)
+            c["z"], c["s"] = z, s
+            c["inv"] = self._invert_profile(z, s, p.min_cover, p.min_main_grade, caps[k])
             c["nlat"] = nlat[k]
-        self.bury = {"segments": len(rows), "flagged": flagged,
-                     "outlet_depth": outlet_depth, "start_depth": start_depth}
-        if flagged:
-            self._warn("{} burying segment(s) could not be buried within the slope limits; "
-                       "see the BURY_CHECK field.".format(flagged))
+            if c["to"] is not None:
+                h, v = c["to"]
+                caps[h][v] = min(caps[h].get(v, 1e18), c["inv"][-1])
 
     # ------------------------------------------------------------ results
     def _pipe_attrs(self, z, s, inv):
@@ -996,7 +919,6 @@ class DrainageLayout:
             "invert_ds": round(float(inv[-1]), 3),
             "design_grade_pct": round(100 * float(inv[0] - inv[-1]) / L, 3) if L > 0 else 0.0,
             "max_depth_m": round(float(np.nanmax(depth)), 2),
-            "min_depth_m": round(float(np.nanmin(depth)), 2),
             "depth_ds_m": round(float(depth[-1]), 2),
         }
 
@@ -1034,16 +956,23 @@ class DrainageLayout:
                 subs += 1
                 names[k] = "submain {}".format(subs)
 
-        col_fixed, lat_fixed = self._junction_sets()
+        col_fixed = [set() for _ in self.cols]
+        lat_fixed = [set() for _ in self.lats]
+        for L in self.lats:
+            if L["conn"] and L["conn"][0] == "collector":
+                col_fixed[L["conn"][1]].add(L["conn"][2])
+            elif L["conn"]:
+                lat_fixed[L["conn"][1]].add(L["conn"][2])
+        for c in self.cols:
+            if c["to"] is not None:
+                col_fixed[c["to"][0]].add(c["to"][1])
 
         collectors = []
         for k, c in enumerate(self.cols):
             a = self._pipe_attrs(c["z"], c["s"], c["inv"])
             flags = []
-            if a["max_depth_m"] > p.max_depth + 0.01:
+            if a["max_depth_m"] > p.max_depth:
                 flags.append("deeper than {:.2f} m".format(p.max_depth))
-            if a["min_depth_m"] < p.min_cover - 0.01:
-                flags.append("cover under {:.2f} m between grade breaks".format(p.min_cover))
             if c["to"] is None and p.outlet_invert is not None:
                 short = p.outlet_invert - a["invert_ds"]
                 if short > 0:
@@ -1058,11 +987,9 @@ class DrainageLayout:
         for lid, L in enumerate(self.lats):
             a = self._pipe_attrs(L["z"], L["s"], L["inv"])
             flags = list(L["flags"])
-            if a["max_depth_m"] > p.max_depth + 0.01:
+            if a["max_depth_m"] > p.max_depth:
                 flags.append("deeper than {:.2f} m".format(p.max_depth))
                 n_deep += 1
-            if a["min_depth_m"] < p.min_cover - 0.01:
-                flags.append("cover under {:.2f} m between grade breaks".format(p.min_cover))
             if L["conn"] is None:
                 n_unconn += 1
                 to = ""
@@ -1103,12 +1030,6 @@ class DrainageLayout:
             "contour_azimuth_deg": round(az, 1),
             "unconnected_laterals": n_unconn,
             "deep_laterals": n_deep,
-            "outlet_depth_m": (round(self.bury["outlet_depth"], 3)
-                               if self.bury.get("outlet_depth") is not None else None),
-            "outlet_start_depth_m": (round(self.bury["start_depth"], 3)
-                                     if self.bury.get("start_depth") is not None else None),
-            "bury_segments": self.bury["segments"],
-            "bury_flagged": self.bury["flagged"],
         }
         network = self._network(names, col_fixed, lat_fixed,
                                 [c["attrs"]["flag"] for c in collectors],
@@ -1140,15 +1061,12 @@ class DrainageLayout:
             return node_ids[key]
 
         node(("outlet",))
-        p_min_main = self.p.min_main_grade
-        p_min_lat = self.p.min_lateral_grade
-        pipes = []   # (kind, name, pts, z, s, inv, split, end_key, flag, is_lateral, n, steps, min)
+        pipes = []   # (kind, name, pts, z, s, inv, split, end_key, flag, is_lateral)
         for k, c in enumerate(self.cols):
             n = len(c["pts"])
             end = ("outlet",) if c["to"] is None else ("c", c["to"][0], c["to"][1])
             pipes.append((c["kind"], names[k], c["pts"], c["z"], c["s"], c["inv"],
-                          col_fixed[k], ("c", k), end, col_flags[k], False, n,
-                          c.get("bury_steps", []), p_min_main))
+                          col_fixed[k], ("c", k), end, col_flags[k], False, n))
         for lid, L in enumerate(self.lats):
             n = len(L["pts"])
             if L["conn"] is None:
@@ -1159,7 +1077,7 @@ class DrainageLayout:
                 end = ("l", L["conn"][1], L["conn"][2])
             pipes.append(("lateral", "lateral {}".format(lid + 1), np.asarray(L["pts"]),
                           L["z"], L["s"], L["inv"], lat_fixed[lid], ("l", lid), end,
-                          lat_flags[lid], True, n, L.get("bury_steps", []), p_min_lat))
+                          lat_flags[lid], True, n))
 
         for p in pipes:   # a pipe's last vertex is the node it discharges into
             pkey, end, n = p[7], p[8], p[11]
@@ -1167,28 +1085,17 @@ class DrainageLayout:
                 alias[pkey + (n - 1,)] = end
 
         links = []
-        for pid, (kind, name, pts, z, s, inv, fixed, pkey, end, flag, is_lat, n, steps,
-                  gmin) in enumerate(pipes, start=1):
+        for pid, (kind, name, pts, z, s, inv, fixed, pkey, end, flag, is_lat, n) \
+                in enumerate(pipes, start=1):
             cuts = sorted({0, n - 1} | {int(v) for v in fixed if 0 < int(v) < n - 1})
             for a, b in zip(cuts[:-1], cuts[1:]):
                 if s[b] - s[a] < 1e-6:
                     continue
                 to_key = end if b == n - 1 else pkey + (b,)
                 attrs = self._pipe_attrs(z[a:b + 1], s[a:b + 1] - s[a], inv[a:b + 1])
-                notes = []
-                for up, dn, nn in steps:
-                    if up >= a and dn <= b:
-                        for t in nn:
-                            if t not in notes:
-                                notes.append(t)
-                L_ab = float(s[b] - s[a])
-                in_slope = float(inv[a] - inv[b]) / L_ab
                 attrs.update({"pipe_id": pid, "kind": kind, "pipe": name,
                               "from_node": node(pkey + (a,)), "to_node": node(to_key),
-                              "flag": flag,
-                              "in_slope": round(in_slope, 6),
-                              "out_slope": round(min(max(in_slope, gmin), self.p.max_grade), 6),
-                              "bury_check": "; ".join(notes) if notes else "OK"})
+                              "flag": flag})
                 links.append({"coords": simplify(pts[a:b + 1], tol), "attrs": attrs,
                               "lateral": is_lat})
 
