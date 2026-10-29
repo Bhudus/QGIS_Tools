@@ -4,9 +4,10 @@ Finds the cells with the maximum and minimum values of a raster band and gives
 their X and Y coordinates.
 
 ## Install
-1. In QGIS: **Plugins → Manage and Install Plugins → Install from ZIP**.
-2. Choose `raster_extremes.zip`, click **Install Plugin**.
-3. A **Raster Min / Max Cells…** button appears on the Raster toolbar (and under Raster → Raster Extremes).
+1. Download [`raster_extremes.zip`](https://github.com/Bhudus/QGIS_Tools/raw/main/raster_extremes/raster_extremes.zip).
+2. In QGIS: **Plugins → Manage and Install Plugins → Install from ZIP**.
+3. Choose `raster_extremes.zip`, click **Install Plugin**.
+4. A **Raster Min / Max Cells…** button appears on the Raster toolbar (and under Raster → Raster Extremes).
 
 ## Use
 1. Click the button. The active raster layer is pre-selected.
