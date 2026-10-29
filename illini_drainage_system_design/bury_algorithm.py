@@ -80,6 +80,7 @@ class BuryAlgorithm(QgsProcessingAlgorithm):
     OFFSET_KEY = 'OFFSET_KEY'
     CONST_SLOPE_KEY = 'CONST_SLOPE_KEY'
     USE_CONST_KEY = 'USE_CONST_KEY'
+    LOWER_OUTLET_KEY = 'LOWER_OUTLET_KEY'
     OUTPUT = 'OUTPUT'
 
     def tr(self, string):
@@ -136,13 +137,14 @@ class BuryAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterNumber(self.UPPER_KEY, self.tr('Upper Tile Depth [ft]'), type=QgsProcessingParameterNumber.Double, maxValue=10.0, defaultValue=3.25))
         self.addParameter(QgsProcessingParameterNumber(self.LOWER_KEY, self.tr('Lower Tile Depth [ft]'), type=QgsProcessingParameterNumber.Double, maxValue=10.0, defaultValue=4.25))
         self.addParameter(QgsProcessingParameterNumber(self.ABS_UPPER_KEY, self.tr('Absolute Upper Tile Depth [ft]'), type=QgsProcessingParameterNumber.Double, maxValue=10.0, defaultValue=3.00))
-        self.addParameter(QgsProcessingParameterNumber(self.ABS_LOWER_KEY, self.tr('Absolute Lower Tile Depth [ft]'), type=QgsProcessingParameterNumber.Double, maxValue=10.0, defaultValue=7.00))
+        self.addParameter(QgsProcessingParameterNumber(self.ABS_LOWER_KEY, self.tr('Absolute Lower Tile Depth [ft]'), type=QgsProcessingParameterNumber.Double, maxValue=10.0, defaultValue=6.00))
         self.addParameter(QgsProcessingParameterNumber(self.MAXI_SLOPE_KEY, self.tr('Maximum Slope Depth [percentage]'), type=QgsProcessingParameterNumber.Double, maxValue=100.0, defaultValue=5.00))
         self.addParameter(QgsProcessingParameterNumber(self.MINI_SLOPE_KEY, self.tr('Minimum Slope Depth [percentage]'), type=QgsProcessingParameterNumber.Double, maxValue=100.0, defaultValue=0.10))
-        self.addParameter(QgsProcessingParameterNumber(self.OFFSET_KEY, self.tr('Offset Depth [ft]'), type=QgsProcessingParameterNumber.Double, maxValue=10.0, defaultValue=0.00))
+        self.addParameter(QgsProcessingParameterNumber(self.OFFSET_KEY, self.tr('Offset Depth [ft] (+ lowers the outlet)'), type=QgsProcessingParameterNumber.Double, maxValue=10.0, defaultValue=0.00))
 
         self.addParameter(QgsProcessingParameterNumber(self.CONST_SLOPE_KEY, self.tr('Constant Slope Depth [percentage]'), type=QgsProcessingParameterNumber.Double, maxValue=100.0, defaultValue=0.50, optional = True))
         self.addParameter(QgsProcessingParameterBoolean(self.USE_CONST_KEY, self.tr('Include Constant Slope [For Flat Terrain Only]'), defaultValue=False))
+        self.addParameter(QgsProcessingParameterBoolean(self.LOWER_OUTLET_KEY, self.tr('Lower the Outlet for Low Ground [down to Lower Tile Depth]'), optional=True, defaultValue=False))
 
         self.addParameter(QgsProcessingParameterFeatureSink(self.OUTPUT, self.tr('Buried Elevation Depths')))
 
@@ -174,6 +176,8 @@ class BuryAlgorithm(QgsProcessingAlgorithm):
         constant_slope = (const_slope * 0.01)
 
         const_key = parameters[self.USE_CONST_KEY]
+
+        lower_outlet = bool(parameters.get(self.LOWER_OUTLET_KEY, False))
 
         '''add new fields'''
         #define new fields
@@ -213,12 +217,18 @@ class BuryAlgorithm(QgsProcessingAlgorithm):
         #
         # Segments are buried in BURY_ORDER, from the outlet upstream. For each segment the tile
         # elevation at its downstream end is already known: the junction it shares with a segment
-        # buried earlier or, for the outlet segment, the target depth below the ground. The upstream
-        # end aims for the target depth; the grade from the downstream tile is held between the
-        # minimum and maximum slope (or at the constant slope); and the result is kept between the
-        # absolute upper and lower depths below the ground at that end, so the tile is never placed
-        # above the ground surface. Segments whose grade could not be kept within the limits are
-        # reported in the BURY_CHECK field.
+        # buried earlier or, for the outlet segment, the target depth below the ground plus the
+        # offset. The upstream end aims for the target depth; the grade from the downstream tile is
+        # held between the minimum and maximum slope (or at the constant slope); and the result is
+        # kept between the absolute upper and lower depths below the ground at that end, so the tile
+        # is never placed above the ground surface.
+        #
+        # Low ground: a segment that cannot keep the minimum grade without coming shallower than the
+        # absolute upper depth needs a deeper tile at its downstream junction. With the "lower the
+        # outlet" option, that requirement is passed downstream junction by junction and finally to
+        # the outlet, which may go down to the lower tile depth. A junction is never lowered below the
+        # absolute lower depth, or further than the segments downstream of it can carry at the minimum
+        # grade. The network is then buried again, until nothing more changes.
         def as_float(value):
             if isinstance(value, (list, tuple)):
                 value = value[0] if value else None
@@ -234,76 +244,140 @@ class BuryAlgorithm(QgsProcessingAlgorithm):
         def pct(value):
             return '{0:.2f}%'.format(value * 100.0)
 
-        held_notes = ('Held at absolute upper depth', 'Held at absolute lower depth')
-        visited_values = {}  # ground elevation at a buried junction -> tile elevation there
-        results = []         # one tuple per sorted feature
-        flagged = 0
+        held_notes = ('Held at absolute upper depth', 'Held at absolute lower depth', 'Deepened for low ground upstream')
+        def end_keys(feature, first_elev, last_elev):
+            # Junctions are identified by the coordinates of each segment's first and last vertex
+            # (the vertices Elev_first and Elev_last were sampled at); ground elevations are only a
+            # fallback when the geometry is missing.
+            geom = feature.geometry()
+            try:
+                if geom is not None and not geom.isEmpty():
+                    parts = geom.asMultiPolyline() if geom.isMultipart() else [geom.asPolyline()]
+                    parts = [p for p in parts if p]
+                    a, b = parts[0][0], parts[-1][-1]
+                    return (round(a.x(), 3), round(a.y(), 3)), (round(b.x(), 3), round(b.y(), 3))
+            except Exception:
+                pass
+            return ('z', first_elev), ('z', last_elev)
 
-        for i, feature in enumerate(sorted_features):
-            if feedback.isCanceled():
-                break
-            first_elev = as_float(feature.attribute(idx_first))
-            last_elev = as_float(feature.attribute(idx_last))
-            length = as_float(feature.attribute(idx_dist))
-            if first_elev is None or last_elev is None or not length:
-                results.append((None, None, None, None, None, None, 'Missing elevation or length'))
-                flagged += 1
-                continue
+        rows = []
+        for f in sorted_features:
+            fe, le = as_float(f.attribute(idx_first)), as_float(f.attribute(idx_last))
+            rows.append((fe, le, as_float(f.attribute(idx_dist))) + end_keys(f, fe, le))
+        key_count = {}
+        for r in rows:
+            for k in r[3:5]:
+                key_count[k] = key_count.get(k, 0) + 1
 
-            notes = []
-            # Downstream end and its tile elevation
-            if i > 0 and last_elev in visited_values:
-                down_is_first = False
-                down_tile = visited_values[last_elev]
-            elif i > 0 and first_elev in visited_values:
-                down_is_first = True
-                down_tile = visited_values[first_elev]
-            else:
-                if i > 0:
-                    notes.append('Not connected to a buried segment; started at target depth')
-                down_is_first = first_elev < last_elev
-                down_tile = (first_elev if down_is_first else last_elev) - mid_depth
-                if i == 0:
-                    down_tile += offset  # the offset moves the outlet, and the network follows it
-            down_ground, up_ground = (first_elev, last_elev) if down_is_first else (last_elev, first_elev)
-
-            if i > 0 and up_ground in visited_values:
-                # Both ends already buried (the segment closes a loop): keep both
-                up_tile = visited_values[up_ground]
-                in_slope = clamp((up_tile - down_tile) / length, min_slope, max_slope)
-            else:
-                target = up_ground - mid_depth
-                target_slope = (target - down_tile) / length
-                if const_key and i > 0:
-                    in_slope = constant_slope
+        def bury_pass(caps):
+            """Bury the whole network once. caps: junction (ground elevation) -> highest allowed tile elevation.
+            Returns (results, needs, floors, flagged, outlet_depth)."""
+            visited_values = {}  # junction -> tile elevation there
+            floors = {}          # junction -> lowest tile elevation the network downstream can still drain
+            results = []
+            needs = {}           # junction -> tile elevation needed there by the segment upstream of it
+            flagged = 0
+            outlet_depth = None
+            for i, (first_elev, last_elev, length, first_key, last_key) in enumerate(rows):
+                if first_elev is None or last_elev is None or not length:
+                    results.append((None, None, None, None, None, None, 'Missing elevation or length'))
+                    flagged += 1
+                    continue
+                notes = []
+                # Downstream end and its tile elevation
+                if i > 0 and last_key in visited_values:
+                    down_is_first = False
+                    down_tile = visited_values[last_key]
+                elif i > 0 and first_key in visited_values:
+                    down_is_first = True
+                    down_tile = visited_values[first_key]
                 else:
-                    in_slope = clamp(target_slope, min_slope, max_slope)
-                up_tile = down_tile + length * in_slope
-                # Cover limits at the upstream end
-                if up_tile > up_ground - abs_upper:
-                    up_tile = up_ground - abs_upper
-                    notes.append(held_notes[0])
-                elif up_tile < up_ground - abs_lower:
-                    up_tile = up_ground - abs_lower
-                    notes.append(held_notes[1])
-                visited_values[up_ground] = up_tile
-            visited_values.setdefault(down_ground, down_tile)
+                    if i > 0:
+                        notes.append('Not connected to a buried segment; started at target depth')
+                    # the outlet end is the one no other segment touches; else the lower end
+                    free_first = key_count.get(first_key, 0) == 1
+                    free_last = key_count.get(last_key, 0) == 1
+                    down_is_first = free_first if free_first != free_last else first_elev < last_elev
+                    down_ground_0 = first_elev if down_is_first else last_elev
+                    down_key_0 = first_key if down_is_first else last_key
+                    down_tile = down_ground_0 - mid_depth - offset
+                    # lowest the outlet may go: the lower tile depth (or the offset, if deeper)
+                    floors[down_key_0] = min(down_tile, down_ground_0 - lower_depth)
+                    if i == 0:
+                        if down_key_0 in caps and caps[down_key_0] < down_tile:
+                            down_tile = max(caps[down_key_0], floors[down_key_0])
+                            notes.append('Outlet lowered for low ground upstream')
+                        outlet_depth = down_ground_0 - down_tile
+                down_ground, up_ground = (first_elev, last_elev) if down_is_first else (last_elev, first_elev)
+                down_key, up_key = (first_key, last_key) if down_is_first else (last_key, first_key)
 
-            actual_slope = (up_tile - down_tile) / length
-            if actual_slope <= 0:
-                notes.append('Reverse or zero grade ({0}): tile cannot drain'.format(pct(actual_slope)))
-            elif actual_slope < min_slope - 1e-9:
-                notes.append('Grade {0} below minimum'.format(pct(actual_slope)))
-            elif actual_slope > max_slope + 1e-9:
-                notes.append('Grade {0} above maximum'.format(pct(actual_slope)))
-            out_slope = clamp(actual_slope, min_slope, max_slope)
+                loop = i > 0 and up_key in visited_values
+                if loop:
+                    # Both ends already buried (the segment closes a loop): keep both
+                    up_tile = visited_values[up_key]
+                    in_slope = clamp((up_tile - down_tile) / length, min_slope, max_slope)
+                else:
+                    target = up_ground - mid_depth
+                    target_slope = (target - down_tile) / length
+                    if const_key and i > 0:
+                        in_slope = constant_slope
+                    else:
+                        in_slope = clamp(target_slope, min_slope, max_slope)
+                    up_tile = down_tile + length * in_slope
+                    down_floor = floors.get(down_key, down_tile)
+                    floors[up_key] = max(down_floor + length * min_slope, up_ground - abs_lower)
+                    if up_key in caps and caps[up_key] < up_tile:
+                        up_tile = caps[up_key]
+                        notes.append(held_notes[2])
+                    # Cover limits at the upstream end
+                    if up_tile > up_ground - abs_upper:
+                        up_tile = up_ground - abs_upper
+                        notes.append(held_notes[0])
+                    elif up_tile < up_ground - abs_lower:
+                        up_tile = up_ground - abs_lower
+                        notes.append(held_notes[1])
+                    visited_values[up_key] = up_tile
+                visited_values.setdefault(down_key, down_tile)
 
-            if any(n not in held_notes for n in notes):
-                flagged += 1
-            first_tile, last_tile = (down_tile, up_tile) if down_is_first else (up_tile, down_tile)
-            results.append((first_tile, first_elev - first_tile, last_tile, last_elev - last_tile,
-                            in_slope, out_slope, '; '.join(notes) if notes else 'OK'))
+                actual_slope = (up_tile - down_tile) / length
+                if actual_slope < min_slope - 1e-9:
+                    if actual_slope <= 0:
+                        notes.append('Reverse or zero grade ({0}): tile cannot drain'.format(pct(actual_slope)))
+                    else:
+                        notes.append('Grade {0} below minimum'.format(pct(actual_slope)))
+                    if not loop:
+                        need = up_tile - length * min_slope
+                        needs[down_key] = min(need, needs.get(down_key, need))
+                elif actual_slope > max_slope + 1e-9:
+                    notes.append('Grade {0} above maximum'.format(pct(actual_slope)))
+                out_slope = clamp(actual_slope, min_slope, max_slope)
 
+                if any(n not in held_notes and not n.startswith('Outlet lowered') for n in notes):
+                    flagged += 1
+                first_tile, last_tile = (down_tile, up_tile) if down_is_first else (up_tile, down_tile)
+                results.append((first_tile, first_elev - first_tile, last_tile, last_elev - last_tile,
+                                in_slope, out_slope, '; '.join(notes) if notes else 'OK'))
+            return results, needs, floors, flagged, outlet_depth
+
+        caps = {}
+        results, needs, floors, flagged, outlet_depth = bury_pass(caps)
+        start_depth = outlet_depth
+        if lower_outlet:
+            for _ in range(4 * len(rows) + 10):
+                changed = False
+                for junction, need in needs.items():
+                    # never deeper than the segments downstream can carry at the minimum grade
+                    need = max(need, floors.get(junction, need))
+                    if need < caps.get(junction, float('inf')) - 1e-6:
+                        caps[junction] = need
+                        changed = True
+                if not changed or feedback.isCanceled():
+                    break
+                results, needs, floors, flagged, outlet_depth = bury_pass(caps)
+            if outlet_depth is not None and start_depth is not None and outlet_depth > start_depth + 1e-6:
+                feedback.pushInfo(self.tr('Outlet lowered from {0:.2f} ft to {1:.2f} ft deep to serve low ground.').format(start_depth, outlet_depth))
+        if outlet_depth is not None:
+            feedback.pushInfo(self.tr('Outlet tile depth: {0:.2f} ft.').format(outlet_depth))
         if flagged:
             feedback.pushInfo(self.tr('Warning: {0} segment(s) could not be buried within the slope limits; see the BURY_CHECK field.').format(flagged))
 

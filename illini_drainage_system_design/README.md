@@ -20,7 +20,7 @@ Designs a complete subsurface tile drainage system in one run. It chains the Ill
 | Outlet Location | Click on the map near the outlet end of the main; the closest segment becomes the outlet |
 | Original Field DEM | Elevation raster covering the tile lines |
 | Coordinate Reference System | Default EPSG:3435 |
-| Burying parameters (J) | Upper/lower and absolute depths, max/min slope, offset, optional constant slope for flat terrain |
+| Burying parameters (J) | Upper/lower and absolute depths (absolute lower default 6 ft), max/min slope, offset (+ lowers the outlet), optional constant slope for flat terrain, optional lowering of the outlet for low ground |
 | Pipe sizing parameters (K) | Burying slope (InSlope or OutSlope), drain spacing, pipe material, drainage intensity |
 | Advanced | Line extensions (E), segment length (H), drainage coefficient by system or by tile order (K) |
 | Network Pipe Sizings | Main output |

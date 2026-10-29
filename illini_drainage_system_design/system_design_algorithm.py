@@ -101,6 +101,7 @@ class SystemDesignAlgorithm(QgsProcessingAlgorithm):
     OFFSET = 'OFFSET'
     CONST_SLOPE = 'CONST_SLOPE'
     USE_CONST = 'USE_CONST'
+    LOWER_OUTLET = 'LOWER_OUTLET'
 
     # k. Network Pipe Sizing
     SIZING_SLOPE = 'SIZING_SLOPE'
@@ -193,12 +194,13 @@ class SystemDesignAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterNumber(self.UPPER, self.tr('Upper Tile Depth [ft]'), type=QgsProcessingParameterNumber.Double, maxValue=10.0, defaultValue=3.25))
         self.addParameter(QgsProcessingParameterNumber(self.LOWER, self.tr('Lower Tile Depth [ft]'), type=QgsProcessingParameterNumber.Double, maxValue=10.0, defaultValue=4.25))
         self.addParameter(QgsProcessingParameterNumber(self.ABS_UPPER, self.tr('Absolute Upper Tile Depth [ft]'), type=QgsProcessingParameterNumber.Double, maxValue=10.0, defaultValue=3.00))
-        self.addParameter(QgsProcessingParameterNumber(self.ABS_LOWER, self.tr('Absolute Lower Tile Depth [ft]'), type=QgsProcessingParameterNumber.Double, maxValue=10.0, defaultValue=7.00))
+        self.addParameter(QgsProcessingParameterNumber(self.ABS_LOWER, self.tr('Absolute Lower Tile Depth [ft]'), type=QgsProcessingParameterNumber.Double, maxValue=10.0, defaultValue=6.00))
         self.addParameter(QgsProcessingParameterNumber(self.MAX_SLOPE, self.tr('Maximum Slope Depth [percentage]'), type=QgsProcessingParameterNumber.Double, maxValue=100.0, defaultValue=5.00))
         self.addParameter(QgsProcessingParameterNumber(self.MIN_SLOPE, self.tr('Minimum Slope Depth [percentage]'), type=QgsProcessingParameterNumber.Double, maxValue=100.0, defaultValue=0.10))
-        self.addParameter(QgsProcessingParameterNumber(self.OFFSET, self.tr('Offset Depth [ft]'), type=QgsProcessingParameterNumber.Double, maxValue=10.0, defaultValue=0.00))
+        self.addParameter(QgsProcessingParameterNumber(self.OFFSET, self.tr('Offset Depth [ft] (+ lowers the outlet)'), type=QgsProcessingParameterNumber.Double, maxValue=10.0, defaultValue=0.00))
         self.addParameter(QgsProcessingParameterNumber(self.CONST_SLOPE, self.tr('Constant Slope Depth [percentage]'), type=QgsProcessingParameterNumber.Double, maxValue=100.0, defaultValue=0.50, optional=True))
         self.addParameter(QgsProcessingParameterBoolean(self.USE_CONST, self.tr('Include Constant Slope [For Flat Terrain Only]'), defaultValue=False))
+        self.addParameter(QgsProcessingParameterBoolean(self.LOWER_OUTLET, self.tr('Lower the Outlet for Low Ground [down to Lower Tile Depth]'), defaultValue=False))
 
         # --- k. Pipe sizing parameters ---
         self.addParameter(QgsProcessingParameterEnum(self.SIZING_SLOPE, self.tr('Burying Slope used for Pipe Sizing'), options=[self.tr('InSlope'), self.tr('OutSlope')], defaultValue=0))
@@ -394,6 +396,7 @@ class SystemDesignAlgorithm(QgsProcessingAlgorithm):
             BuryAlgorithm.OFFSET_KEY: parameters[self.OFFSET],
             BuryAlgorithm.CONST_SLOPE_KEY: self.parameterAsDouble(parameters, self.CONST_SLOPE, context),
             BuryAlgorithm.USE_CONST_KEY: self.parameterAsBoolean(parameters, self.USE_CONST, context),
+            BuryAlgorithm.LOWER_OUTLET_KEY: self.parameterAsBoolean(parameters, self.LOWER_OUTLET, context),
             BuryAlgorithm.OUTPUT: self._dest(parameters, self.OUT_BURIED),
         }, context=context, feedback=steps, is_child_algorithm=True)[BuryAlgorithm.OUTPUT]
         if steps.isCanceled():
