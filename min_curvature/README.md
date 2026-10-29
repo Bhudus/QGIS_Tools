@@ -42,7 +42,9 @@ otherwise the GEOS triangulation built into QGIS.
 stencil) with successive over-relaxation on a coarse→fine grid hierarchy
 (Briggs 1974, Swain 1976, Smith & Wessel 1990).
 A best-fit plane is removed first and added back at the end; each data point
-constrains its nearest node, corrected with the local gradient; points in the
+constrains its nearest node, corrected with the local gradient (the corrected
+values are under-relaxed, and if a grid level ever diverges it is repeated
+without the correction, so the solver cannot blow up); points in the
 same cell are averaged; edges use linear extrapolation.
 
 **Natural neighbor** computes Sibson weights: the area a new point's Voronoi cell

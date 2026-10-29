@@ -32,6 +32,10 @@ import math
 import numpy as np
 
 
+# under-relaxation of the data constraint values (1 = none); see _Level.relax
+CONSTRAINT_DAMPING = 0.5
+
+
 class Canceled(Exception):
     """Raised when the caller requests cancellation."""
 
@@ -105,6 +109,7 @@ class _Level(object):
         uniq, inv = np.unique(r * nc + c, return_inverse=True)
         self.inv = inv.ravel()
         self.counts = np.bincount(self.inv).astype(np.float64)
+        self.mean_z = np.bincount(self.inv, weights=w) / self.counts
         self.fi = uniq // nc + 2
         self.fj = uniq % nc + 2
 
@@ -137,8 +142,17 @@ class _Level(object):
                 lst.append(((rs, cc), s1, s2, s3))
             self.blocks.append(lst)
 
-    def relax(self, P, omega, max_iter, tol, on_iter, cancelled):
-        """SOR iterations on padded array P (in place). Returns (iters, maxdiff)."""
+    def relax(self, P, omega, max_iter, tol, on_iter, cancelled,
+              gradient=True, limit=None):
+        """SOR iterations on padded array P (in place).
+
+        gradient : apply the first-order (gradient) correction to the
+                   constraint values.
+        limit    : if the largest change in one iteration exceeds this, the
+                   iteration is diverging and is abandoned.
+
+        Returns (iterations, maxdiff, diverged).
+        """
         k1, k2, k3 = self.k1, self.k2, self.k3
         free = self.free
         ci, cj = self.ci, self.cj
@@ -149,12 +163,21 @@ class _Level(object):
                 raise Canceled()
 
             # re-evaluate constraint values with the current surface gradient
-            gc = 0.5 * (P[ci, cj + 1] - P[ci, cj - 1])
-            gr = 0.5 * (P[ci + 1, cj] - P[ci - 1, cj])
-            adj = self.pz - gc * self.pdc - gr * self.pdr
-            fv = np.bincount(self.inv, weights=adj) / self.counts
-            maxdiff = float(np.abs(fv - P[self.fi, self.fj]).max())
-            P[self.fi, self.fj] = fv
+            if gradient:
+                gc = 0.5 * (P[ci, cj + 1] - P[ci, cj - 1])
+                gr = 0.5 * (P[ci + 1, cj] - P[ci - 1, cj])
+                adj = self.pz - gc * self.pdc - gr * self.pdr
+                fv = np.bincount(self.inv, weights=adj) / self.counts
+            else:
+                fv = self.mean_z
+            old = P[self.fi, self.fj]
+            maxdiff = float(np.abs(fv - old).max())
+            # The constraint values depend on the surface they constrain.  When
+            # data nodes are only a few cells apart (regular lattices, coarse
+            # grid levels) the undamped feedback has a gain above one and the
+            # iteration diverges, so the values are under-relaxed.  The fixed
+            # point (fv == old) is not changed by this.
+            P[self.fi, self.fj] = old + CONSTRAINT_DAMPING * (fv - old) if gradient else fv
             _pad(P)
 
             for blocks in self.blocks:
@@ -176,11 +199,13 @@ class _Level(object):
                         maxdiff = md
                 _pad(P)
 
+            if not np.isfinite(maxdiff) or (limit is not None and maxdiff > limit):
+                return it, maxdiff, True
             if on_iter is not None:
                 on_iter(it, maxdiff)
             if it >= 3 and maxdiff < tol:
                 break
-        return it, maxdiff
+        return it, maxdiff, False
 
 
 # ----------------------------------------------------------------------------
@@ -277,7 +302,21 @@ def minimum_curvature_grid(px, py, pz, xmin, ymax, cell, nrows, ncols,
         def on_iter(it, md, base=base, span=span):
             progress(base + span * min(1.0, it / float(max_iter)))
 
-        it, md = lvl.relax(P, omega, max_iter, tol_abs, on_iter, cancelled)
+        start = P.copy()
+        limit = 1e3 * wrange
+        it, md, bad = lvl.relax(P, omega, max_iter, tol_abs, on_iter, cancelled,
+                                gradient=True, limit=limit)
+        if bad:
+            log("Grid %d x %d (cell = %g): the gradient correction of the data "
+                "values diverged - repeating this grid without it"
+                % (nc, nr, cell * m))
+            P = start
+            it, md, bad = lvl.relax(P, omega, max_iter, tol_abs, on_iter, cancelled,
+                                    gradient=False, limit=limit)
+            if bad:
+                raise ValueError(
+                    "The iteration does not converge. Try a lower relaxation "
+                    "factor (e.g. 1.0) or a larger pixel size.")
         log("Grid %d x %d (cell = %g): %d iteration(s), last max change %.3g%s"
             % (nc, nr, cell * m, it, md,
                "" if md < tol_abs else "  [iteration limit reached]"))

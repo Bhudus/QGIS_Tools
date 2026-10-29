@@ -41,3 +41,23 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+def test_regular_lattice():
+    """Regression: dense regular lattices (data a few cells apart on coarse grid
+    levels) used to make the data-constraint feedback diverge to ~1e18."""
+    xs = np.array([0, 14.28571429, 28.57142857, 42.85714286, 57.14285714, 71.42857143, 85.71428571, 100.0])
+    ys = np.linspace(0, 100, 9)
+    gx, gy = np.meshgrid(xs, ys)
+    x, y = gx.ravel(), gy.ravel()
+    z = 0.62 + 0.006 * np.sin(x / 17.0) * np.cos(y / 23.0)
+    for cell in (0.4, 1.0, 2.5, 12.5):
+        n = int(round(100 / cell))
+        Z = minimum_curvature_grid(x, y, z, 0, 100, cell, n, n, max_iter=1000, tol=1e-4)
+        span = Z.max() - Z.min()
+        assert np.isfinite(Z).all() and span < 3 * np.ptp(z), (cell, span)
+    print('lattice OK')
+
+
+if __name__ == '__main__':
+    test_regular_lattice()
