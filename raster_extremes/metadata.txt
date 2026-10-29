@@ -1,0 +1,17 @@
+[general]
+name=Raster Extremes
+qgisMinimumVersion=3.16
+description=Finds the cells with the maximum and minimum values of a raster band and gives their coordinates.
+about=Scans a raster band (in memory-friendly strips, honouring NoData) and reports every cell holding the minimum and maximum value: value, row/column, cell-centre X/Y in the layer CRS and WGS84 lon/lat. Results can be copied as a table and added to the map as a styled point layer.
+version=1.0.0
+author=Richard Cooke
+email=bhudus@yahoo.com
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+tags=raster,minimum,maximum,statistics,extremes,cell,coordinates
+category=Raster
+icon=icon.svg
+experimental=False
+deprecated=False
+supportsQt6=True
