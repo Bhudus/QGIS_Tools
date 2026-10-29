@@ -29,6 +29,7 @@ Designs a complete subsurface tile drainage system in one run. It chains the Ill
 Defaults match the individual Illini Drainage Tools. Pipe sizing uses a single drain spacing.
 
 ## Install
+Download [`illini_drainage_system_design.zip`](https://github.com/Bhudus/QGIS_Tools/raw/main/illini_drainage_system_design/illini_drainage_system_design.zip), then in QGIS use
 `Plugins → Manage and Install Plugins → Install from ZIP`, choose `illini_drainage_system_design.zip`, tick the plugin.
 Requires QGIS ≥ 3.16. No SAGA or other add-on Processing provider is needed.
 If the earlier **Illini System Design** plugin is installed, uninstall it first; this version replaces it.

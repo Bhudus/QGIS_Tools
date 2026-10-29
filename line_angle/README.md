@@ -4,9 +4,10 @@ Click a line segment on the map to get its angle in degrees, relative to the
 positive horizontal direction.
 
 ## Install
-1. In QGIS: **Plugins → Manage and Install Plugins → Install from ZIP**.
-2. Choose `line_angle.zip`, click **Install Plugin**.
-3. A **Line Angle** button appears on the Plugins toolbar (and under Plugins → Line Angle).
+1. Download [`line_angle.zip`](https://github.com/Bhudus/QGIS_Tools/raw/main/line_angle/line_angle.zip).
+2. In QGIS: **Plugins → Manage and Install Plugins → Install from ZIP**.
+3. Choose `line_angle.zip`, click **Install Plugin**.
+4. A **Line Angle** button appears on the Plugins toolbar (and under Plugins → Line Angle).
 
 ## Use
 1. Click the Line Angle button.

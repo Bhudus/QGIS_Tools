@@ -30,6 +30,7 @@ The dialog mirrors the native *IDW interpolation* algorithm:
 | Best for | Smooth fields: elevation, potential fields | Irregular or clustered data where artefacts are unacceptable |
 
 ## Install
+Download [`min_curvature.zip`](https://github.com/Bhudus/QGIS_Tools/raw/main/min_curvature/min_curvature.zip), then in QGIS use
 `Plugins → Manage and Install Plugins → Install from ZIP`, choose `min_curvature.zip`, tick the plugin.
 Requires QGIS ≥ 3.16. Only numpy and GDAL are required (both ship with QGIS).
 Natural neighbor needs a Delaunay triangulation: scipy is used if installed,
