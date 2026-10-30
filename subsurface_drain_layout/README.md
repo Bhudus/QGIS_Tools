@@ -112,12 +112,12 @@ each junction, so each link runs node to node in the direction of flow.
 | `terrain_grade_pct`, `design_grade_pct` | Percent. |
 | `upstream_length` | All pipe length draining through this link, including itself. |
 | `drained_area` | Area served by the laterals upstream (lateral length × spacing), in hectares, or acres in feet mode. Use it with your drainage coefficient to size each reach. |
-| `flag` | Anything to check (below). Flagged links are drawn orange. |
+| `flag` | Anything to check (below), with lengths in the design units. Flagged links are drawn orange. |
 
 Flags:
 
 - `deeper than …` — exceeds the maximum depth.
-- `connector … m` — reaches a collector or another lateral through a straight
+- `connector …` — reaches a collector or another lateral through a straight
   connector.
 - `unconnected: needs its own collector` — the low ground this lateral drains
   to has no collector. Add an outlet or submain there, or lower the submain

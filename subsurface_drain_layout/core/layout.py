@@ -69,6 +69,7 @@ class LayoutParams:
     outlet_invert: Optional[float] = None
     setback: Optional[float] = None      # default: spacing / 2
     smooth_radius: Optional[float] = None  # default: spacing
+    units: str = "m"                     # design units for messages: "m" or "ft"
     parallelism: float = 0.9            # curved laterals: 0 = follow terrain, 1 = offset of neighbour
     main_stop_frac: float = 0.02         # main ends where contributing area < this share of field
     submain_frac: float = 0.10           # branches above this share become submains (0 = none)
@@ -107,6 +108,12 @@ class DrainageLayout:
 
     def _warn(self, msg):
         self.warnings.append(msg)
+
+    def _fmt(self, metres, decimals):
+        """A length in the design units, with its unit, for flags and warnings."""
+        if self.p.units == "ft":
+            return "{:.{}f} ft".format(metres / 0.3048, decimals)
+        return "{:.{}f} m".format(metres, decimals)
 
     def inside(self, x, y):
         return bool(self.g.lookup(self.inner, x, y, False))
@@ -239,8 +246,8 @@ class DrainageLayout:
         self.o_cell = (int(ii[k]), int(jj[k]))
         self.o_snap = (float(X[ii[k], jj[k]]), float(Y[ii[k], jj[k]]))
         if d[k] > 3 * S and not self.user_mains:
-            self._warn("The outlet is {:.0f} m from the drainable part of the field; "
-                       "the main is extended to reach it.".format(d[k]))
+            self._warn("The outlet is {} from the drainable part of the field; "
+                       "the main is extended to reach it.".format(self._fmt(d[k], 0)))
 
     # ------------------------------------------------------------ collectors
     def _flood_tree(self):
@@ -458,8 +465,8 @@ class DrainageLayout:
         if dists[k][1]:
             main = main[::-1]                      # flow toward the outlet end
         if dists[k][0] > 2 * S:
-            self._warn("The main line ends {:.0f} m from the outlet; a straight pipe "
-                       "joins it to the outlet.".format(dists[k][0]))
+            self._warn("The main line ends {} from the outlet; a straight pipe "
+                       "joins it to the outlet.".format(self._fmt(dists[k][0], 0)))
         cols = [{"pts": resample(main, self.hc), "kind": "main", "to": None}]
         while lines:
             best = None
@@ -476,8 +483,8 @@ class DrainageLayout:
             if flip:
                 a = a[::-1]
             if d > 2 * S:
-                self._warn("Submain {} ends {:.0f} m from the main; a straight pipe joins "
-                           "them.".format(len(cols), d))
+                self._warn("Submain {} ends {} from the main; a straight pipe joins "
+                           "them.".format(len(cols), self._fmt(d, 0)))
             cols.append({"pts": resample(a, self.hc), "kind": "submain", "to": (h, None)})
         return cols
 
@@ -876,7 +883,7 @@ class DrainageLayout:
             if dist <= self.max_conn and self._clear(end, q):
                 line.append(q)
                 conn = ("collector", cid, v)
-                flags.append("connector {:.0f} m".format(dist))
+                flags.append("connector " + self._fmt(dist, 0))
             else:
                 hit = self.hash.nearest(end[0], end[1], reg, self.max_conn)
                 if hit is not None:
@@ -885,7 +892,7 @@ class DrainageLayout:
                         line.append(q)
                         conn = ("lateral", host, v)
                         if hit[0] > self.d_test * 1.05:
-                            flags.append("connector {:.0f} m".format(hit[0]))
+                            flags.append("connector " + self._fmt(hit[0], 0))
             if conn is None:
                 flags.append("unconnected: needs its own collector")
         if polyline_length(line) < self.lmin:
@@ -1043,11 +1050,11 @@ class DrainageLayout:
             a = self._pipe_attrs(c["z"], c["s"], c["inv"])
             flags = []
             if a["max_depth_m"] > p.max_depth:
-                flags.append("deeper than {:.2f} m".format(p.max_depth))
+                flags.append("deeper than " + self._fmt(p.max_depth, 2))
             if c["to"] is None and p.outlet_invert is not None:
                 short = p.outlet_invert - a["invert_ds"]
                 if short > 0:
-                    flags.append("invert {:.2f} m below outlet".format(short))
+                    flags.append("invert {} below outlet".format(self._fmt(short, 2)))
             a.update({"col_id": k + 1, "name": names[k], "kind": c["kind"],
                       "flows_to": "outlet" if c["to"] is None else names[c["to"][0]],
                       "n_laterals": c.get("nlat", 0), "flag": "; ".join(flags)})
@@ -1059,7 +1066,7 @@ class DrainageLayout:
             a = self._pipe_attrs(L["z"], L["s"], L["inv"])
             flags = list(L["flags"])
             if a["max_depth_m"] > p.max_depth:
-                flags.append("deeper than {:.2f} m".format(p.max_depth))
+                flags.append("deeper than " + self._fmt(p.max_depth, 2))
                 n_deep += 1
             if L["conn"] is None:
                 n_unconn += 1
@@ -1087,9 +1094,10 @@ class DrainageLayout:
             self._warn("{} lateral(s) exceed the maximum depth; consider a contour-"
                        "following layout, a lower outlet or a submain.".format(n_deep))
         for c in collectors:
-            if "below outlet" in c["attrs"]["flag"]:
-                self._warn("The main reaches the outlet {} — the outlet is not deep "
-                           "enough for this layout.".format(c["attrs"]["flag"]))
+            for part in c["attrs"]["flag"].split("; "):
+                if part.endswith("below outlet"):
+                    self._warn("The main reaches the outlet with its {} — the outlet is "
+                               "not deep enough for this layout.".format(part))
         az = (90 - math.degrees(math.atan2(self.uc[1], self.uc[0]))) % 180
         summary = {
             "field_area_ha": round(area_ha, 2),

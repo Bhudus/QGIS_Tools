@@ -3,7 +3,7 @@ name=Subsurface Drainage Layout
 qgisMinimumVersion=3.34
 description=Automated subsurface (tile) drainage layout from a DEM, field boundary, outlet and lateral spacing.
 about=Lays out mains, submains and evenly spaced laterals running near parallel or near perpendicular to the field contours, in parallel/gridiron or herringbone patterns, around an automatically routed main or one you supply, with straight or contour-following laterals. Designs pipe inverts at minimum cover and grade and flags pipes that are too deep, need long connectors or have no collector downstream. Runs from the Processing Toolbox or the plugin toolbar; uses only QGIS, GDAL and numpy.
-version=0.6.1
+version=0.6.2
 author=Richard Cooke
 email=bhudus@yahoo.com
 
@@ -11,7 +11,8 @@ tracker=https://github.com/Bhudus/QGIS_Tools/issues
 repository=https://github.com/Bhudus/QGIS_Tools
 homepage=https://bhudus.github.io/QGIS_Tools/
 
-changelog=0.6.1 - The line-ID output layer is renamed Surface Layout (parameter SURFACE_LAYOUT). Laterals now run down the slope by default.
+changelog=0.6.2 - Lengths in flags, warnings and log messages are now given in the design units (feet or metres).
+    0.6.1 - The line-ID output layer is renamed Surface Layout (parameter SURFACE_LAYOUT). Laterals now run down the slope by default.
     0.6.0 - Optional user-supplied main line(s): the line ending nearest the outlet is the main, other lines become submains; lines may run outside the field; the outlet is optional when a main is given.
     0.5.0 - First public release. Automated layout (parallel/gridiron or herringbone; straight or near-parallel contour-following laterals) as one connected network with inverts at minimum cover and grade, drained area for pipe sizing, and a line-ID layer (now Surface Layout) for the Illini Drainage Tools.
 tags=drainage,tile,subsurface,agriculture,layout,dem,contour,herringbone

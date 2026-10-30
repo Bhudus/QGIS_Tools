@@ -470,8 +470,8 @@ class SubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             raise QgsProcessingException(self.tr(
                 "The analysis grid would have {:,} cells; set a larger analysis cell size."
             ).format(nrows * ncols))
-        feedback.pushInfo(self.tr("Analysis grid: {} x {} cells of {:.2f} m.")
-                          .format(ncols, nrows, cell_m))
+        feedback.pushInfo(self.tr("Analysis grid: {} x {} cells of {:.2f} {}.")
+                          .format(ncols, nrows, cell_m / uf, "m" if uf == 1.0 else "ft"))
 
         dem, valid = self._read_dem(dem_layer, (xmin, ymin, xmax, ymax), cell_map,
                                     nrows, ncols, feedback)
@@ -482,6 +482,7 @@ class SubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
 
         params = LayoutParams(
             spacing=spacing,
+            units="m" if uf == 1.0 else "ft",
             pattern=PATTERNS[self.parameterAsEnum(parameters, self.PATTERN, context)],
             orientation=ORIENTS[self.parameterAsEnum(parameters, self.ORIENTATION, context)],
             shape=SHAPES[self.parameterAsEnum(parameters, self.SHAPE, context)],
