@@ -1,0 +1,25 @@
+[general]
+name=Illini Subsurface Drain Layout
+qgisMinimumVersion=3.34
+description=Automated subsurface (tile) drainage layout, tile burying and pipe sizing from a DEM, field boundary, outlet and lateral spacing.
+about=Lays out mains, submains and evenly spaced laterals running near parallel or near perpendicular to the field contours, in parallel/gridiron or herringbone patterns, around an automatically routed main or one you supply, with straight or contour-following laterals, as one connected network. Buries the tile with the scheme of Routine J (Tile Burying System) of the Illini Drainage Tools: from the outlet upstream, toward a target depth band, within minimum and maximum slopes and absolute depth limits, with optional constant slope, outlet offset and outlet lowering for low ground. Sizes the pipes with Routine K (Network Pipe Sizing), using the Strahler tile order of Routine G. Writes the Routine J fields (ElevDepth1/2, BuryDepth1/2, InSlope, OutSlope, BURY_CHECK), the Routine K fields (TILE_ORDER, D_COEFF, D_AREA, CUM_SEG_FLOW, ACTUAL_SIZE, NOMINAL) and a line-ID layer (Surface Layout) for the Illini Drainage Tools. Uses only QGIS, GDAL and numpy. The burying and sizing schemes are ported from the Illini Drainage Tools by Anamelechi Falasy and Richard Cooke, University of Illinois Urbana-Champaign (GPL v3).
+version=0.9.0
+author=Richard Cooke and Anamelechi Falasy
+email=bhudus@yahoo.com
+
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+
+changelog=0.9.0 - Pipe sizing corrections to Routines G and K: single-wall pipe now uses Manning's n by size (0.015 up to 8 in, 0.017 to 12 in, 0.020 above; it was always 0.015); drain spacing is rounded to the nearest foot instead of truncated; tile order is the standard Strahler order at every junction. New TileLength field: length rounded to the nearest 5 ft, or the nearest metre.
+    0.8.0 - Pipe sizing with Routine K (Network Pipe Sizing) of the Illini Drainage Tools, using the Strahler tile order of Routine G: pipe material, drainage intensity or per-order drainage coefficients, InSlope or OutSlope; Routine K fields (TILE_ORDER, FLOW_LENGTH, D_COEFF, D_AREA, CUM_SEG_FLOW, ACTUAL_SIZE, NOMINAL) and pipe length by nominal size.
+    0.7.1 - Lengths in flags, warnings and log messages are now given in the design units (feet or metres).
+    0.7.0 - Optional user-supplied main line(s): the line ending nearest the outlet is the main, other lines become submains; lines may run outside the field; the outlet is optional when a main is given. The line-ID output layer is renamed Surface Layout (parameter SURFACE_LAYOUT). Laterals now run down the slope by default.
+    0.6.0 - First public release. Automated layout (parallel/gridiron or herringbone; straight or contour-following laterals, near parallel) as one connected network, tile burying with the Routine J scheme of the Illini Drainage Tools, Routine J output fields and a line-ID layer.
+tags=drainage,tile,subsurface,agriculture,layout,dem,contour,herringbone,illini,burying
+category=Analysis
+experimental=True
+deprecated=False
+hasProcessingProvider=yes
+icon=icon.png
+license=GPL-3.0-or-later
