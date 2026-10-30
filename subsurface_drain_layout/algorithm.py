@@ -73,6 +73,11 @@ def _meters_factor(crs):
         return QgsUnitTypes.fromUnitToUnitFactor(crs.mapUnits(), QgsUnitTypes.DistanceMeters)
 
 
+def _union_box(a, b):
+    return QgsRectangle(min(a.xMinimum(), b.xMinimum()), min(a.yMinimum(), b.yMinimum()),
+                        max(a.xMaximum(), b.xMaximum()), max(a.yMaximum(), b.yMaximum()))
+
+
 def _advanced(param):
     try:
         from qgis.core import Qgis
@@ -110,6 +115,7 @@ class SubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
     DEM = "DEM"
     FIELD = "FIELD"
     OUTLET = "OUTLET"
+    MAIN = "MAIN"
     SPACING = "SPACING"
     PATTERN = "PATTERN"
     ORIENTATION = "ORIENTATION"
@@ -130,7 +136,7 @@ class SubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
     MAIN_STOP = "MAIN_STOP"
     SUBMAIN = "SUBMAIN"
     NETWORK = "NETWORK"
-    LINE_IDS = "LINE_IDS"
+    SURFACE_LAYOUT = "SURFACE_LAYOUT"
     REPORT = "REPORT"
 
     # ------------------------------------------------------------ metadata
@@ -165,6 +171,13 @@ class SubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             "across the low side when laterals run down it.<br>"
             "<i>Herringbone</i>: the main and any submains follow the low ground "
             "(drainage-tree thalwegs) from the outlet; laterals enter from both sides.</p>"
+            "<p><b>Main line</b> (optional): draw your own main, and any submains, in a "
+            "line layer. The line ending nearest the outlet becomes the main and flows to "
+            "that end; each other line becomes a submain flowing to its end nearest the "
+            "main (or another submain), which it joins. Lines can run outside the field, "
+            "for example out to a ditch. With a main line the outlet is optional: the "
+            "lowest end of the lines is used. The pattern then only sets how laterals "
+            "leave the main.</p>"
             "<p><b>Lateral orientation</b><br>"
             "<i>Across the slope</i>: laterals run nearly parallel to the contours. With "
             "contour-following shape they hold the target lateral grade along the "
@@ -201,7 +214,12 @@ class SubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.FIELD, self.tr("Field boundary"), [QgsProcessing.TypeVectorPolygon]))
         self.addParameter(QgsProcessingParameterPoint(
-            self.OUTLET, self.tr("Outlet location")))
+            self.OUTLET, self.tr("Outlet location [optional if a main line is given]"),
+            optional=True))
+        self.addParameter(QgsProcessingParameterFeatureSource(
+            self.MAIN, self.tr("Main line(s) [optional; leave empty to route the main "
+                               "automatically]"),
+            [QgsProcessing.TypeVectorLine], optional=True))
         self.addParameter(QgsProcessingParameterEnum(
             self.UNITS, self.tr("Design units (spacing, depths, outputs)"),
             options=[self.tr("Metres"), self.tr("Feet")], defaultValue=1))
@@ -216,7 +234,7 @@ class SubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             self.ORIENTATION, self.tr("Lateral orientation"),
             options=[self.tr("Across the slope (near parallel to contours)"),
                      self.tr("Down the slope (near perpendicular to contours)")],
-            defaultValue=0))
+            defaultValue=1))
         self.addParameter(QgsProcessingParameterEnum(
             self.SHAPE, self.tr("Lateral shape"),
             options=[self.tr("Straight"),
@@ -281,7 +299,7 @@ class SubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterFeatureSink(
             self.NETWORK, self.tr("Drainage network"), QgsProcessing.TypeVectorLine))
         self.addParameter(QgsProcessingParameterFeatureSink(
-            self.LINE_IDS, self.tr("Line IDs (input for Illini Drainage Tools)"),
+            self.SURFACE_LAYOUT, self.tr("Surface Layout"),
             QgsProcessing.TypeVectorLine))
         self.addParameter(QgsProcessingParameterFileDestination(
             self.REPORT, self.tr("Layout report"), self.tr("HTML files (*.html)"),
@@ -392,10 +410,44 @@ class SubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
         if source.featureCount() > 1:
             feedback.pushInfo(self.tr("{} field polygons merged into one field.")
                               .format(source.featureCount()))
-        outlet = self.parameterAsPoint(parameters, self.OUTLET, context, crs)
+        outlet = None
+        if parameters.get(self.OUTLET) not in (None, ""):
+            outlet = self.parameterAsPoint(parameters, self.OUTLET, context, crs)
+
+        # user-supplied main and submains, in the DEM CRS
+        mains = []
+        main_bb = None
+        main_src = None
+        if parameters.get(self.MAIN) not in (None, ""):
+            main_src = self.parameterAsSource(parameters, self.MAIN, context)
+        if main_src is not None:
+            mtr = QgsCoordinateTransform(main_src.sourceCrs(), crs, context.transformContext())
+            for f in main_src.getFeatures():
+                g = QgsGeometry(f.geometry())
+                if g.isEmpty():
+                    continue
+                g.transform(mtr)
+                parts = g.asMultiPolyline() if g.isMultipart() else [g.asPolyline()]
+                for part in parts:
+                    if len(part) >= 2:
+                        mains.append([(p.x(), p.y()) for p in part])
+                        b = QgsGeometry.fromPolylineXY(part).boundingBox()
+                        main_bb = b if main_bb is None else _union_box(main_bb, b)
+            if not mains:
+                raise QgsProcessingException(self.tr("The main line layer has no lines."))
+            feedback.pushInfo(self.tr("Using {} supplied line(s): the one ending nearest the "
+                                      "outlet is the main, the rest are submains.")
+                              .format(len(mains)))
+        if outlet is None and not mains:
+            raise QgsProcessingException(self.tr(
+                "Give an outlet location, a main line, or both."))
 
         # analysis grid
         bb = field.boundingBox()
+        if main_bb is not None:
+            bb = _union_box(bb, main_bb)
+        if outlet is not None:
+            bb = _union_box(bb, QgsRectangle(outlet.x(), outlet.y(), outlet.x(), outlet.y()))
         area_m2 = field.area() * xf * xf
         dem_res_m = abs(dem_layer.rasterUnitsPerPixelX()) * xf
         if cell_in:
@@ -453,8 +505,9 @@ class SubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
 
         try:
             res = run_layout(dem, valid, grid, self._rings(field, xf),
-                             (outlet.x() * xf, outlet.y() * xf), params,
-                             progress=progress, cancel=feedback.isCanceled)
+                             None if outlet is None else (outlet.x() * xf, outlet.y() * xf),
+                             params, progress=progress, cancel=feedback.isCanceled,
+                             mains=[[(x * xf, y * xf) for x, y in m] for m in mains])
         except LayoutCancelled:
             return {}
         except LayoutError as e:
@@ -490,7 +543,7 @@ class SubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
         sink, net_id = self.parameterAsSink(parameters, self.NETWORK, context,
                                             net_fields, QgsWkbTypes.LineString, crs)
         id_fields = fields([("id", I)])
-        id_sink, ids_id = self.parameterAsSink(parameters, self.LINE_IDS, context,
+        id_sink, ids_id = self.parameterAsSink(parameters, self.SURFACE_LAYOUT, context,
                                                id_fields, QgsWkbTypes.LineString, crs)
         if sink is None or id_sink is None:
             raise QgsProcessingException(self.tr("Could not create the output layers."))
@@ -529,7 +582,7 @@ class SubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             feedback.pushWarning(w)
 
         report = self.parameterAsFileOutput(parameters, self.REPORT, context)
-        out = {self.NETWORK: net_id, self.LINE_IDS: ids_id,
+        out = {self.NETWORK: net_id, self.SURFACE_LAYOUT: ids_id,
                "TOTAL_LENGTH": s["total_length_m"] / uf,
                "LATERAL_LENGTH": s["lateral_length_m"] / uf,
                "COLLECTOR_LENGTH": s["collector_length_m"] / uf,

@@ -80,12 +80,19 @@ class LayoutParams:
 
 class DrainageLayout:
     def __init__(self, dem, valid, grid, rings, outlet, params,
-                 progress=None, cancel=None):
+                 progress=None, cancel=None, mains=None):
         self.dem = np.asarray(dem, dtype=float)
         self.valid = np.asarray(valid, dtype=bool) & np.isfinite(self.dem)
         self.g = grid
         self.rings = rings
-        self.outlet = (float(outlet[0]), float(outlet[1]))
+        self.outlet = None if outlet is None else (float(outlet[0]), float(outlet[1]))
+        self.user_mains = []
+        for line in mains or []:
+            a = np.asarray(line, dtype=float)
+            if a.ndim == 2 and len(a) >= 2 and polyline_length(a) > 0:
+                self.user_mains.append(a)
+        if self.outlet is None and not self.user_mains:
+            raise LayoutError("Give an outlet location, a main line, or both.")
         self.p = params
         self._progress_cb = progress
         self._cancel_cb = cancel
@@ -124,7 +131,16 @@ class DrainageLayout:
         return d if d == d else 1e9
 
     def ground(self, pts):
-        z = np.array([self.g.bilinear(self.zfill, x, y) for x, y in pts])
+        z = np.array([self.g.bilinear(self.zfill, x, y) for x, y in pts], dtype=float)
+        bad = ~np.isfinite(z)
+        if bad.any():
+            # outside the DEM (e.g. a user main running out to a ditch): carry the
+            # nearest known ground along the line
+            if bad.all():
+                raise LayoutError("A pipe lies entirely outside the DEM.")
+            s = cumulative_length(pts)
+            z[bad] = np.interp(s[bad], s[~bad], z[~bad])
+            self.off_dem = True
         return z
 
     # ------------------------------------------------------------ pipeline
@@ -208,13 +224,21 @@ class DrainageLayout:
         self.uc, self.uf = uc, uf
         self.mean_slope = float(self.slope[self.inner].mean())
 
+        if self.outlet is None:
+            # no outlet given: the lowest end of the supplied main line(s)
+            ends = [tuple(a[k]) for a in self.user_mains for k in (0, -1)]
+            zs = [g.bilinear(self.zfill, x, y) for x, y in ends]
+            zs = [z if z == z else float("inf") for z in zs]
+            self.outlet = ends[int(np.argmin(zs))]
+            self.outlet_from_main = True
+
         # snap the outlet to the drainable area
         ii, jj = np.nonzero(self.inner)
         d = np.hypot(X[ii, jj] - self.outlet[0], Y[ii, jj] - self.outlet[1])
         k = int(np.argmin(d))
         self.o_cell = (int(ii[k]), int(jj[k]))
         self.o_snap = (float(X[ii[k], jj[k]]), float(Y[ii[k], jj[k]]))
-        if d[k] > 3 * S:
+        if d[k] > 3 * S and not self.user_mains:
             self._warn("The outlet is {:.0f} m from the drainable part of the field; "
                        "the main is extended to reach it.".format(d[k]))
 
@@ -414,16 +438,63 @@ class DrainageLayout:
                          "to": None if k == 0 else (0, None)})
         return cols
 
+    def _user_collectors(self):
+        """Collectors from user-supplied line(s).
+
+        The line with an end nearest the outlet is the main, flowing to that
+        end. Every other line becomes a submain flowing from its far end to its
+        end nearest an existing collector, which it joins.
+        """
+        S = self.S
+        ox, oy = self.outlet
+        lines = list(self.user_mains)
+        dists = []
+        for a in lines:
+            d0 = math.hypot(a[0][0] - ox, a[0][1] - oy)
+            d1 = math.hypot(a[-1][0] - ox, a[-1][1] - oy)
+            dists.append((min(d0, d1), d0 < d1))
+        k = int(np.argmin([d for d, _ in dists]))
+        main = lines.pop(k)
+        if dists[k][1]:
+            main = main[::-1]                      # flow toward the outlet end
+        if dists[k][0] > 2 * S:
+            self._warn("The main line ends {:.0f} m from the outlet; a straight pipe "
+                       "joins it to the outlet.".format(dists[k][0]))
+        cols = [{"pts": resample(main, self.hc), "kind": "main", "to": None}]
+        while lines:
+            best = None
+            for i, a in enumerate(lines):
+                for flip in (False, True):
+                    end = a[0] if flip else a[-1]
+                    for h, c in enumerate(cols):
+                        d = float(np.min(np.hypot(c["pts"][:, 0] - end[0],
+                                                  c["pts"][:, 1] - end[1])))
+                        if best is None or d < best[0]:
+                            best = (d, i, flip, h)
+            d, i, flip, h = best
+            a = lines.pop(i)
+            if flip:
+                a = a[::-1]
+            if d > 2 * S:
+                self._warn("Submain {} ends {:.0f} m from the main; a straight pipe joins "
+                           "them.".format(len(cols), d))
+            cols.append({"pts": resample(a, self.hc), "kind": "submain", "to": (h, None)})
+        return cols
+
     def _build_collectors(self):
         p = self.p
         cols = []
-        if p.pattern == PATTERN_PARALLEL:
+        if self.user_mains:
+            cols = self._user_collectors()
+        elif p.pattern == PATTERN_PARALLEL:
             cols = self._parallel_collectors()
             if not cols:
                 self._warn("A parallel main could not be run from this outlet into the "
                            "field; the main follows the low ground instead.")
         if not cols:
             cols = self._thalweg_collectors()
+        if self.user_mains and getattr(self, "outlet_from_main", False):
+            self.outlet = tuple(cols[0]["pts"][-1])
         # outlet connector on the main
         main = cols[0]
         if math.hypot(main["pts"][-1][0] - self.outlet[0],
@@ -1006,6 +1077,9 @@ class DrainageLayout:
         lat_len = sum(l["attrs"]["length_m"] for l in laterals)
         col_len = sum(c["attrs"]["length_m"] for c in collectors)
         area_ha = self.field_area / 1e4
+        if getattr(self, "off_dem", False):
+            self._warn("Part of the main runs beyond the DEM; ground there is carried "
+                       "along from the nearest DEM data, so check its depths.")
         if n_unconn:
             self._warn("{} lateral(s) have no collector downstream; the low ground they "
                        "drain to needs its own submain or outlet.".format(n_unconn))
@@ -1150,6 +1224,7 @@ class DrainageLayout:
         return net
 
 
-def run_layout(dem, valid, grid, rings, outlet, params, progress=None, cancel=None):
+def run_layout(dem, valid, grid, rings, outlet, params, progress=None, cancel=None,
+               mains=None):
     return DrainageLayout(dem, valid, grid, rings, outlet, params,
-                          progress=progress, cancel=cancel).run()
+                          progress=progress, cancel=cancel, mains=mains).run()

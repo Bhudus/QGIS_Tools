@@ -20,8 +20,9 @@ Requires QGIS 3.34 LTR or newer. Uses only QGIS, GDAL and numpy.
 ```python
 processing.run("drainlayout:subsurfacedrainlayout", {
     "DEM": "dem.tif", "FIELD": "field.gpkg", "OUTLET": "612345.0,4441234.0 [EPSG:26916]",
+    "MAIN": "my_main.gpkg",   # optional
     "SPACING": 80, "PATTERN": 1, "ORIENTATION": 1, "SHAPE": 1,
-    "NETWORK": "TEMPORARY_OUTPUT", "LINE_IDS": "TEMPORARY_OUTPUT"})
+    "NETWORK": "TEMPORARY_OUTPUT", "SURFACE_LAYOUT": "TEMPORARY_OUTPUT"})
 ```
 
 ## Inputs
@@ -30,11 +31,12 @@ processing.run("drainlayout:subsurfacedrainlayout", {
 |---|---|
 | Elevation (DEM) | Any GDAL raster in a **projected** CRS (metres or feet). LiDAR DEMs at 0.5–3 m work well. |
 | Field boundary | Polygon layer. All features are merged; holes (waterways, buildings) are excluded. |
-| Outlet location | Click on the map. It can sit just outside the field; the main is extended to it. |
+| Outlet location | Click on the map. It can sit just outside the field; the main is extended to it. Optional when a main line is given. |
+| Main line(s) | Optional line layer with your own main, and any submains. Leave empty to route the main automatically (see below). |
 | Design units | Feet (default) or metres, for spacing, cover, depths and all outputs. |
 | Lateral spacing | In design units. Default 80 ft. |
 | Layout pattern | *Parallel / gridiron* or *Herringbone* (see below). |
-| Lateral orientation | *Across the slope* (near parallel to contours) or *Down the slope* (near perpendicular). |
+| Lateral orientation | *Down the slope* (near perpendicular to contours; default) or *Across the slope* (near parallel). |
 | Lateral shape | *Straight* (default) or *Contour-following*. |
 | Parallelism | Contour-following laterals only, 0–1 (default 0.9). Steers each lateral to run parallel to its neighbour at exactly one spacing; 0 follows the terrain freely, 1 makes every lateral an offset of its neighbour. |
 | Minimum cover, maximum depth | Ground to pipe invert. Defaults 2.5 ft and 6 ft. |
@@ -53,6 +55,16 @@ a branch must be to get a submain.
    laterals follow the field's shape rather than LiDAR micro-relief. The fall
    line and contour direction are taken from the smoothed surface.
 2. **Collectors.**
+   - *Your own main*: if you supply a main line layer, the line with an end
+     nearest the outlet is the main and flows to that end; every other line is
+     a submain that flows to its end nearest the main (or another submain) and
+     joins it there. Direction of digitizing doesn't matter, and multipart
+     lines are split into their parts. Lines may run outside the field, e.g.
+     out to a ditch; where they leave the DEM, ground is carried along from the
+     nearest DEM data and you're warned. If no outlet is given, the lowest end
+     of the lines is the outlet. Laterals are then laid around your main as
+     usual; the pattern only sets how they leave it (herringbone angle for
+     straight laterals).
    - *Herringbone*: a priority-flood from the outlet builds the drainage tree
      of the field. The main follows its largest branch (the thalweg); branches
      draining more than the submain threshold become submains. Mains end where
@@ -112,7 +124,7 @@ Flags:
   threshold.
 - `does not reach the outlet` — drains into an unconnected lateral.
 
-A second layer, **Line IDs**, holds the same lines with only the `id`
+A second layer, **Surface Layout**, holds the same lines with only the `id`
 field, as input for the Illini Drainage Tools. Lines run upstream to
 downstream and connect end to end; save it as a shapefile if needed.
 
