@@ -1,0 +1,15 @@
+[general]
+name=DRAINMOD_Weather_Files
+qgisMinimumVersion=3.16
+description=Click a point on the map to download Daymet daily precipitation and min/max temperature and write DRAINMOD weather files (.RAI, .TEM).
+about=Uses the ORNL DAAC Daymet Single Pixel Extraction API (North America, 1980 to present). For the clicked point it writes daily precipitation (mm) and Tmax/Tmin (deg C) as .wea text files, and converts them to DRAINMOD hourly rainfall (.RAI) and daily temperature (.TEM) files. Leap-year Dec 31 (omitted by Daymet) is filled with zero rainfall and Dec 30 temperatures. Requires internet access.
+version=2.0
+author=Richard Cooke
+email=raccooke@gmail.com
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+category=Web
+tags=daymet,drainmod,weather,climate,precipitation,temperature,drainage,hydrology
+experimental=False
+supportsQt6=True
