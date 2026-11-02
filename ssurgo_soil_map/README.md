@@ -18,7 +18,7 @@ Requires QGIS 3.22 or newer and an internet connection.
    - **Vector → SSURGO Soil Map → Get Soil Map for Polygons…**
    - The soil-layers toolbar button.
    - In the Processing Toolbox, **SSURGO Soil Map → Soils → Get soil map for polygons (SSURGO)**.
-3. Pick the input layer and choose what to label the soils with.
+3. Pick the input layer and choose what to label the soils with: the soil name, the map unit symbol, both, or the series name only (e.g. Drummer).
 4. Under **Soil map**, click **…**, choose **Save to File**, and pick a `.shp` file name.
 5. Click **Run**.
 
@@ -46,6 +46,7 @@ The traced field is a temporary layer. To keep it, save the **Field boundary out
 |---|---|
 | mukey, musym | Map unit key and map unit symbol |
 | muname | Soil name, without the slope or flooding phase |
+| series | First word of the soil name, the series (e.g. Drummer, Sawmill) |
 | compname | Dominant component (soil series) |
 | drainage | Drainage class |
 | hydgrp | Hydrologic soil group |

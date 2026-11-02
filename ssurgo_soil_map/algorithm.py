@@ -53,13 +53,28 @@ LABEL_CHOICES = [
     ("Soil name (map unit name)", '"muname"'),
     ("Map unit symbol", '"musym"'),
     ("Symbol and soil name", "\"musym\" || '\\n' || \"muname\""),
+    ("Series name only (first word, e.g. Drummer)", '"series"'),
 ]
+
+# Series names that are two words, so "Du Page silt loam" gives "Du Page", not "Du".
+_TWO_WORD_PREFIXES = {"du", "la", "le", "de", "del", "el", "st.", "mt.", "port", "high"}
+
+
+def series_name(muname):
+    """First word of the soil name: "Drummer silty clay loam, 0 to 2 percent slopes" -> "Drummer"."""
+    words = (muname or "").split(",")[0].split()
+    if not words:
+        return None
+    if words[0].lower() in _TWO_WORD_PREFIXES and len(words) > 1:
+        return " ".join(words[:2])
+    return words[0]
 
 # Shapefile field names are limited to 10 characters.
 OUTPUT_FIELDS = [
     ("mukey", "str", 12, 0),
     ("musym", "str", 12, 0),
     ("muname", "str", 254, 0),
+    ("series", "str", 60, 0),
     ("compname", "str", 60, 0),
     ("drainage", "str", 40, 0),
     ("hydgrp", "str", 6, 0),
@@ -236,7 +251,8 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
         return self.tr(
             "Clips USDA-NRCS SSURGO soil map units (the data shown in Web Soil Survey) "
             "to each input polygon and returns them as a polygon layer labeled with the soil name.\n\n"
-            "Fields: map unit key, symbol and soil name; dominant component; drainage class; "
+            "Fields: map unit key, symbol and soil name; series (first word of the soil name, "
+            "e.g. Drummer); dominant component; drainage class; "
             "hydrologic group; and acres.\n\n"
             "Save the output as a .shp file to get a shapefile. A .qml style file with the same name is "
             "written next to it so the colors and labels come back whenever the shapefile is opened.\n\n"
@@ -339,6 +355,7 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
                     r.get("mukey"),
                     r.get("musym"),
                     (r.get("muname") or "").split(",")[0].strip() or None,  # drop slope/flooding phase
+                    series_name(r.get("muname")),
                     r.get("compname"),
                     r.get("drainagecl"),
                     r.get("hydgrp"),
