@@ -1,0 +1,23 @@
+[general]
+name=SSURGO Soil Map
+qgisMinimumVersion=3.22
+supportsQt6=True
+description=Clips USDA SSURGO soil map units to your polygons and saves them as a labeled soil map layer.
+version=1.4.0
+changelog=1.4.0 - Trace a field on the map; optional bold field boundary outline on the soil map.
+    1.3.0 - Removed the Illinois productivity index fields.
+    1.2.0 - Fewer output fields; added Illinois productivity indexes.
+    1.1.0 - Soil names stop at the first comma (no slope or flooding phase).
+    1.0.0 - First release: SSURGO map units clipped to field polygons, labeled by soil name.
+author=Richard Cooke
+email=raccooke@gmail.com
+about=Give it a field boundary (shapefile or any polygon layer), or trace one by clicking on the map. It sends each polygon to USDA-NRCS Soil Data Access, the database behind Web Soil Survey, and returns the soil map units clipped to the boundary with map unit symbol, soil name, dominant component, drainage class, hydrologic group and acres. The output is labeled with the soil name, can be saved as a shapefile, and can include the field boundary as a bold outline. Requires an internet connection.
+tags=soil,ssurgo,web soil survey,usda,nrcs,agriculture,field
+category=Vector
+icon=icon.png
+experimental=False
+deprecated=False
+hasProcessingProvider=yes
+homepage=https://bhudus.github.io/QGIS_Tools/
+repository=https://github.com/Bhudus/QGIS_Tools
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
