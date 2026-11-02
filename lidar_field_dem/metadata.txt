@@ -7,10 +7,11 @@ about=Given a field boundary, finds the LiDAR covering it and builds a bare-eart
     USGS 3DEP (any U.S. state): streams the field's points from the public AWS Entwine Point Tile archive.
     Ground points are triangulated and rasterized with PDAL, then clipped to the field plus a 100 ft margin with GDAL.
     Requires the PDAL command-line program (for example from the OSGeo4W installer).
-version=0.2.1
+version=0.2.2
 author=Richard Cooke
 email=raccooke@gmail.com
-changelog=0.2.1 - Read LZMA-compressed ISGS tile indexes (e.g. Champaign 2008).
+changelog=0.2.2 - Trace the field boundary on the map from the LiDAR Field DEM window.
+    0.2.1 - Read LZMA-compressed ISGS tile indexes (e.g. Champaign 2008).
     0.2.0 - Find collections window and Processing tool listing the LiDAR years available for a field.
     0.1.9 - Use "LiDAR" spelling throughout the interface and docs.
     0.1.8 - Automatic source (default); fields outside Illinois always use USGS 3DEP.

@@ -39,6 +39,11 @@ class LidarFieldDemPlugin:
         self._toolbar_action = a_find
 
     def unload(self):
+        dlg = getattr(self, "_dlg", None)
+        if dlg is not None:
+            dlg.close()
+            dlg.deleteLater()
+            self._dlg = None
         for a in self.actions:
             self.iface.removePluginRasterMenu(MENU, a)
         if getattr(self, "_toolbar_action", None) is not None:
@@ -51,8 +56,13 @@ class LidarFieldDemPlugin:
 
     def open_collections(self):
         from .dialog import CollectionsDialog
-        dlg = CollectionsDialog(self.iface, ALG_ID, ICON)
-        dlg.exec_()
+        dlg = getattr(self, "_dlg", None)
+        if dlg is None:
+            dlg = CollectionsDialog(self.iface, ALG_ID, ICON)
+            self._dlg = dlg
+        dlg.show()          # non-modal, so the map stays usable for tracing
+        dlg.raise_()
+        dlg.activateWindow()
 
     def run_dem(self):
         import processing

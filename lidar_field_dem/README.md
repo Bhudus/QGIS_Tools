@@ -22,11 +22,21 @@ Processing: keep ground points (ASPRS class 2 by default) → crop → reproject
 ## Finding the available collection years
 The toolbar window lists every LiDAR collection that covers the field:
 
-1. Choose the field layer (tick *Selected features only* if needed) and click **Find collections**.
+1. Choose the field layer (tick *Selected features only* if needed), or click **Trace on map…** to draw the boundary, then click **Find collections**.
 2. The table shows source (ISGS / USGS 3DEP), year, collection, native cell size, the share of the field it covers, quality level and status. Newest first.
 3. Select a row and click **Build DEM with selected…** (or double-click it). The DEM dialog opens with the source and year filled in; adjust anything else and run.
 
 The same list is available as a Processing tool, **LiDAR Field DEM → LiDAR → Available LiDAR collections for a field**, which writes a table you can use in models and batch runs. Both DEM and listing tools also work from the Processing Toolbox.
+
+## Tracing a field boundary on the map
+No boundary file? Click **Trace on map…** in the toolbar window. The window steps aside while you draw:
+
+- **Left-click** each corner of the field. Snapping follows the project's snapping settings.
+- **Backspace** removes the last corner.
+- **Right-click** or **Enter** finishes (at least 3 corners).
+- **Esc** cancels.
+
+The outline is added to the map as a temporary layer, **Traced field boundary**, with its area in acres, and is selected as the field. To keep it, right-click the layer and choose **Export → Save Features As…**.
 
 ## Parameters
 | Parameter | Default | Notes |
