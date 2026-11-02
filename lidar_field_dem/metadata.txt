@@ -1,0 +1,33 @@
+[general]
+name=LiDAR Field DEM
+qgisMinimumVersion=3.22
+description=Bare-earth DEM for a field boundary from Illinois (ISGS ILHMP) or USGS 3DEP LiDAR.
+about=Given a field boundary, finds the LiDAR covering it and builds a bare-earth DEM clipped to the field.
+    ISGS (Illinois Height Modernization Program): queries the ISGS collection service, reads the collection tile index, and pulls only the needed LAS tiles out of the county-wide zip using HTTP range requests.
+    USGS 3DEP (any U.S. state): streams the field's points from the public AWS Entwine Point Tile archive.
+    Ground points are triangulated and rasterized with PDAL, then clipped to the field plus a 100 ft margin with GDAL.
+    Requires the PDAL command-line program (for example from the OSGeo4W installer).
+version=0.2.1
+author=Richard Cooke
+email=raccooke@gmail.com
+changelog=0.2.1 - Read LZMA-compressed ISGS tile indexes (e.g. Champaign 2008).
+    0.2.0 - Find collections window and Processing tool listing the LiDAR years available for a field.
+    0.1.9 - Use "LiDAR" spelling throughout the interface and docs.
+    0.1.8 - Automatic source (default); fields outside Illinois always use USGS 3DEP.
+    0.1.7 - Cell size optional; blank uses the native cell size of the source DEM.
+    0.1.6 - DEM extends 100 ft beyond the field (adjustable) for outlets outside the field.
+    0.1.5 - Default output CRS EPSG:3435/3436 in Illinois; PDAL uses the LAS file CRS (fixes CRS error).
+    0.1.4 - Buffer entered in feet (default 50 ft); default cell size 20 ft.
+    0.1.3 - Fix empty default_srs for tile indexes without an EPSG code.
+    0.1.2 - DEM cell size entered in feet (default 3 ft).
+    0.1.1 - Fix HTTP header reading (rawHeaderPairs not available).
+    0.1.0 - First release: ISGS and USGS 3DEP sources, TIN-based bare-earth DEM, tile cache.
+tags=LiDAR,dem,elevation,pdal,illinois,isgs,3dep,agriculture,field,terrain
+category=Analysis
+icon=icon.svg
+experimental=True
+deprecated=False
+hasProcessingProvider=yes
+homepage=https://bhudus.github.io/QGIS_Tools/
+repository=https://github.com/Bhudus/QGIS_Tools
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
