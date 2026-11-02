@@ -1,0 +1,22 @@
+[general]
+name=DRAINMOD Climate-Scenario Weather Files
+qgisMinimumVersion=3.16
+description=Creates DRAINMOD weather files (.RAI, .TEM) for future climate scenarios from downscaled CMIP6 data (NASA NEX-GDDP-CMIP6, LOCA2, or any NetCDF/THREDDS source).
+version=0.3.0
+author=Richard Cooke
+email=raccooke@gmail.com
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+about=Pick a location (or a point layer), choose GCMs and SSP scenarios, and the plugin extracts daily precipitation and maximum/minimum temperature for the grid cell, converts model calendars (no-leap, 360-day) to real dates, converts units, and writes ready-to-use DRAINMOD .RAI (hourly rainfall) and .TEM (daily Tmax/Tmin) files, identical to the output of DRAINMOD's weather utility, plus .wea text files, plus an optional Hargreaves PET (.PET) file and an ensemble summary. Sources: NASA NEX-GDDP-CMIP6 via the NCCS THREDDS NetCDF Subset Service (no download of full files), LOCA2 regional files from UCSD, local NetCDF files, or any THREDDS NCSS endpoint.
+tags=drainmod,climate change,cmip6,loca2,nex-gddp,weather,precipitation,temperature,hydrology,drainage
+category=Plugins
+icon=icon.png
+experimental=True
+supportsQt6=True
+deprecated=False
+hasProcessingProvider=no
+changelog=0.3.0 Writes DRAINMOD .PET files (daily Hargreaves PET)
+  0.2.1 Option for Daymet-style leap years (add Dec 31 with 0 rain, Dec 30 temperatures)
+  0.2.0 Writes native .RAI/.TEM files (writer from DRAINMOD_Weather_Files by Richard Cooke); station ID; Qt6 support
+  0.1.0 First version
