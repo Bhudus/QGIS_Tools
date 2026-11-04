@@ -1,0 +1,20 @@
+[general]
+name=DRAINMOD Soil File Builder
+qgisMinimumVersion=3.16
+qgisMaximumVersion=4.99
+supportsQt6=True
+description=Click the map to build a DRAINMOD soil input (.soi) file from SSURGO data.
+about=Queries USDA-NRCS Soil Data Access for the map unit at a clicked point, combines SSURGO horizons into at most five layers, estimates the soil water characteristic with the van Genuchten equation from texture (Rosetta or Carsel & Parrish class averages, or the Rosetta 3 web service, optionally with the 33 and 1500 kPa water contents), and writes a DRAINMOD .soi file. Requires an internet connection.
+version=0.1.0
+author=Richard Cooke
+email=raccooke@gmail.com
+category=Plugins
+tags=drainmod,ssurgo,soil,hydrology,drainage,van genuchten
+experimental=True
+icon=icon.svg
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+deprecated=False
+hasProcessingProvider=no
+changelog=0.1.0 First version
