@@ -9,10 +9,11 @@ Requires QGIS 3.34 LTR or newer. Uses only QGIS, GDAL and numpy.
 
 ## Install
 
-1. In QGIS: **Plugins ▸ Manage and Install Plugins ▸ Install from ZIP**.
-2. Pick `subsurface_drain_layout.zip` and install. (Enable *Show also
+1. Download [`subsurface_drain_layout.zip`](https://github.com/Bhudus/QGIS_Tools/raw/main/subsurface_drain_layout/subsurface_drain_layout.zip).
+2. In QGIS: **Plugins ▸ Manage and Install Plugins ▸ Install from ZIP**.
+3. Pick `subsurface_drain_layout.zip` and install. (Enable *Show also
    experimental plugins* under Settings if QGIS hides it.)
-3. Run it from the toolbar button, **Plugins ▸ Subsurface Drainage**, or the
+4. Run it from the toolbar button, **Plugins ▸ Subsurface Drainage**, or the
    Processing Toolbox (*Subsurface drainage ▸ Subsurface drainage layout*). As
    a Processing algorithm it also works in the graphical modeler, in batch
    mode and from Python:

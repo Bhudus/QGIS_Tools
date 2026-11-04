@@ -14,10 +14,11 @@ Requires QGIS 3.34 LTR or newer. Uses only QGIS, GDAL and numpy.
 
 ## Install
 
-1. In QGIS: **Plugins ▸ Manage and Install Plugins ▸ Install from ZIP**.
-2. Pick `illini_subsurface_drain_layout.zip` and install. (Enable *Show also
+1. Download [`illini_subsurface_drain_layout.zip`](https://github.com/Bhudus/QGIS_Tools/raw/main/illini_subsurface_drain_layout/illini_subsurface_drain_layout.zip).
+2. In QGIS: **Plugins ▸ Manage and Install Plugins ▸ Install from ZIP**.
+3. Pick `illini_subsurface_drain_layout.zip` and install. (Enable *Show also
    experimental plugins* under Settings if QGIS hides it.)
-3. Run it from the toolbar button, **Plugins ▸ Illini Subsurface Drain Layout**,
+4. Run it from the toolbar button, **Plugins ▸ Illini Subsurface Drain Layout**,
    or the Processing Toolbox (*Illini subsurface drain layout*). As
    a Processing algorithm it also works in the graphical modeler, in batch
    mode and from Python:
