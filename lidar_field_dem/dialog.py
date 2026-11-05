@@ -18,9 +18,18 @@ from qgis.PyQt.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
 )
+import os
+import re
 from qgis.core import (
+    Qgis,
+    QgsApplication,
     QgsDistanceArea,
     QgsFeature,
+    QgsMessageLog,
+    QgsProcessingAlgRunnerTask,
+    QgsProcessingContext,
+    QgsRasterLayer,
+    QgsTask,
     QgsMapLayerProxyModel,
     QgsProcessingFeatureSourceDefinition,
     QgsProcessingFeedback,
@@ -28,14 +37,14 @@ from qgis.core import (
     QgsUnitTypes,
     QgsVectorLayer,
 )
-from qgis.gui import QgsMapLayerComboBox
+from qgis.gui import QgsFileWidget, QgsMapLayerComboBox
 
 from .algorithms.collections import field_to_wgs, list_collections
 from .trace_tool import TraceFieldTool
 
 SQ_M_PER_ACRE = 4046.8564224
 
-COLS = ["Source", "Year", "Collection", "Cell size", "Covers field", "Quality", "Status"]
+COLS = ["Source", "Year", "Collection", "LiDAR cell size", "Covers field", "Quality", "Status"]
 
 
 class _LogFeedback(QgsProcessingFeedback):
@@ -48,6 +57,38 @@ class _LogFeedback(QgsProcessingFeedback):
 
     def reportError(self, error, fatalError=False):  # noqa: N802
         self.messages.append("ERROR: " + error)
+
+
+LOG_TAG = "LiDAR Field DEM"
+
+
+class _JobFeedback(QgsProcessingFeedback):
+    """Feedback for a background DEM run: everything goes to the Log Messages panel."""
+
+    def __init__(self, name):
+        super().__init__()
+        self.name = name
+        self.errors = []
+
+    def _log(self, text, level):
+        QgsMessageLog.logMessage("[%s] %s" % (self.name, text), LOG_TAG, level)
+
+    def pushInfo(self, info):  # noqa: N802
+        self._log(info, Qgis.Info)
+        super().pushInfo(info)
+
+    def pushWarning(self, warning):  # noqa: N802
+        self._log(warning, Qgis.Warning)
+        super().pushWarning(warning)
+
+    def reportError(self, error, fatalError=False):  # noqa: N802
+        self.errors.append(error)
+        self._log(error, Qgis.Critical)
+        super().reportError(error, fatalError)
+
+
+def _safe_name(text):
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", text or "").strip("_") or "field"
 
 
 class CollectionsDialog(QDialog):
@@ -99,18 +140,41 @@ class CollectionsDialog(QDialog):
         self.status.setWordWrap(True)
         lay.addWidget(self.status)
 
+        bg = QHBoxLayout()
+        bg.addWidget(QLabel("Background run:"))
+        self.bg_fill = QCheckBox("Also fill sinks (Wang & Liu)")
+        bg.addWidget(self.bg_fill)
+        bg.addWidget(QLabel("Save to folder:"))
+        self.bg_folder = QgsFileWidget()
+        self.bg_folder.setStorageMode(QgsFileWidget.GetDirectory)
+        self.bg_folder.setToolTip("Leave blank for temporary layers")
+        try:
+            self.bg_folder.lineEdit().setPlaceholderText("blank = temporary layers")
+        except Exception:
+            pass
+        bg.addWidget(self.bg_folder, 1)
+        lay.addLayout(bg)
+
         bb = QDialogButtonBox()
         self.build_btn = bb.addButton("Build DEM with selected…", QDialogButtonBox.AcceptRole)
         self.build_btn.setEnabled(False)
         self.build_btn.clicked.connect(self.build)
         latest = bb.addButton("Build DEM (most recent)…", QDialogButtonBox.ActionRole)
         latest.clicked.connect(lambda: self.build(latest=True))
+        self.bg_btn = bb.addButton("Build in background", QDialogButtonBox.ActionRole)
+        self.bg_btn.setToolTip("Build the DEM as a background task with the default settings, "
+                               "using the selected collection (or the most recent). You can "
+                               "close this window and keep working; the DEM is added to the "
+                               "map when it is done.")
+        self.bg_btn.clicked.connect(self.build_background)
         bb.addButton(QDialogButtonBox.Close).clicked.connect(self.reject)
         lay.addWidget(bb)
 
         self.tool = None
         self._prev_tool = None
         self._tracing = False
+        self._find_task = None
+        self._jobs = {}                      # task -> (context, feedback, alg, layer, name)
 
     # ------------------------------------------------------------------
     # tracing a boundary on the map
@@ -225,21 +289,35 @@ class CollectionsDialog(QDialog):
         except RuntimeError as e:
             QMessageBox.warning(self, "LiDAR Field DEM", str(e))
             return
-        self.status.setText("Searching ISGS and USGS 3DEP…")
-        self.find_btn.setEnabled(False)
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        QApplication.processEvents()
-        fb = _LogFeedback()
+        if self._find_task is not None:
+            return                                   # a search is already running
         try:
             field_wgs = field_to_wgs(geoms, layer.crs(),
                                      QgsProject.instance().transformContext())
-            self.rows = list_collections(field_wgs, fb)
         except Exception as e:
-            self.rows = []
-            fb.messages.append("ERROR: %s" % e)
-        finally:
-            QApplication.restoreOverrideCursor()
-            self.find_btn.setEnabled(True)
+            QMessageBox.warning(self, "LiDAR Field DEM", str(e))
+            return
+        self.status.setText("Searching ISGS and USGS 3DEP in the background… "
+                            "(you can keep working)")
+        self.find_btn.setEnabled(False)
+        self._find_fb = _LogFeedback()
+        self._find_task = QgsTask.fromFunction(
+            "LiDAR Field DEM: finding collections", self._find_run, field_wgs,
+            self._find_fb, on_finished=self._find_done, flags=QgsTask.CanCancel)
+        QgsApplication.taskManager().addTask(self._find_task)
+
+    @staticmethod
+    def _find_run(task, field_wgs, fb):
+        return list_collections(field_wgs, fb)
+
+    def _find_done(self, exception, rows=None):
+        fb = self._find_fb
+        self._find_task = None
+        self.find_btn.setEnabled(True)
+        if exception is not None:
+            rows = []
+            fb.messages.append("ERROR: %s" % exception)
+        self.rows = rows or []
         self._fill()
         errs = [m for m in fb.messages if m.startswith("ERROR")]
         n_isgs = sum(1 for r in self.rows if r["source"] == "ISGS")
@@ -305,3 +383,95 @@ class CollectionsDialog(QDialog):
         import processing
         self.accept()
         processing.execAlgorithmDialog(self.alg_id, params)
+
+    # ------------------------------------------------------------------
+    # background DEM run
+    def build_background(self):
+        try:
+            layer, geoms = self._field_geoms()
+        except RuntimeError as e:
+            QMessageBox.warning(self, "LiDAR Field DEM", str(e))
+            return
+        alg = QgsApplication.processingRegistry().createAlgorithmById(self.alg_id)
+        if alg is None:
+            QMessageBox.warning(self, "LiDAR Field DEM", "The DEM tool is not available.")
+            return
+
+        # snapshot the field, so later edits or selection changes don't affect the run
+        snap = QgsVectorLayer("Polygon", layer.name(), "memory")
+        snap.setCrs(layer.crs())
+        feats = []
+        for g in geoms:
+            f = QgsFeature()
+            f.setGeometry(g)
+            feats.append(f)
+        snap.dataProvider().addFeatures(feats)
+
+        r = self._selected()
+        params = {"INPUT": snap, "SOURCE": 0}
+        label = "most recent"
+        if r is not None and r["usable"]:
+            params["SOURCE"] = 1 if r["source"] == "ISGS" else 2
+            params["YEAR"] = r["year"]
+            label = "%s %s" % (r["source"], r["year"])
+        name = "%s (%s)" % (layer.name(), label)
+
+        folder = (self.bg_folder.filePath() or "").strip()
+        if folder:
+            if not os.path.isdir(folder):
+                QMessageBox.warning(self, "LiDAR Field DEM", "Folder not found:\n%s" % folder)
+                return
+            base = os.path.join(folder, "%s_%s_dem" % (_safe_name(layer.name()),
+                                                       _safe_name(label)))
+            params["OUTPUT"] = base + ".tif"
+            if self.bg_fill.isChecked():
+                params["FILLED"] = base + "_filled.tif"
+        else:
+            params["OUTPUT"] = "TEMPORARY_OUTPUT"
+        params["FILL"] = self.bg_fill.isChecked()
+
+        context = QgsProcessingContext()
+        context.setProject(QgsProject.instance())
+        feedback = _JobFeedback(name)
+        task = QgsProcessingAlgRunnerTask(alg, params, context, feedback)
+        task.setDescription("LiDAR Field DEM: %s" % name)
+        self._jobs[task] = (context, feedback, alg, snap, name)
+        task.executed.connect(lambda ok, results, t=task: self._job_done(t, ok, results))
+        QgsApplication.taskManager().addTask(task)
+        self.iface.messageBar().pushInfo(
+            LOG_TAG, "Building the DEM for %s in the background. Progress is in the task bar "
+                     "at the bottom of the window." % name)
+        self.status.setText("Started a background DEM run for %s. You can close this window, "
+                            "or start another field." % name)
+
+    def _job_done(self, task, ok, results):
+        job = self._jobs.pop(task, None)
+        if job is None:
+            return
+        context, feedback, _alg, _snap, name = job
+        bar = self.iface.messageBar()
+        if not ok:
+            why = feedback.errors[-1] if feedback.errors else "canceled or failed"
+            bar.pushMessage(LOG_TAG, "DEM for %s failed: %s  (details: View > Panels > Log "
+                                     "Messages, '%s' tab)" % (name, why, LOG_TAG),
+                            Qgis.Critical, 0)
+            return
+        added = []
+        for key, title in (("OUTPUT", "Bare-earth DEM"), ("FILLED", "Filled DEM (Wang & Liu)")):
+            path = (results or {}).get(key)
+            if path and os.path.exists(path):
+                rl = QgsRasterLayer(path, "%s - %s" % (title, name))
+                if rl.isValid():
+                    QgsProject.instance().addMapLayer(rl)
+                    added.append(title)
+        bar.pushMessage(LOG_TAG, "DEM for %s is done: %s added to the map."
+                        % (name, " and ".join(added) or "no layer"), Qgis.Success, 10)
+
+    def cancel_jobs(self):
+        if self._find_task is not None:
+            self._find_task.cancel()
+        for t in list(self._jobs):
+            try:
+                t.cancel()
+            except Exception:
+                pass

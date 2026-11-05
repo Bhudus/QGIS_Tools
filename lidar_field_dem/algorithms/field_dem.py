@@ -48,6 +48,7 @@ from qgis.core import (
     QgsGeometry,
     QgsProcessing,
     QgsProcessingAlgorithm,
+    QgsProcessingContext,
     QgsProcessingException,
     QgsProcessingParameterBoolean,
     QgsProcessingParameterCrs,
@@ -286,6 +287,7 @@ def il_source_epsg(prj_text, zone):
     return IL_EAST_OUT if zone == "east" else IL_WEST_OUT
 
 
+DEFAULT_CELL_FACTOR = 10       # blank cell size = 10 x the LiDAR's native cell size
 USGS_3DEP_NATIVE_M = 1.0      # USGS 3DEP standard bare-earth DEM is 1 m
 
 
@@ -426,6 +428,9 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
     OUT_CRS = "OUT_CRS"
     Z_UNITS = "Z_UNITS"
     KEEP_LAZ = "KEEP_LAZ"
+    FILL = "FILL"
+    MINSLOPE = "MINSLOPE"
+    FILLED = "FILLED"
     PDAL = "PDAL"
     OUTPUT = "OUTPUT"
 
@@ -463,10 +468,13 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
             "USGS 3DEP: streams points for the field from the public AWS EPT archive "
             "(works in any state with 3DEP coverage).\n\n"
             "Collection year: leave blank for the most recent; the log lists the years found.\n"
-            "Cell size is in feet (US survey). Leave it blank to use the native resolution of "
-            "the source's published DEM: the ISGS DTM image service cell size for that collection "
-            "(e.g. 2 ft for Champaign 2020), or 1 m for USGS 3DEP. If ISGS doesn't publish one, "
-            "it is estimated from the LiDAR point spacing.\n"
+            "Cell size is in feet (US survey). Leave it blank to use 10 times the LiDAR's native "
+            "cell size: the ISGS DTM cell size for that collection (2 ft for Champaign 2020, so "
+            "20 ft), or 1 m for USGS 3DEP (so 32.8 ft). If ISGS doesn't publish one, the native "
+            "size is estimated from the LiDAR point spacing.\n"
+            "Fill sinks (Wang & Liu): also writes a DEM in which every depression is filled so "
+            "that each cell drains to the DEM's edge. Minimum slope (degrees) keeps a slight "
+            "gradient across filled areas; 0 gives flat fills.\n"
             "Extend DEM beyond field (ft, default 100): the DEM covers the field plus this "
             "distance, so tile outlets and waterways can be placed outside the field.\n"
             "Interpolation buffer (ft): extra LiDAR data read beyond that extent so the DEM "
@@ -484,7 +492,7 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
             self.YEAR, self.tr("Collection year (blank = most recent)"),
             defaultValue="", optional=True))
         self.addParameter(QgsProcessingParameterNumber(
-            self.RESOLUTION, self.tr("DEM cell size (feet, blank = native resolution of the source DEM)"),
+            self.RESOLUTION, self.tr("DEM cell size (feet, blank = 10 x the LiDAR's native cell size)"),
             QgsProcessingParameterNumber.Double, defaultValue=None, optional=True, minValue=0.1))
         self.addParameter(QgsProcessingParameterNumber(
             self.EXTEND, self.tr("Extend DEM beyond field boundary (feet)"),
@@ -503,11 +511,20 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterBoolean(
             self.KEEP_LAZ, self.tr("Also save clipped ground points (.laz)"),
             defaultValue=False))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.FILL, self.tr("Also produce a DEM with sinks filled (Wang & Liu)"),
+            defaultValue=False))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.MINSLOPE, self.tr("Minimum slope across filled sinks (degrees, 0 = flat)"),
+            QgsProcessingParameterNumber.Double, defaultValue=0.06, minValue=0.0, maxValue=5.0))
         self.addParameter(QgsProcessingParameterString(
             self.PDAL, self.tr("PDAL executable (blank = auto-detect)"),
             defaultValue="", optional=True))
         self.addParameter(QgsProcessingParameterRasterDestination(
             self.OUTPUT, self.tr("Bare-earth DEM")))
+        self.addParameter(QgsProcessingParameterRasterDestination(
+            self.FILLED, self.tr("Filled DEM (Wang & Liu) [blank = next to the DEM]"),
+            optional=True, createByDefault=False))
 
     # ------------------------------------------------------------------
     def processAlgorithm(self, parameters, context, feedback):
@@ -529,6 +546,8 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
         out_crs = self.parameterAsCrs(parameters, self.OUT_CRS, context)
         z_target_m = FT_US if self.parameterAsEnum(parameters, self.Z_UNITS, context) == 0 else 1.0
         keep_laz = self.parameterAsBoolean(parameters, self.KEEP_LAZ, context)
+        do_fill = self.parameterAsBoolean(parameters, self.FILL, context)
+        min_slope = self.parameterAsDouble(parameters, self.MINSLOPE, context)
         pdal_exe = find_pdal(self.parameterAsString(parameters, self.PDAL, context).strip())
         out_path = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
         feedback.pushInfo("PDAL: %s" % pdal_exe)
@@ -592,12 +611,14 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
         if out_crs.isGeographic():
             raise QgsProcessingException("Choose a projected output CRS (not lat/long).")
         if res_m is None:
-            res_m = pts.get("native_res_m")
-            if not res_m:
+            native = pts.get("native_res_m")
+            if not native:
                 raise QgsProcessingException(
-                    "Could not determine the source's native cell size; enter a DEM cell size.")
-            feedback.pushInfo("Cell size: %.2f ft (%.2f m) - %s" % (
-                res_m / FT_US, res_m, pts.get("native_res_note", "native")))
+                    "Could not determine the LiDAR's native cell size; enter a DEM cell size.")
+            res_m = DEFAULT_CELL_FACTOR * native
+            feedback.pushInfo("Cell size: %.2f ft (%.2f m) - %d x the native %.2f ft; %s" % (
+                res_m / FT_US, res_m, DEFAULT_CELL_FACTOR, native / FT_US,
+                pts.get("native_res_note", "native")))
         else:
             feedback.pushInfo("Cell size: %.2f ft (%.2f m) - user setting" % (res_m / FT_US, res_m))
         res = res_m / upm
@@ -662,16 +683,87 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
         # ---- clip to exact field ----
         feedback.setProgressText("Clipping DEM to field boundary")
         mask = self._write_mask(field_out, out_crs, work, context)
-        processing.run("gdal:cliprasterbymasklayer", {
-            "INPUT": raw_dem, "MASK": mask,
-            "SOURCE_CRS": out_crs, "TARGET_CRS": out_crs,
-            "NODATA": -9999, "ALPHA_BAND": False, "CROP_TO_CUTLINE": True,
-            "KEEP_RESOLUTION": True, "OPTIONS": "COMPRESS=DEFLATE|TILED=YES",
-            "DATA_TYPE": 6, "OUTPUT": out_path,
-        }, context=context, feedback=feedback, is_child_algorithm=True)
+        self._clip(raw_dem, mask, out_crs, out_path, context, feedback)
+        results = {self.OUTPUT: out_path}
+
+        # ---- optional: sinks filled (Wang & Liu) ----
+        if do_fill:
+            feedback.setProgressText("Filling sinks (Wang & Liu)")
+            filled_path = self.parameterAsOutputLayer(parameters, self.FILLED, context)
+            auto_path = not filled_path
+            if auto_path:
+                base, ext = os.path.splitext(out_path)
+                filled_path = base + "_filled" + (ext or ".tif")
+            filled_raw = os.path.join(work, "dem_buffered_filled.tif")
+            z_per_xy = upm / z_target_m      # elevation units per horizontal unit
+            self._fill_raster(raw_dem, filled_raw, res, min_slope, z_per_xy, feedback,
+                              xy_unit_m=upm, z_unit_m=z_target_m)
+            self._clip(filled_raw, mask, out_crs, filled_path, context, feedback)
+            results[self.FILLED] = filled_path
+            if auto_path:
+                details = QgsProcessingContext.LayerDetails(
+                    "Filled DEM (Wang & Liu)", context.project(), self.FILLED)
+                context.addLayerToLoadOnCompletion(filled_path, details)
+            feedback.pushInfo("Filled DEM: %s" % filled_path)
 
         feedback.pushInfo("Done. Source: %s" % pts["label"])
-        return {self.OUTPUT: out_path}
+        return results
+
+    @staticmethod
+    def _clip(src, mask, crs, dest, context, feedback):
+        processing.run("gdal:cliprasterbymasklayer", {
+            "INPUT": src, "MASK": mask,
+            "SOURCE_CRS": crs, "TARGET_CRS": crs,
+            "NODATA": -9999, "ALPHA_BAND": False, "CROP_TO_CUTLINE": True,
+            "KEEP_RESOLUTION": True, "OPTIONS": "COMPRESS=DEFLATE|TILED=YES",
+            "DATA_TYPE": 6, "OUTPUT": dest,
+        }, context=context, feedback=feedback, is_child_algorithm=True)
+
+    @staticmethod
+    def _fill_raster(src, dest, cell, min_slope, z_per_xy, feedback, xy_unit_m=FT_US,
+                     z_unit_m=FT_US):
+        """Fill sinks in the buffered DEM (its outer edge and NoData act as outlets)."""
+        import numpy as np
+        from osgeo import gdal
+        from .sinkfill import fill_sinks_wang_liu
+
+        ds = gdal.Open(src)
+        band = ds.GetRasterBand(1)
+        nd = band.GetNoDataValue()
+        z = band.ReadAsArray().astype(np.float64)
+        mask = ~np.isfinite(z)
+        if nd is not None:
+            mask |= (z == nd)
+        z[mask] = -9999.0
+        feedback.pushInfo("Filling sinks (Wang & Liu, minimum slope %g deg) over %d cells ..."
+                          % (min_slope, int((~mask).sum())))
+        filled = fill_sinks_wang_liu(
+            z, mask, cell, min_slope_deg=min_slope, z_per_xy=z_per_xy,
+            progress=lambda f: feedback.setProgress(80 + int(18 * f)),
+            is_canceled=feedback.isCanceled)
+        depth = np.where(mask, 0.0, filled - z)
+        raised = depth > 1e-6
+        if raised.any():
+            vol_m3 = float(depth.sum()) * z_unit_m * (cell * xy_unit_m) ** 2
+            zu = "ft" if abs(z_unit_m - FT_US) < 1e-6 else "m"
+            feedback.pushInfo("  %d cells raised; deepest fill %.2f %s; filled volume "
+                              "%.0f cu yd (%.0f m3)"
+                              % (int(raised.sum()), float(depth.max()), zu,
+                                 vol_m3 / 0.764554857984, vol_m3))
+        else:
+            feedback.pushInfo("  no sinks found")
+        filled[mask] = -9999.0
+        drv = gdal.GetDriverByName("GTiff")
+        out = drv.Create(dest, ds.RasterXSize, ds.RasterYSize, 1, gdal.GDT_Float32,
+                         ["COMPRESS=DEFLATE", "TILED=YES"])
+        out.SetGeoTransform(ds.GetGeoTransform())
+        out.SetProjection(ds.GetProjection())
+        ob = out.GetRasterBand(1)
+        ob.SetNoDataValue(-9999.0)
+        ob.WriteArray(filled.astype(np.float32))
+        ob.FlushCache()
+        out = None
+        ds = None
 
     # ------------------------------------------------------------------
     @staticmethod

@@ -41,6 +41,7 @@ class LidarFieldDemPlugin:
     def unload(self):
         dlg = getattr(self, "_dlg", None)
         if dlg is not None:
+            dlg.cancel_jobs()
             dlg.close()
             dlg.deleteLater()
             self._dlg = None

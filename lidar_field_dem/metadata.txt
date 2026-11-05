@@ -5,12 +5,15 @@ description=Bare-earth DEM for a field boundary from Illinois (ISGS ILHMP) or US
 about=Given a field boundary, finds the LiDAR covering it and builds a bare-earth DEM clipped to the field.
     ISGS (Illinois Height Modernization Program): queries the ISGS collection service, reads the collection tile index, and pulls only the needed LAS tiles out of the county-wide zip using HTTP range requests.
     USGS 3DEP (any U.S. state): streams the field's points from the public AWS Entwine Point Tile archive.
-    Ground points are triangulated and rasterized with PDAL, then clipped to the field plus a 100 ft margin with GDAL.
+    Ground points are triangulated and rasterized with PDAL, then clipped to the field plus a 100 ft margin with GDAL. Optionally also writes a DEM with sinks filled by the Wang & Liu (2006) method.
     Requires the PDAL command-line program (for example from the OSGeo4W installer).
-version=0.2.2
+version=0.3.2
 author=Richard Cooke
 email=raccooke@gmail.com
-changelog=0.2.2 - Trace the field boundary on the map from the LiDAR Field DEM window.
+changelog=0.3.2 - Default minimum slope across filled sinks is 0.06 degrees.
+    0.3.1 - Find collections and Build in background run as QGIS background tasks.
+    0.3.0 - Optional DEM with sinks filled (Wang & Liu); blank cell size = 10 x the LiDAR native cell size.
+    0.2.2 - Trace the field boundary on the map from the LiDAR Field DEM window.
     0.2.1 - Read LZMA-compressed ISGS tile indexes (e.g. Champaign 2008).
     0.2.0 - Find collections window and Processing tool listing the LiDAR years available for a field.
     0.1.9 - Use "LiDAR" spelling throughout the interface and docs.
