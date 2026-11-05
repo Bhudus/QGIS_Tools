@@ -8,7 +8,7 @@ hasProcessingProvider=yes
 changelog=1.2.0 - Added two-point tool: click a start and end point to get the angle between them (with snapping).
     1.1.0 - Added Processing algorithm "Segment angles" that writes each segment's angle to a field.
 author=Richard Cooke
-email=bhudus@yahoo.com
+email=raccooke@gmail.com
 tracker=https://github.com/Bhudus/QGIS_Tools/issues
 repository=https://github.com/Bhudus/QGIS_Tools
 homepage=https://bhudus.github.io/QGIS_Tools/

@@ -95,7 +95,13 @@
   .card h3 { font-size: 1.2rem; margin: 2px 0 0; line-height: 1.3; }
   .card-body { padding: 16px 20px 18px; display: flex; flex-direction: column; flex: 1; }
   .card p { margin: 0 0 14px; color: var(--muted); font-size: .97rem; flex: 1; }
-  .card .go { font-weight: 700; color: var(--blue); font-size: .93rem; text-decoration: underline; }
+  .card { position: relative; }
+  .card-link { color: inherit; text-decoration: none; }
+  .card-link::after { content: ""; position: absolute; inset: 0; }
+  .card-link:hover { color: inherit; }
+  .card .links { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+  .card .go { position: relative; z-index: 1; font-weight: 700; color: var(--blue); font-size: .93rem; text-decoration: underline; }
+  .card .go:hover { color: var(--navy-btn); }
 
   /* About / contact panels */
   .panel { background: var(--panel); padding: 28px 30px; border-left: 6px solid var(--orange); }
@@ -158,61 +164,61 @@
   <section id="tools">
     <div class="wrap">
       <h2>Tools</h2>
-      <p class="lede">QGIS plugins for drainage and terrain work. Each link opens the plugin's folder on GitHub, with its README, install steps and source code.</p>
+      <p class="lede">QGIS plugins for drainage and terrain work. Each card links to the plugin's folder on GitHub, with its README, install steps and source code, and to its zip file for installing in QGIS.</p>
 
       <div class="grid">
-        <a class="card" href="https://github.com/Bhudus/QGIS_Tools/tree/main/min_curvature">
-          <div class="card-head"><span class="tag">Plugin · v1.1.1</span><h3>Surface Interpolation</h3></div>
-          <div class="card-body"><p>Grids scattered point data into a raster using minimum curvature (with optional tension) or natural neighbor interpolation.</p><span class="go">View on GitHub</span></div>
-        </a>
-        <a class="card" href="https://github.com/Bhudus/QGIS_Tools/tree/main/line_angle">
-          <div class="card-head"><span class="tag">Plugin · v1.2.0</span><h3>Line Angle</h3></div>
-          <div class="card-body"><p>Click a line segment, or two points, to get its angle in degrees. Includes a Processing tool that writes every segment's angle to a field.</p><span class="go">View on GitHub</span></div>
-        </a>
-        <a class="card" href="https://github.com/Bhudus/QGIS_Tools/tree/main/random_point_selection">
-          <div class="card-head"><span class="tag">Plugin · v1.0.0</span><h3>Random Point Selection</h3></div>
-          <div class="card-body"><p>Randomly selects a set number or percentage of points from a layer, with an optional seed for repeatable results.</p><span class="go">View on GitHub</span></div>
-        </a>
-        <a class="card" href="https://github.com/Bhudus/QGIS_Tools/tree/main/illini_drainage_system_design">
-          <div class="card-head"><span class="tag">Plugin · v2.0.2</span><h3>Illini Drainage System Design</h3></div>
-          <div class="card-body"><p>Designs a complete tile drainage system in one run, from proposed tile lines to buried depths and pipe sizes, combining Illini Drainage Tools routines E to K.</p><span class="go">View on GitHub</span></div>
-        </a>
-        <a class="card" href="https://github.com/Bhudus/QGIS_Tools/tree/main/subsurface_drain_layout">
-          <div class="card-head"><span class="tag">Plugin · v0.6.2</span><h3>Subsurface Drainage Layout</h3></div>
-          <div class="card-body"><p>Lays out a tile drainage network from a DEM, field boundary, outlet and spacing, around an automatically routed main or one you draw, with laterals near perpendicular or parallel to the contours, as one connected network ready for pipe sizing.</p><span class="go">View on GitHub</span></div>
-        </a>
-        <a class="card" href="https://github.com/Bhudus/QGIS_Tools/tree/main/illini_subsurface_drain_layout">
-          <div class="card-head"><span class="tag">Plugin · v0.9.0</span><h3>Illini Subsurface Drain Layout</h3></div>
-          <div class="card-body"><p>Lays out, buries and sizes a tile drainage network in one run, from a DEM, field boundary, outlet and spacing, using the burying and pipe-sizing schemes of Illini Drainage Tools routines J and K.</p><span class="go">View on GitHub</span></div>
-        </a>
-        <a class="card" href="https://github.com/Bhudus/QGIS_Tools/tree/main/raster_extremes">
-          <div class="card-head"><span class="tag">Plugin · v1.0.0</span><h3>Raster Extremes</h3></div>
-          <div class="card-body"><p>Finds the cells with the maximum and minimum values of a raster band and gives their X and Y coordinates, with an optional point layer of the results.</p><span class="go">View on GitHub</span></div>
-        </a>
-        <a class="card" href="https://github.com/Bhudus/QGIS_Tools/tree/main/DRAINMOD_Weather_Files">
-          <div class="card-head"><span class="tag">Plugin · v2.0</span><h3>DRAINMOD Weather Files</h3></div>
-          <div class="card-body"><p>Click a point to download daily rainfall and max/min temperature from Daymet and write ready-to-use DRAINMOD .RAI and .TEM weather files in one step.</p><span class="go">View on GitHub</span></div>
-        </a>
-        <a class="card" href="https://github.com/Bhudus/QGIS_Tools/tree/main/drainmod_climate">
-          <div class="card-head"><span class="tag">Plugin · v0.3.0</span><h3>DRAINMOD Climate-Scenario Weather Files</h3></div>
-          <div class="card-body"><p>Writes ready-to-use DRAINMOD .RAI, .TEM and .PET weather files for future climate scenarios, from downscaled CMIP6 projections (NASA NEX-GDDP-CMIP6 or LOCA2) for a point or a layer of points, across several models and SSP scenarios at once.</p><span class="go">View on GitHub</span></div>
-        </a>
-        <a class="card" href="https://github.com/Bhudus/QGIS_Tools/tree/main/drainmod_soi">
-          <div class="card-head"><span class="tag">Plugin · v0.1.0</span><h3>DRAINMOD Soil File Builder</h3></div>
-          <div class="card-body"><p>Click a point to build a DRAINMOD soil input (.soi) file from SSURGO. Combines horizons into at most five layers and computes the soil water characteristic with the van Genuchten equation, using Rosetta or Carsel &amp; Parrish texture-class parameters or the Rosetta 3 web service.</p><span class="go">View on GitHub</span></div>
-        </a>
-        <a class="card" href="https://github.com/Bhudus/QGIS_Tools/tree/main/lidar_field_dem">
-          <div class="card-head"><span class="tag">Plugin · v0.3.2</span><h3>LiDAR Field DEM</h3></div>
-          <div class="card-body"><p>Builds a bare-earth DEM for a field from Illinois Height Modernization (ISGS) or USGS 3DEP LiDAR, downloading only the tiles it needs. Lists the collection years available, lets you trace the field on the map, extends the DEM beyond the field for outlets, optionally fills sinks (Wang &amp; Liu), and runs in the background.</p><span class="go">View on GitHub</span></div>
-        </a>
-        <a class="card" href="https://github.com/Bhudus/QGIS_Tools/tree/main/depressions_laylines">
-          <div class="card-head"><span class="tag">Plugin · v0.3.0</span><h3>Depressions and Laylines</h3></div>
-          <div class="card-body"><p>For subsurface drainage design: maps the depressions in a field deeper than a set depth (filled minus unfilled DEM, default 0.75 ft) with their area, depth and storage, and the laylines (flow channels) with stream order and contributing area. Adds contours from the filled DEM and colors the DEM green to brown over a hillshade.</p><span class="go">View on GitHub</span></div>
-        </a>
-        <a class="card" href="https://github.com/Bhudus/QGIS_Tools/tree/main/ssurgo_soil_map">
-          <div class="card-head"><span class="tag">Plugin · v1.5.0</span><h3>SSURGO Soil Map</h3></div>
-          <div class="card-body"><p>Gets the Web Soil Survey soil map for a field boundary shapefile, or a field you trace on the map, and saves it as a shapefile labeled with the soil names, with acres, drainage class and hydrologic group for each soil and an optional field outline.</p><span class="go">View on GitHub</span></div>
-        </a>
+        <div class="card">
+          <div class="card-head"><span class="tag">Plugin · v1.1.1</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/min_curvature">Surface Interpolation</a></h3></div>
+          <div class="card-body"><p>Grids scattered point data into a raster using minimum curvature (with optional tension) or natural neighbor interpolation.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/min_curvature">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/min_curvature/min_curvature.zip" download>Download zip file</a></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="tag">Plugin · v1.2.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/line_angle">Line Angle</a></h3></div>
+          <div class="card-body"><p>Click a line segment, or two points, to get its angle in degrees. Includes a Processing tool that writes every segment's angle to a field.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/line_angle">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/line_angle/line_angle.zip" download>Download zip file</a></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="tag">Plugin · v1.0.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/random_point_selection">Random Point Selection</a></h3></div>
+          <div class="card-body"><p>Randomly selects a set number or percentage of points from a layer, with an optional seed for repeatable results.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/random_point_selection">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/random_point_selection/random_point_selection.zip" download>Download zip file</a></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="tag">Plugin · v2.0.2</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/illini_drainage_system_design">Illini Drainage System Design</a></h3></div>
+          <div class="card-body"><p>Designs a complete tile drainage system in one run, from proposed tile lines to buried depths and pipe sizes, combining Illini Drainage Tools routines E to K.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/illini_drainage_system_design">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/illini_drainage_system_design/illini_drainage_system_design.zip" download>Download zip file</a></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="tag">Plugin · v0.6.2</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/subsurface_drain_layout">Subsurface Drainage Layout</a></h3></div>
+          <div class="card-body"><p>Lays out a tile drainage network from a DEM, field boundary, outlet and spacing, around an automatically routed main or one you draw, with laterals near perpendicular or parallel to the contours, as one connected network ready for pipe sizing.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/subsurface_drain_layout">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/subsurface_drain_layout/subsurface_drain_layout.zip" download>Download zip file</a></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="tag">Plugin · v0.9.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/illini_subsurface_drain_layout">Illini Subsurface Drain Layout</a></h3></div>
+          <div class="card-body"><p>Lays out, buries and sizes a tile drainage network in one run, from a DEM, field boundary, outlet and spacing, using the burying and pipe-sizing schemes of Illini Drainage Tools routines J and K.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/illini_subsurface_drain_layout">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/illini_subsurface_drain_layout/illini_subsurface_drain_layout.zip" download>Download zip file</a></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="tag">Plugin · v1.0.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/raster_extremes">Raster Extremes</a></h3></div>
+          <div class="card-body"><p>Finds the cells with the maximum and minimum values of a raster band and gives their X and Y coordinates, with an optional point layer of the results.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/raster_extremes">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/raster_extremes/raster_extremes.zip" download>Download zip file</a></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="tag">Plugin · v2.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/DRAINMOD_Weather_Files">DRAINMOD Weather Files</a></h3></div>
+          <div class="card-body"><p>Click a point to download daily rainfall and max/min temperature from Daymet and write ready-to-use DRAINMOD .RAI and .TEM weather files in one step.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/DRAINMOD_Weather_Files">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/DRAINMOD_Weather_Files/DRAINMOD_Weather_Files.zip" download>Download zip file</a></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="tag">Plugin · v0.3.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/drainmod_climate">DRAINMOD Climate-Scenario Weather Files</a></h3></div>
+          <div class="card-body"><p>Writes ready-to-use DRAINMOD .RAI, .TEM and .PET weather files for future climate scenarios, from downscaled CMIP6 projections (NASA NEX-GDDP-CMIP6 or LOCA2) for a point or a layer of points, across several models and SSP scenarios at once.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/drainmod_climate">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/drainmod_climate/drainmod_climate.zip" download>Download zip file</a></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="tag">Plugin · v0.1.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/drainmod_soi">DRAINMOD Soil File Builder</a></h3></div>
+          <div class="card-body"><p>Click a point to build a DRAINMOD soil input (.soi) file from SSURGO. Combines horizons into at most five layers and computes the soil water characteristic with the van Genuchten equation, using Rosetta or Carsel &amp; Parrish texture-class parameters or the Rosetta 3 web service.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/drainmod_soi">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/drainmod_soi/drainmod_soi.zip" download>Download zip file</a></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="tag">Plugin · v0.3.2</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/lidar_field_dem">LiDAR Field DEM</a></h3></div>
+          <div class="card-body"><p>Builds a bare-earth DEM for a field from Illinois Height Modernization (ISGS) or USGS 3DEP LiDAR, downloading only the tiles it needs. Lists the collection years available, lets you trace the field on the map, extends the DEM beyond the field for outlets, optionally fills sinks (Wang &amp; Liu), and runs in the background.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/lidar_field_dem">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/lidar_field_dem/lidar_field_dem.zip" download>Download zip file</a></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="tag">Plugin · v0.3.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/depressions_laylines">Depressions and Laylines</a></h3></div>
+          <div class="card-body"><p>For subsurface drainage design: maps the depressions in a field deeper than a set depth (filled minus unfilled DEM, default 0.75 ft) with their area, depth and storage, and the laylines (flow channels) with stream order and contributing area. Adds contours from the filled DEM and colors the DEM green to brown over a hillshade.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/depressions_laylines">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/depressions_laylines/depressions_laylines.zip" download>Download zip file</a></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="tag">Plugin · v1.5.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/ssurgo_soil_map">SSURGO Soil Map</a></h3></div>
+          <div class="card-body"><p>Gets the Web Soil Survey soil map for a field boundary shapefile, or a field you trace on the map, and saves it as a shapefile labeled with the soil names, with acres, drainage class and hydrologic group for each soil and an optional field outline.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/ssurgo_soil_map">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/ssurgo_soil_map/ssurgo_soil_map.zip" download>Download zip file</a></div></div>
+        </div>
       </div>
     </div>
   </section>

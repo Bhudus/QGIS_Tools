@@ -4,7 +4,7 @@ qgisMinimumVersion=3.16
 description=Designs a complete subsurface tile drainage system in one run (Illini Drainage Tools routines E-K combined).
 version=2.0.2
 author=Anamelechi FALASY & Richard COOKE
-email=bhudus@yahoo.com
+email=raccooke@gmail.com
 
 about=Runs, as a single Processing tool, the Illini Drainage Tools routines: e. Hydraulic Network Fixer, f. Network Flow-Path Generator, g. Tile Network Ordering, h. Network Elevation Exports, i. Network Flow Lengths, j. Tile Burying System and k. Network Pipe Sizing. No additional Processing providers (such as SAGA) are required.
 

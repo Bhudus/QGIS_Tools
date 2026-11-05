@@ -5,7 +5,7 @@ description=Automated subsurface (tile) drainage layout from a DEM, field bounda
 about=Lays out mains, submains and evenly spaced laterals running near parallel or near perpendicular to the field contours, in parallel/gridiron or herringbone patterns, around an automatically routed main or one you supply, with straight or contour-following laterals. Designs pipe inverts at minimum cover and grade and flags pipes that are too deep, need long connectors or have no collector downstream. Runs from the Processing Toolbox or the plugin toolbar; uses only QGIS, GDAL and numpy.
 version=0.6.2
 author=Richard Cooke
-email=bhudus@yahoo.com
+email=raccooke@gmail.com
 
 tracker=https://github.com/Bhudus/QGIS_Tools/issues
 repository=https://github.com/Bhudus/QGIS_Tools
