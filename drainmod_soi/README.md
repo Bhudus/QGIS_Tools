@@ -7,13 +7,14 @@ DRAINMOD `.soi` file.
 
 ## Install
 
-1. Copy the `drainmod_soi` folder into your QGIS profile's plugin folder:
+1. Download [`drainmod_soi.zip`](https://github.com/Bhudus/QGIS_Tools/raw/main/drainmod_soi/drainmod_soi.zip).
+2. Copy the `drainmod_soi` folder from the zip into your QGIS profile's plugin folder:
    * Windows: `%APPDATA%\QGIS\QGIS3\profiles\default\python\plugins\`
    * macOS: `~/Library/Application Support/QGIS/QGIS3/profiles/default/python/plugins/`
    * Linux: `~/.local/share/QGIS/QGIS3/profiles/default/python/plugins/`
    (or *Plugins → Manage and Install → Install from ZIP* with the zip file)
-2. Restart QGIS and enable **DRAINMOD Soil File Builder** in the Plugin Manager.
-3. Add any basemap (e.g. OpenStreetMap from XYZ Tiles) so you can see where to click.
+3. Restart QGIS and enable **DRAINMOD Soil File Builder** in the Plugin Manager.
+4. Add any basemap (e.g. OpenStreetMap from XYZ Tiles) so you can see where to click.
 
 ## Use
 
