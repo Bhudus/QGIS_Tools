@@ -124,7 +124,7 @@ def subbasin_layer():
         "subbasins", "MultiPolygon?crs=" + WGS84, "StreamStats sub-basins",
         SUBBASIN_FIELDS,
         QgsFillSymbol.createSimple({"color": "0,0,0,0",
-                                    "outline_color": "217,95,14,255",
+                                    "outline_color": "0,0,0,255",
                                     "outline_width": "0.45",
                                     "outline_style": "dash"}),
         above_watersheds=True)
@@ -133,7 +133,7 @@ def subbasin_layer():
         settings.fieldName = "sb_id"
         fmt = QgsTextFormat()
         fmt.setSize(9)
-        fmt.setColor(QColor(166, 54, 3))
+        fmt.setColor(QColor(0, 0, 0))
         buf = fmt.buffer()
         buf.setEnabled(True)
         buf.setSize(0.8)

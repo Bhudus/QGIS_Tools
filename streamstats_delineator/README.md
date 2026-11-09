@@ -14,7 +14,7 @@ StreamStats. Each result is added to scratch layers:
   is `stream_km / area_km2`). Each stream also gets its sub-basin (`sb_id`),
   Strahler `order` and GNIS `name`. Toggle in Settings.
 * **StreamStats sub-basins** – the watershed split at stream confluences
-  (dashed outlines, labelled with `sb_id`). Attributes: `ws_id`, `sb_id`,
+  (black dashed outlines, labelled with `sb_id`). Attributes: `ws_id`, `sb_id`,
   `ds_sb_id` (the sub-basin it drains into; empty at the watershed outlet),
   `name` (main stream), `max_order`, `split_order`, `outlet_comid`,
   `n_reaches`, `area_km2`, `area_mi2`, `pct_area` and `stream_km`. The
