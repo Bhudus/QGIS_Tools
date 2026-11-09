@@ -2,7 +2,7 @@
 
 Click on or near a stream; the plugin snaps the point to the nearest StreamStats
 stream-grid cell and delineates the watershed draining to it using USGS
-StreamStats. Each result is added to two scratch layers:
+StreamStats. Each result is added to scratch layers:
 
 * **StreamStats watersheds** – polygon, with `area_km2`, `area_mi2`, `region`,
   `huc`, clicked and snapped coordinates, `snap_dist_m`, `created_utc`
@@ -11,7 +11,14 @@ StreamStats. Each result is added to two scratch layers:
   `ws_id` (links to the watershed), `comid`, `length_km` and `clipped`
   (1 where the line was cut at the watershed boundary). The watershed also
   gets `n_streams` and `stream_km` (total stream length, so drainage density
-  is `stream_km / area_km2`). Toggle in Settings.
+  is `stream_km / area_km2`). Each stream also gets its sub-basin (`sb_id`),
+  Strahler `order` and GNIS `name`. Toggle in Settings.
+* **StreamStats sub-basins** – the watershed split at stream confluences
+  (black dashed outlines, labelled with `sb_id`). Attributes: `ws_id`, `sb_id`,
+  `ds_sb_id` (the sub-basin it drains into; empty at the watershed outlet),
+  `name` (main stream), `max_order`, `split_order`, `outlet_comid`,
+  `n_reaches`, `area_km2`, `area_mi2`, `pct_area` and `stream_km`. The
+  watershed gets `n_subbasins`. Toggle in Settings.
 
 Right-click a layer › *Make Permanent* to save it.
 
@@ -36,9 +43,10 @@ The original `streamstatsservices/watershed.geojson` API was **decommissioned on
 | Region (if "Auto-detect") | US Census geocoder › state code |
 | Snap to stream | `GET https://streamstats.usgs.gov/pourpoint/v1/snap/str900?region=&lat=&lon=` |
 | Delineate | `GET https://streamstats.usgs.gov/ss-delineate/v1/delineate/sshydro/{region}?lat=&lon=` |
-
-| Outlet COMID (streams) | `GET https://api.water.usgs.gov/nldi/linked-data/comid/position?coords=POINT(lon lat)` |
+| Outlet COMID (streams, sub-basins) | `GET https://api.water.usgs.gov/nldi/linked-data/comid/position?coords=POINT(lon lat)` |
 | Upstream flowlines | `GET https://api.water.usgs.gov/nldi/linked-data/comid/{comid}/navigation/UT/flowlines?distance=` |
+| Network topology (sub-basins) | WFS `wmadata:nhdflowline_network` on `https://api.water.usgs.gov/geoserver/wmadata/ows`, `CQL_FILTER=comid IN (…)` |
+| Catchments (sub-basins) | WFS `wmadata:catchmentsp`, `CQL_FILTER=featureid IN (…)` |
 
 **Why NLDI for streams:** SS-Hydro only computes basin characteristics; neither
 it nor SS-Delineate returns stream lines. NLDI's upstream-with-tributaries
@@ -52,6 +60,29 @@ the watershed; it is reported as a warning.
 Caveat: NHDPlus V2 is 1:100,000 scale, so it is coarser than the 10 m grid
 StreamStats delineates on. Small headwater basins may contain no NHDPlus lines,
 and lines can sit slightly off the StreamStats channel.
+
+**Sub-basins.** Neither StreamStats service splits a watershed, so the plugin
+builds sub-basins from NHDPlus V2, where every flowline reach has its own
+catchment polygon (`catchmentsp.featureid` = `comid`):
+
+1. Get the topology of the reaches above the outlet (`hydroseq`,
+   `dnhydroseq`, Strahler `streamorde`, `gnis_name`), 100 COMIDs per request.
+2. Mark a sub-basin outlet at the watershed outlet and at the bottom of every
+   reach of order ≥ *N* that meets another reach of order ≥ *N*. Each reach
+   joins the first sub-basin outlet downstream of it, so a sub-basin is one link
+   of the order ≥ *N* network plus every smaller stream draining into it.
+   *Auto* (the default) picks the smallest *N* giving at most 20 sub-basins;
+   both are set in Settings.
+3. Dissolve each sub-basin's catchments and clip them to the StreamStats
+   boundary. NHDPlus catchments (30 m) do not match the StreamStats boundary
+   (10 m) exactly, so any part of the watershed left uncovered is given to the
+   sub-basin it shares the most boundary with. The sub-basins therefore tile the
+   watershed and their areas add up to its area. A sub-basin that ends up with
+   no area is dropped, and its upstream neighbours drain to the next one down.
+
+`ds_sb_id` gives the routing order for models such as HEC-HMS. Sub-basins are
+limited to 6,000 NHDPlus reaches (very roughly 15,000–20,000 km²); a failure or
+a larger watershed still gives the watershed and streams, with a warning.
 
 The polygon is the `globalwatershed` feature (`GlobalWshd == 1`) inside
 `bcrequest.wsresp.featurecollection`.
@@ -91,10 +122,10 @@ run at once, within USGS's request to keep it to four.
 | `network.py` | HTTP via `QgsBlockingNetworkRequest` |
 | `task.py` | `QgsTask` that runs the client off the GUI thread |
 | `map_tool.py` | Click tool; converts the click to WGS84 |
-| `layers.py` | Output layers, geometry conversion, ellipsoidal area |
+| `layers.py` | Output layers, geometry conversion, sub-basin dissolve/clip/gap-fill, ellipsoidal area |
 | `plugin.py` | Toolbar/menu wiring, messages, zoom |
-| `settings_dialog.py` | Region, snapping, warning distance, zoom, timeout |
-| `test/test_client.py` | Offline tests: `python -m unittest discover -s test` |
+| `settings_dialog.py` | Region, snapping, warning distance, streams, sub-basins, zoom, timeout |
+| `test/` | Offline tests: `python -m unittest discover -s test` (`test_subbasin_geometry.py` checks the sub-basin assembly with a toy geometry engine) |
 
 ## Ideas for next steps
 
@@ -103,7 +134,10 @@ run at once, within USGS's request to keep it to four.
   region cannot compute come back as `-999`; treat those as missing.
 * Higher-resolution streams: query NHDPlus HR / NHD flowlines from The National
   Map with the watershed polygon, instead of NLDI.
-* Stream names and Strahler order: the USGS `wmadata:nhdflowline_network` WFS
-  has `gnis_name` and `streamorde` per COMID, for labelling or width-by-order styling.
+* Sub-basin outlets as a point layer, and an export of the sub-basin/reach
+  network for HEC-HMS.
+* Sub-basins from the StreamStats grid itself (delineating at each confluence)
+  for boundaries that match the 10 m DEM, at the cost of one delineation per
+  sub-basin.
 * A Processing algorithm that delineates every point in a layer (batch mode).
 * Flow statistics through the NSS services (`/nssservices/...`).
