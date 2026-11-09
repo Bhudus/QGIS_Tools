@@ -1,0 +1,160 @@
+# Main Tile Locator (QGIS plugin)
+
+Locates a subsurface (tile) drainage **main** from an **outlet location**, a
+**DEM** and the **field boundary**, for laterals to be installed either
+**parallel** or **perpendicular** to the contour lines.
+
+Requires QGIS 3.34 LTR or newer. Uses only QGIS, GDAL and numpy.
+
+## Install
+
+1. In QGIS: **Plugins ▸ Manage and Install Plugins ▸ Install from ZIP**.
+2. Pick `main_tile_locator.zip` and install. (Enable *Show also experimental
+   plugins* under Settings if QGIS hides it.)
+3. Run it from the toolbar button, **Plugins ▸ Main Tile Locator**, or the
+   Processing Toolbox (*Main tile locator*). The toolbar button fills in the
+   DEM and field from the active layer (or the first raster and polygon layer
+   in the project); click the **…** button next to *Outlet location* to pick the
+   outlet on the map.
+
+From Python:
+
+```python
+processing.run("maintilelocator:maintilelocator", {
+    "OUTLET": "612345.0,4441234.0 [EPSG:26916]", "DEM": "dem.tif", "FIELD": "field.gpkg",
+    "ORIENTATION": 0,            # 0 parallel to contours, 1 perpendicular
+    "SPACING": 80, "CANDIDATES": "TEMPORARY_OUTPUT"})
+```
+
+## Inputs
+
+| Parameter | Notes |
+|---|---|
+| Outlet location | Click on the map. It can sit just outside the field (e.g. at a ditch); the main is extended to it. |
+| Elevation (DEM) | Any GDAL raster in a **projected** CRS. LiDAR DEMs at 0.5–3 m work well. |
+| Field boundary | Polygon layer. All features are merged; holes (waterways, buildings) are excluded. |
+| Laterals to be installed | *Parallel to the contour lines* (across the slope, default) or *Perpendicular to the contour lines* (down the slope). |
+| Lateral shape | *Bend with the terrain* (follow the contours, or the fall line; default) or *Straight* (on the field's dominant contour or fall bearing). |
+| Main alignment | *Best of all candidates* (default), *Bend with the terrain only*, or *Straight lines only*. |
+| Design units | Feet (default) or metres, for every length, depth and output. |
+| Lateral spacing | Default 80 ft. Sets the boundary setback, the terrain smoothing and the scoring. |
+| Maximum lateral length | Default 0 (no limit). When set, laterals that would run farther to reach the main count as not served. |
+| Burying: target band, absolute depths, slopes, offset, lower the outlet | Routine J settings for burying the main. Defaults 3.25–4.25 ft band, 2.5 ft and 6 ft absolute, 0.1% minimum and 5% maximum slope. |
+| Minimum slope of the laterals | Default 0.1%. A lateral must be able to reach the main at this grade, using the ground fall plus the depth range (absolute upper to absolute lower tile depth). |
+| Outlet invert elevation | Optional, in DEM elevation units. Flags the main if it arrives below the outlet. |
+
+Advanced: DEM elevation units (default US survey feet), target grade of
+contour-parallel laterals (0.2%), longest burying segment between grade breaks
+(50 ft), bearing step of straight mains (5°), where the low-ground main ends
+(2% of the field), the scoring cost of main length, boundary setback, smoothing
+radius and analysis cell size.
+
+## How the main is located
+
+1. **Terrain.** The DEM is resampled to the analysis grid and smoothed at the
+   lateral spacing, so the main follows the shape of the field rather than
+   LiDAR micro-relief. Fall line and contour directions come from the smoothed
+   surface.
+2. **Lateral paths.** From every part of the drainable area (inside the
+   setback) the tool traces the path a lateral would take:
+   - *Parallel to the contours*: along the contour, either way, turned just
+     enough downhill to hold the target lateral grade (straight down where the
+     ground is flatter than that grade); or, if straight, along the dominant
+     contour bearing.
+   - *Perpendicular to the contours*: down the fall line; or, if straight, on
+     the dominant downhill bearing.
+
+   Along each path it tracks how quickly neighbouring laterals converge. Where
+   they would close to a third of the spacing (in a draw or swale) the laterals
+   would bunch up, so ground beyond that point needs a submain.
+3. **Candidate mains**, all starting at the outlet:
+   - the **low-ground (thalweg)** line, the largest branch of a priority-flood
+     drainage tree from the outlet, ending at two drainage-area thresholds;
+   - the **fall line** uphill from the outlet;
+   - **headers** along the contours, rising at the minimum main grade, one way
+     or both ways, with and without following the field edge round corners
+     (an L-shaped header);
+   - **straight mains** on every bearing (5° steps), one-armed and as a line
+     through the outlet;
+   - **dog-legs** that run along the low side for 20–80% of its length, then
+     turn up the slope (following the fall line or straight).
+4. **Scoring.** For each candidate, a lateral path is *served* if it meets the
+   main within the maximum lateral length, before converging, and with enough
+   fall. The score is the served area less a cost for the main's length (by
+   default half a spacing-wide strip per unit length) and a larger cost for any
+   length that cannot be buried within the depth and slope limits.
+5. **Trimming.** The upper end of each arm of the best main is shortened while
+   that raises the score.
+6. **Burying.** The chosen main is buried with the scheme of Routine J (Tile
+   Burying System) of the Illini Drainage Tools, from the outlet upstream,
+   exactly as in the Illini Subsurface Drain Layout plugin; the four runners-up
+   are buried the same way.
+
+## Outputs
+
+**Candidate mains**: the chosen main and the four best distinct runners-up
+(candidates lying within half a spacing of a better one are dropped). Each is
+one multi-line feature (a two-way header has two arms), digitised from the
+upper end to the outlet. The chosen main is drawn red, the runners-up blue and
+dashed, and every candidate is labelled with its rank.
+
+| Field | Meaning |
+|---|---|
+| `rank`, `chosen` | 1 is the chosen main. |
+| `name`, `method`, `arms` | How the candidate was built, and its number of arms. |
+| `served_pct` | Share of the drainable area whose laterals reach it. |
+| `length`, `problem_length` | Main length, and length outside the depth or slope limits (design units). |
+| `design_grade_pct`, `max_depth`, `min_depth`, `outlet_depth` | From burying it with Routine J. |
+| `BURY_CHECK` | Routine J notes, or `OK`. |
+| `score` | Served hectares after the length and burying costs. |
+
+The log summarises the result and lists warnings.
+
+## Going on to a full layout
+
+Select the chosen main (or any runner-up) in the **Candidate mains** layer and
+use it as the *Main line(s)* input of the **Illini Subsurface Drain Layout**
+plugin with *Selected features only* ticked, and the same outlet. The arm
+ending nearest the outlet becomes the main and any second arm a submain.
+
+## Tips
+
+- On a **uniform slope** with laterals parallel to the contours, expect a main
+  straight up the slope (or a dog-leg when the outlet is near a corner and the
+  maximum lateral length matters). With laterals perpendicular to the
+  contours, expect a header across the low side, often turning up a low edge.
+- In **draws and swales**, laterals perpendicular to the contours drain to a
+  main in the low ground; contour-parallel laterals there run nearly parallel
+  to the draw, so a single main may serve little; the log reports how much of
+  the field needs submains.
+- A low `served_pct` means the outlet or the orientation doesn't suit part of
+  the field. Try the other orientation, a larger maximum lateral length, or a
+  second outlet for that zone.
+
+## Limitations
+
+- This is a planning tool. Check the main against field conditions and local
+  standards before installation.
+- One outlet and one main (with up to two arms) per run; submains are not laid
+  out; the log reports where they are needed.
+- The lateral check uses net fall over the whole lateral; humps along a
+  lateral are caught only when they exceed the available depth range.
+
+## Credits and licence
+
+Terrain handling, collector tracing and the Routine J burying scheme come from
+the Illini Subsurface Drain Layout plugin, and through it from the Illini
+Drainage Tools by Anamelechi Falasy and Richard Cooke, University of Illinois
+Urbana-Champaign, released under the GNU General Public License v3 (see
+`LICENSE_ILLINI_DRAINAGE_TOOLS.txt`). This plugin is distributed under the same
+licence, GPL v3 or later.
+
+## Development
+
+The engine (`core/`) is pure numpy with no QGIS imports.
+`test/run_synthetic.py` runs it on synthetic terrain (tilted plane, swale,
+rolling ground) and writes plots to `./out` (needs matplotlib):
+
+```
+python test/run_synthetic.py all
+```

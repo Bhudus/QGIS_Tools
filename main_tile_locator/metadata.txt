@@ -1,0 +1,21 @@
+[general]
+name=Main Tile Locator
+qgisMinimumVersion=3.34
+description=Locates a subsurface (tile) drainage main from an outlet, a DEM and a field boundary, for laterals parallel or perpendicular to the contour lines.
+about=Prompts for the outlet location (click on the map), the DEM and the field boundary, and finds the tile main that best serves laterals installed either parallel to the contour lines (across the slope) or perpendicular to them (down the slope). It traces the path a lateral would take from every part of the field, builds candidate mains from the outlet (low-ground thalweg, fall line, contour headers with or without following the field edge, straight mains on every bearing, and dog-legs along the low side then up the slope), and scores each by the drainable area whose laterals reach it with enough fall, within the maximum lateral length and without converging into a draw, less the cost of its length and of any length that cannot be buried within the depth and slope limits. The chosen main is buried with the scheme of Routine J (Tile Burying System) of the Illini Drainage Tools. Outputs: a Candidate mains layer with the chosen main and the four best distinct runners-up, each with its served area, length, grade, depths and Routine J notes (select one to use as the Main line(s) input of the Illini Subsurface Drain Layout plugin). Uses only QGIS, GDAL and numpy. Terrain handling and the burying scheme come from the Illini Subsurface Drain Layout plugin and the Illini Drainage Tools by Anamelechi Falasy and Richard Cooke, University of Illinois Urbana-Champaign (GPL v3).
+version=0.1.0
+author=Richard Cooke
+email=raccooke@gmail.com
+
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+
+changelog=0.1.0 - First release: candidate mains for laterals parallel or perpendicular to the contours, lateral-coverage scoring, trimming and Routine J burying; outputs the chosen main with four distinct runners-up.
+tags=drainage,tile,subsurface,agriculture,main,dem,contour,outlet,illini,burying
+category=Analysis
+experimental=True
+deprecated=False
+hasProcessingProvider=yes
+icon=icon.png
+license=GPL-3.0-or-later
