@@ -81,7 +81,7 @@ class LocatorParams:
     lateral_shape: str = SHAPE_CONTOUR
     alignment: str = ALIGN_BEST
     spacing: float = 80 * 0.3048         # lateral spacing: setback, smoothing, scoring
-    max_lateral_length: Optional[float] = None   # None = no limit
+    max_lateral_length: Optional[float] = 1320 * 0.3048   # None = no limit
     contour_grade: float = 0.002         # target grade of contour-parallel laterals
     min_lateral_grade: float = 0.001     # net fall a lateral needs to reach the main
     min_main_grade: float = 0.001        # main minimum slope (Routine J)
@@ -101,6 +101,8 @@ class LocatorParams:
     problem_weight: float = 2.0          # score cost per metre that cannot be buried, in spacings
     converge_ratio: float = 0.33         # laterals closer than this share of the spacing merge
     main_stop_frac: float = 0.02         # thalweg main ends below this share of the field
+    add_submains: bool = False           # add submains until the field is covered
+    max_submains: int = 20
     units: str = "m"
 
 
@@ -230,8 +232,11 @@ class MainLocator:
         best = self._trim(scored[0])
         if best is not scored[0]:
             scored.insert(0, best)
-        self._progress(92, "Summarising")
-        return self._results(best, scored)
+        net = None
+        if self.p.add_submains:
+            net = self._add_submains(best)
+        self._progress(96, "Summarising")
+        return self._results(best, scored, net)
 
     # ------------------------------------------------------------ prepare
     def _prepare(self):
@@ -497,6 +502,7 @@ class MainLocator:
         for c in order[1:]:
             children.setdefault(parent[c], []).append(c)
         self.reach_frac = len(order) / max(1, self.inner.sum())
+        self.flood = {"parent": parent, "P": P, "start": start}
         out = []
         for frac in fracs:
             stop = max(3.0, frac * len(order))
@@ -747,14 +753,22 @@ class MainLocator:
         code = np.where(served, ST_SERVED, code)
         return code, lat_len
 
-    def _bury(self, arms, jv):
-        """Bury the main with the Routine J scheme. Arm 0 ends at the outlet; others join it at jv."""
+    def _bury(self, arms, jv, ends=None):
+        """Bury a network with the Routine J scheme.
+
+        Arm 0 ends at the outlet. Every other arm joins arm ends[k] = (arm, vertex);
+        by default the other arms of the main join arm 0 at vertex jv.
+        """
         p = self.p
+        if ends is None:
+            ends = [None] + [(0, jv)] * (len(arms) - 1)
         pipes = []
         for k, a in enumerate(arms):
             pipes.append({"pts": a, "z": self.ground(a), "s": cumulative_length(a),
-                          "fixed": {jv} if (k == 0 and len(arms) > 1) else set(),
-                          "end": None if k == 0 else (0, jv)})
+                          "fixed": set(), "end": ends[k]})
+        for pp in pipes:
+            if pp["end"] is not None:
+                pipes[pp["end"][0]]["fixed"].add(int(pp["end"][1]))
         alias = {}
         for P, pp in enumerate(pipes):
             if pp["end"] is not None:
@@ -887,10 +901,204 @@ class MainLocator:
             best["cand"] = c
         return best
 
+    # ------------------------------------------------------------ submains
+    def _net_score(self, arms, ends):
+        """Coverage, burial and score of a whole network (main arms plus submains)."""
+        code, lat_len = self._coverage(arms)
+        try:
+            pipes, seg_rows, problem, od, sd = self._bury(arms, None, ends)
+        except LocatorError:
+            return None
+        served = float(self.pt_w[code == ST_SERVED].sum())
+        L = sum(polyline_length(a) for a in arms)
+        score = (served - self.p.main_weight * self.S * L
+                 - self.p.problem_weight * self.S * problem)
+        return {"arms": arms, "ends": ends, "code": code, "lat_len": lat_len,
+                "served_area": served, "length": L, "problem": problem, "score": score,
+                "pipes": pipes, "seg_rows": seg_rows, "outlet_depth": od}
+
+    def _unserved_clusters(self, code):
+        """Connected patches of drainable cells whose laterals do not reach the network."""
+        g = self.g
+        U = np.zeros(g.shape, dtype=bool)
+        cell_code = code[self.inner_blk]
+        bad = cell_code != ST_SERVED
+        U[self.inner_ii[bad], self.inner_jj[bad]] = True
+        nc = g.ncols
+        flat = U.ravel()
+        seen = np.zeros(flat.shape, dtype=bool)
+        clusters = []
+        for start in np.nonzero(flat)[0]:
+            if seen[start]:
+                continue
+            stack = [int(start)]
+            seen[start] = True
+            members = []
+            while stack:
+                c = stack.pop()
+                members.append(c)
+                i, j = divmod(c, nc)
+                for di in (-1, 0, 1):
+                    for dj in (-1, 0, 1):
+                        ii, jj = i + di, j + dj
+                        if 0 <= ii < g.nrows and 0 <= jj < nc:
+                            n = ii * nc + jj
+                            if flat[n] and not seen[n]:
+                                seen[n] = True
+                                stack.append(n)
+            clusters.append(np.array(members))
+        clusters.sort(key=len, reverse=True)
+        return clusters
+
+    def _nearest_vertex(self, arms, x, y):
+        best = (0, 0, float("inf"))
+        for k, a in enumerate(arms):
+            d = np.hypot(a[:, 0] - x, a[:, 1] - y)
+            v = int(np.argmin(d))
+            if d[v] < best[2]:
+                best = (k, v, float(d[v]))
+        return best
+
+    def _flood_path(self, cell, netmask):
+        """Low-ground route from a cell down the flood tree until it meets the network."""
+        fl = self.flood
+        P = fl["P"]
+        parent = fl["parent"]
+        nc = self.g.ncols
+        c = (cell // nc + 1) * P + (cell % nc + 1)
+        pts = []
+        steps = 0
+        while c >= 0 and steps < 200000:
+            i, j = c // P - 1, c % P - 1
+            if netmask[i * nc + j]:
+                break
+            pts.append(self.g.center_of(i, j))
+            c = parent[c]
+            steps += 1
+        if c < 0:
+            return None
+        return np.array(pts) if pts else None
+
+    def _sub_candidates(self, arms, cluster):
+        """Candidate submains into one unserved patch. Each runs upstream -> junction."""
+        g, S = self.g, self.S
+        netmask = self._mask(arms)[:-1]
+        nc = g.ncols
+        zc = np.nan_to_num(self.zs).ravel()[cluster]
+        order = np.argsort(zc)
+        picks = {int(cluster[order[int(round(q * (len(order) - 1)))]])
+                 for q in (1.0, 0.85, 0.6, 0.3, 0.0)}
+        ci, cj = cluster // nc, cluster % nc
+        cx, cy = g.x0 + (cj.mean() + 0.5) * g.cell, g.y0 - (ci.mean() + 0.5) * g.cell
+        d = np.hypot(g.x0 + (cj + 0.5) * g.cell - cx, g.y0 - (ci + 0.5) * g.cell - cy)
+        picks.add(int(cluster[int(np.argmin(d))]))
+        lowest = int(cluster[order[0]])
+        out = []
+
+        def add(name, pts, end):
+            if pts is None or len(pts) < 2 or polyline_length(pts) < S:
+                return
+            out.append({"name": name, "pts": np.asarray(pts, dtype=float), "end": end})
+
+        for t in picks:
+            tx, ty = g.center_of(t // nc, t % nc)
+            path = None
+            if getattr(self, "flood", None) is not None:
+                path = self._flood_path(t, netmask)
+            if path is not None and len(path) >= 1:
+                k, v, _ = self._nearest_vertex(arms, *path[-1])
+                jp = arms[k][v]
+                line = np.vstack([path, [jp]])
+                line = self._smooth_line(line)
+                line[-1] = jp
+                add("Submain along the low ground", line, (k, v))
+                if t == lowest:
+                    # headers from the junction, along the contours
+                    for sgn in (1.0, -1.0):
+                        ax, ay = self._sub_hdr[sgn]
+                        tr = self._trace_field(tuple(jp), ax, ay)
+                        if len(tr) >= 2:
+                            add("Submain header along the contours",
+                                self._smooth_line(tr)[::-1], (k, v))
+            # straight to the nearest point of the network
+            k, v, dist = self._nearest_vertex(arms, tx, ty)
+            jp = arms[k][v]
+            line = resample(np.array([[tx, ty], jp]), g.cell)
+            if all(self.inside(x, y) for x, y in line[:-2]):
+                add("Straight submain", line, (k, v))
+        return out
+
+    def _add_submains(self, best):
+        """Greedily add the submain that most improves the network score, until none helps."""
+        p, S = self.p, self.S
+        with np.errstate(invalid="ignore", divide="ignore"):
+            a = np.arcsin(np.clip(1.25 * p.min_main_grade / np.maximum(self.slope, 1e-9), 0, 1))
+        self._sub_hdr = {sgn: (np.cos(a) * sgn * -self.fy + np.sin(a) * -self.fx,
+                               np.cos(a) * sgn * self.fx + np.sin(a) * -self.fy)
+                         for sgn in (1.0, -1.0)}
+        if getattr(self, "flood", None) is None:
+            try:
+                self._flood_main((p.main_stop_frac,))
+            except Exception:   # noqa: BLE001
+                self.flood = None
+        n_main = len(best["arms"])
+        arms = list(best["arms"])
+        ends = [None] + [(0, best["jv"])] * (n_main - 1)
+        cur = self._net_score(arms, ends)
+        if cur is None:
+            return None
+        subs = []
+        min_area = max(4 * S * S, 0.002 * self.inner_area)
+        for it in range(int(p.max_submains)):
+            self._progress(84 + 11 * it / max(1, p.max_submains),
+                           "Adding submains ({} so far)".format(len(subs)))
+            clusters = [c for c in self._unserved_clusters(cur["code"])
+                        if len(c) * self.g.cell ** 2 >= min_area][:5]
+            if not clusters:
+                break
+            best_ev, best_c = None, None
+            for cl in clusters:
+                for c in self._sub_candidates(arms, cl):
+                    ev = self._net_score(arms + [resample(c["pts"], self.hc)],
+                                         ends + [c["end"]])
+                    if ev is not None and (best_ev is None or ev["score"] > best_ev["score"]):
+                        best_ev, best_c = ev, c
+            if best_ev is None or best_ev["score"] <= cur["score"] + S * S:
+                break
+            # trim the upper end while that helps
+            pts = resample(best_c["pts"], self.hc)
+            Ltot = polyline_length(pts)
+            step = max(S, Ltot / 8.0)
+            dcut = step
+            sc = cumulative_length(pts)
+            while dcut < Ltot - S:
+                cut = pts[sc >= dcut]
+                if len(cut) < 2:
+                    break
+                ev = self._net_score(arms + [cut], ends + [best_c["end"]])
+                if ev is not None and ev["score"] > best_ev["score"] + 1e-6:
+                    best_ev = ev
+                dcut += step
+            gain = best_ev["served_area"] - cur["served_area"]
+            arms = best_ev["arms"]
+            ends = best_ev["ends"]
+            subs.append({"name": best_c["name"], "gain": gain})
+            cur = best_ev
+        cur["subs"] = subs
+        cur["n_main"] = n_main
+        return cur
+
     # ------------------------------------------------------------ results
-    def _results(self, best, scored):
+    def _results(self, best, scored, net=None):
         p = self.p
         S = self.S
+        subs_on = net is not None and len(net.get("subs", [])) > 0
+        if subs_on:
+            # the main as buried with its submains joined to it
+            n_main = net["n_main"]
+            best["pipes"] = net["pipes"][:n_main]
+            best["seg_rows"] = [r for r in net["seg_rows"] if r["arm"] < n_main]
+            best["outlet_depth"] = net["outlet_depth"]
         names = ["main"] + ["main arm {}".format(k + 1) for k in range(1, len(best["arms"]))]
         cand = best["cand"]
         lat_dir = {LAT_PARALLEL: "parallel to contours", LAT_PERPENDICULAR:
@@ -1009,25 +1217,70 @@ class MainLocator:
                 "score": round(ev["score"] / 1e4, 4),
                 "chosen": ev is best}})
 
-        code = best["code"]
+        # submains
+        submains = []
+        if subs_on:
+            n_main = net["n_main"]
+            arm_names = (["main"] + ["main arm {}".format(k + 1) for k in range(1, n_main)]
+                         + ["submain {}".format(k + 1) for k in range(len(net["subs"]))])
+            sub_notes = {}
+            for r in net["seg_rows"]:
+                for t in r["notes"]:
+                    lst = sub_notes.setdefault(r["arm"], [])
+                    if t not in lst:
+                        lst.append(t)
+            for k in range(n_main, len(net["pipes"])):
+                pp = net["pipes"][k]
+                z, s_, inv = pp["z"], pp["s"], pp["inv"]
+                L = float(s_[-1]) or 1.0
+                depth = z - inv
+                flags = []
+                if float(np.nanmax(depth)) > p.max_depth + 0.01:
+                    flags.append("deeper than " + self._fmt(p.max_depth, 2))
+                if float(np.nanmin(depth)) < p.min_cover - 0.01:
+                    flags.append("cover under {} between grade breaks".format(
+                        self._fmt(p.min_cover, 2)))
+                sb = net["subs"][k - n_main]
+                submains.append({"coords": pp["pts"], "attrs": {
+                    "sub_id": k - n_main + 1, "name": arm_names[k],
+                    "joins": arm_names[net["ends"][k][0]], "method": sb["name"],
+                    "length_m": round(float(s_[-1]), 2),
+                    "ground_us": round(float(z[0]), 3), "ground_ds": round(float(z[-1]), 3),
+                    "invert_us": round(float(inv[0]), 3),
+                    "invert_ds": round(float(inv[-1]), 3),
+                    "design_grade_pct": round(100 * float(inv[0] - inv[-1]) / L, 3),
+                    "max_depth_m": round(float(np.nanmax(depth)), 3),
+                    "min_depth_m": round(float(np.nanmin(depth)), 3),
+                    "gain_pct": round(100 * sb["gain"] / max(self.inner_area, 1e-9), 2),
+                    "bury_check": "; ".join(sub_notes.get(k, [])) or "OK",
+                    "flag": "; ".join(flags)}})
+
+        main_code = best["code"]
+        main_served = 100.0 * float(self.pt_w[main_code == ST_SERVED].sum()) / max(
+            self.inner_area, 1e-9)
+        code = net["code"] if subs_on else best["code"]
+        tgt = "the main and submains" if subs_on else "the main"
         share = {c: 100.0 * float(self.pt_w[code == c].sum()) / max(self.inner_area, 1e-9)
                  for c in (ST_SERVED, ST_CONVERGE, ST_NOREACH, ST_UPHILL)}
-        lat = best["lat_len"][np.isfinite(best["lat_len"])]
+        lat_src = net["lat_len"] if subs_on else best["lat_len"]
+        lat = lat_src[np.isfinite(lat_src)]
         if share[ST_CONVERGE] > 5:
-            self._warn("Laterals converge before reaching the main over {:.0f}% of the "
-                       "drainable area (draws or swales); add submains there.".format(
-                           share[ST_CONVERGE]))
+            self._warn("Laterals converge before reaching {} over {:.0f}% of the "
+                       "drainable area (draws or swales){}.".format(
+                           tgt, share[ST_CONVERGE],
+                           "" if subs_on else "; add submains there"))
         if share[ST_UPHILL] > 5:
             self._warn("Over {:.0f}% of the drainable area laterals would have to run uphill "
-                       "to the main; that ground needs its own collector.".format(
-                           share[ST_UPHILL]))
+                       "to {}; that ground needs its own collector or outlet.".format(
+                           share[ST_UPHILL], tgt))
         if share[ST_NOREACH] > 10:
-            self._warn("Laterals from {:.0f}% of the drainable area do not reach the main{}; "
-                       "consider a submain, a second outlet or the other lateral "
-                       "orientation.".format(share[ST_NOREACH],
+            self._warn("Laterals from {:.0f}% of the drainable area do not reach {}{}; "
+                       "consider {}a second outlet or the other lateral "
+                       "orientation.".format(share[ST_NOREACH], tgt,
                                              " within the maximum lateral length "
                                              "({})".format(self._fmt(p.max_lateral_length))
-                                             if p.max_lateral_length else ""))
+                                             if p.max_lateral_length else "",
+                                             "" if subs_on else "submains, "))
         if getattr(self, "reach_frac", 1.0) < 0.9:
             self._warn("{:.0f}% of the field cannot drain to this outlet without crossing "
                        "the setback zone.".format(100 * (1 - self.reach_frac)))
@@ -1062,8 +1315,14 @@ class MainLocator:
             "lateral_bearing_deg": round(lat_bearing, 1),
             "candidates": len(scored),
         }
+        summary["main_served_pct"] = round(main_served, 2)
+        summary["submains"] = len(submains)
+        summary["submain_length_m"] = round(sum(sm["attrs"]["length_m"] for sm in submains), 1)
+        if subs_on:
+            cov[self.inner_ii, self.inner_jj] = net["code"][self.inner_blk]
         return {"mains": mains, "segments": segments, "candidates": candidates,
-                "coverage": cov, "summary": summary, "warnings": list(self.warnings)}
+                "submains": submains, "coverage": cov, "summary": summary,
+                "warnings": list(self.warnings)}
 
 
 def run_locator(dem, valid, grid, rings, outlet, params, progress=None, cancel=None):

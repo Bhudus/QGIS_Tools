@@ -68,12 +68,16 @@ def plot(name, g, z, rings, outlet, res):
     for m in res["mains"]:
         c = m["coords"]
         ax.plot(c[:, 0], c[:, 1], color="#b91c1c", lw=2.8)
+    for m in res.get("submains", []):
+        c = m["coords"]
+        ax.plot(c[:, 0], c[:, 1], color="#ea580c", lw=1.8)
     ax.plot(*outlet, marker="*", color="#b91c1c", ms=14, mec="white")
     s = res["summary"]
     ax.set_title("{}\n{}\nserved {:.1f}%  converge {:.1f}%  no-reach {:.1f}%  uphill {:.1f}%  "
-                 "main {:.0f} m  problem {:.0f} m".format(
+                 "main {:.0f} m  problem {:.0f} m  submains {} ({:.0f} m)".format(
                      name, s["method"], s["served_pct"], s["converge_pct"], s["noreach_pct"],
-                     s["uphill_pct"], s["main_length_m"], s["problem_length_m"]), fontsize=8)
+                     s["uphill_pct"], s["main_length_m"], s["problem_length_m"], s["submains"],
+                     s["submain_length_m"]), fontsize=8)
     ax.set_aspect("equal")
     ax.set_xlim(ext[0], ext[1])
     ax.set_ylim(ext[2], ext[3])
@@ -93,9 +97,10 @@ def case(terrain, field, outlet, orient, shape="contour", align="best", tag="", 
     name = "{}_{}_{}_{}_{}{}".format(terrain, field, orient, shape, align, tag)
     plot(name, g, z, rings, outlet, res)
     s = res["summary"]
-    print("{:48s} {:5.1f}s served={:5.1f}% main={:5.0f}m prob={:4.0f}m n={:3d}  {}".format(
-        name, dt, s["served_pct"], s["main_length_m"], s["problem_length_m"],
-        s["candidates"], s["method"]))
+    print("{:52s} {:5.1f}s served={:5.1f}% (main {:5.1f}%) main={:5.0f}m subs={:2d}/{:5.0f}m "
+          "prob={:4.0f}m  {}".format(
+              name, dt, s["served_pct"], s["main_served_pct"], s["main_length_m"],
+              s["submains"], s["submain_length_m"], s["problem_length_m"], s["method"]))
     for w in res["warnings"]:
         print("     ! " + w)
     return res
@@ -116,6 +121,13 @@ if __name__ == "__main__":
         for o in ("parallel", "perpendicular"):
             case("swale", "rect", (255, 0), o, "contour")
         case("swale", "rect", (255, 0), "perpendicular", "contour", "straight")
+    if which in ("subs", "all"):
+        for o in ("parallel", "perpendicular"):
+            case("swale", "rect", (255, 0), o, "contour", tag="_subs", add_submains=True)
+            case("rolling", "irregular", (230, 0), o, "contour", tag="_subs",
+                 add_submains=True)
+        case("plane", "rect", (0, 0), "perpendicular", "contour", tag="_subs",
+             add_submains=True)
     if which in ("rolling", "all"):
         for o in ("parallel", "perpendicular"):
             case("rolling", "irregular", (230, 0), o, "contour")

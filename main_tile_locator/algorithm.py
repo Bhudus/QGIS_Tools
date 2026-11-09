@@ -85,6 +85,57 @@ def _advanced(param):
     return param
 
 
+def _label(layer, field):
+    """Label each line with a field's value, along the line, in a white halo."""
+    from qgis.core import (QgsPalLayerSettings, QgsTextBufferSettings, QgsTextFormat,
+                           QgsVectorLayerSimpleLabeling)
+    from qgis.PyQt.QtGui import QColor, QFont
+    fmt = QgsTextFormat()
+    font = QFont()
+    font.setBold(True)
+    fmt.setFont(font)
+    fmt.setSize(10)
+    fmt.setColor(QColor(30, 41, 59))
+    buf = QgsTextBufferSettings()
+    buf.setEnabled(True)
+    buf.setSize(1.0)
+    buf.setColor(QColor(255, 255, 255))
+    fmt.setBuffer(buf)
+    pal = QgsPalLayerSettings()
+    pal.fieldName = field
+    pal.isExpression = False
+    pal.setFormat(fmt)
+    try:
+        from qgis.core import Qgis
+        pal.placement = Qgis.LabelPlacement.Line
+    except (ImportError, AttributeError):
+        pal.placement = QgsPalLayerSettings.Line
+    pal.enabled = True
+    layer.setLabeling(QgsVectorLayerSimpleLabeling(pal))
+    layer.setLabelsEnabled(True)
+
+
+class _SubmainStyler(QgsProcessingLayerPostProcessorInterface):
+    """Submains orange, labelled with their name."""
+
+    def postProcessLayer(self, layer, context, feedback):
+        if not isinstance(layer, QgsVectorLayer):
+            return
+        root = QgsRuleBasedRenderer.Rule(None)
+        ok = QgsLineSymbol.createSimple({"color": "234,88,12", "width": "0.8"})
+        root.appendChild(QgsRuleBasedRenderer.Rule(
+            ok, 0, 0, "\"flag\" IS NULL OR \"flag\" = ''", "Submain"))
+        bad = QgsLineSymbol.createSimple({"color": "147,51,234", "width": "0.8"})
+        root.appendChild(QgsRuleBasedRenderer.Rule(
+            bad, 0, 0, "\"flag\" <> ''", "Submain to check (see flag)"))
+        layer.setRenderer(QgsRuleBasedRenderer(root))
+        try:
+            _label(layer, "name")
+        except Exception as e:  # noqa: BLE001
+            feedback.pushWarning("Could not label the submains: {}".format(e))
+        layer.triggerRepaint()
+
+
 class _CandidateStyler(QgsProcessingLayerPostProcessorInterface):
     """Chosen main red; runners-up blue, dashed."""
 
@@ -100,40 +151,10 @@ class _CandidateStyler(QgsProcessingLayerPostProcessorInterface):
                                                    "Runner-up (see rank)"))
         layer.setRenderer(QgsRuleBasedRenderer(root))
         try:
-            self._label(layer)
+            _label(layer, "rank")
         except Exception as e:  # noqa: BLE001  labels are a convenience only
             feedback.pushWarning("Could not label the candidates: {}".format(e))
         layer.triggerRepaint()
-
-    @staticmethod
-    def _label(layer):
-        """Label each candidate with its rank, along the line, in a white halo."""
-        from qgis.core import (QgsPalLayerSettings, QgsTextBufferSettings, QgsTextFormat,
-                               QgsVectorLayerSimpleLabeling)
-        from qgis.PyQt.QtGui import QColor, QFont
-        fmt = QgsTextFormat()
-        font = QFont()
-        font.setBold(True)
-        fmt.setFont(font)
-        fmt.setSize(10)
-        fmt.setColor(QColor(30, 41, 59))
-        buf = QgsTextBufferSettings()
-        buf.setEnabled(True)
-        buf.setSize(1.0)
-        buf.setColor(QColor(255, 255, 255))
-        fmt.setBuffer(buf)
-        pal = QgsPalLayerSettings()
-        pal.fieldName = "rank"
-        pal.isExpression = False
-        pal.setFormat(fmt)
-        try:
-            from qgis.core import Qgis
-            pal.placement = Qgis.LabelPlacement.Line
-        except (ImportError, AttributeError):
-            pal.placement = QgsPalLayerSettings.Line
-        pal.enabled = True
-        layer.setLabeling(QgsVectorLayerSimpleLabeling(pal))
-        layer.setLabelsEnabled(True)
 
 
 class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
@@ -166,6 +187,9 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
     SMOOTH = "SMOOTH"
     CELL_SIZE = "CELL_SIZE"
     CANDIDATES = "CANDIDATES"
+    ADD_SUBMAINS = "ADD_SUBMAINS"
+    MAX_SUBMAINS = "MAX_SUBMAINS"
+    SUBMAINS = "SUBMAINS"
     N_CANDIDATES = 5          # the chosen main and four runners-up
 
     # ------------------------------------------------------------ metadata
@@ -219,7 +243,16 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
             "outlet, with the share of the drainable area its laterals reach, its length, "
             "design grade, depths and Routine J notes. Select the chosen one to use it as "
             "the <i>Main line(s)</i> input of the Illini Subsurface Drain Layout plugin "
-            "(tick <i>Selected features only</i>).</p>"
+            "(tick <i>Selected features only</i>).<br>"
+            "<i>Submains</i> (only with <b>Add submains to cover the field</b>): after the "
+            "main is chosen, the tool repeatedly finds the largest patches whose laterals "
+            "still cannot drain to the network, tries submains into each (along the low "
+            "ground, straight to the network, or as headers along the contours), and adds "
+            "the one that drains the most extra area for its length, until no submain is "
+            "worth adding. Each submain joins the main or an earlier submain, is buried with "
+            "the main, and records the share of the field it adds (<i>gain_pct</i>). Ground "
+            "below the outlet or beyond the maximum lateral length may still be left "
+            "uncovered; the log reports how much.</p>"
             "<p>All lengths, depths and elevations on this form and in the outputs are in the "
             "chosen design units; grades are in percent. The DEM must be in a projected "
             "CRS.</p>"
@@ -252,6 +285,10 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
                      self.tr("Bend with the terrain only"),
                      self.tr("Straight lines only")],
             defaultValue=0))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.ADD_SUBMAINS,
+            self.tr("Add submains to cover the field (to the chosen main)"),
+            defaultValue=False))
         self.addParameter(QgsProcessingParameterEnum(
             self.UNITS, self.tr("Design units (spacing, lengths, depths, outputs)"),
             options=[self.tr("Metres"), self.tr("Feet")], defaultValue=1))
@@ -259,7 +296,7 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
             self.SPACING, self.tr("Lateral spacing"), D, defaultValue=80.0, minValue=1.0))
         self.addParameter(QgsProcessingParameterNumber(
             self.MAX_LAT_LEN, self.tr("Maximum lateral length (0 = no limit)"), D,
-            defaultValue=0.0, minValue=0.0))
+            defaultValue=1320.0, minValue=0.0))
         self.addParameter(QgsProcessingParameterNumber(
             self.UPPER_DEPTH, self.tr("Burying: upper tile depth (target band)"), D,
             defaultValue=3.25, minValue=0.0))
@@ -312,6 +349,10 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
             self.tr("Low-ground main ends where its drainage area falls below (% of field)"),
             D, defaultValue=2.0, minValue=0.1, maxValue=50.0)))
         self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.MAX_SUBMAINS, self.tr("Most submains to add"),
+            QgsProcessingParameterNumber.Integer, defaultValue=20, minValue=1,
+            maxValue=200)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
             self.MAIN_WEIGHT,
             self.tr("Scoring: cost of main length (drained strips of one spacing per unit "
                     "length)"), D, defaultValue=0.5, minValue=0.0, maxValue=10.0)))
@@ -328,6 +369,9 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterFeatureSink(
             self.CANDIDATES, self.tr("Candidate mains (chosen and four runners-up)"),
             QgsProcessing.TypeVectorLine))
+        self.addParameter(QgsProcessingParameterFeatureSink(
+            self.SUBMAINS, self.tr("Submains (when added)"), QgsProcessing.TypeVectorLine,
+            optional=True, createByDefault=True))
 
         for key, desc in (("MAIN_LENGTH", "Main length"),
                           ("SERVED_PCT", "Drainable area whose laterals reach the main (%)"),
@@ -490,6 +534,8 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
             bearing_step=num(self.BEARING_STEP),
             main_weight=num(self.MAIN_WEIGHT),
             main_stop_frac=num(self.MAIN_STOP) / 100.0,
+            add_submains=self.parameterAsBool(parameters, self.ADD_SUBMAINS, context),
+            max_submains=int(self.parameterAsInt(parameters, self.MAX_SUBMAINS, context)),
             units=u_lbl,
         )
         if params.target_lower < params.target_upper:
@@ -558,6 +604,36 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
             _POST[cand_id] = _CandidateStyler()
             context.layerToLoadOnCompletionDetails(cand_id).setPostProcessor(_POST[cand_id])
 
+        # ---------------------------------------------------- submains
+        if params.add_submains and parameters.get(self.SUBMAINS) is not None:
+            sub_fields = fields([
+                ("id", Iv), ("name", Sv), ("joins", Sv), ("method", Sv), ("length", Dv),
+                ("ground_us", Dv), ("ground_ds", Dv), ("invert_us", Dv), ("invert_ds", Dv),
+                ("design_grade_pct", Dv), ("max_depth", Dv), ("min_depth", Dv),
+                ("gain_pct", Dv), ("BURY_CHECK", Sv), ("flag", Sv)])
+            ssink, sub_id = self.parameterAsSink(parameters, self.SUBMAINS, context,
+                                                 sub_fields, QgsWkbTypes.LineString, crs)
+            if ssink is not None:
+                for sm in res["submains"]:
+                    a = sm["attrs"]
+                    vals = {"id": a["sub_id"], "name": a["name"], "joins": a["joins"],
+                            "method": a["method"], "length": L(a["length_m"]),
+                            "ground_us": L(a["ground_us"]), "ground_ds": L(a["ground_ds"]),
+                            "invert_us": L(a["invert_us"]), "invert_ds": L(a["invert_ds"]),
+                            "design_grade_pct": a["design_grade_pct"],
+                            "max_depth": L(a["max_depth_m"]),
+                            "min_depth": L(a["min_depth_m"]), "gain_pct": a["gain_pct"],
+                            "BURY_CHECK": a["bury_check"], "flag": a["flag"]}
+                    f = QgsFeature(sub_fields)
+                    f.setGeometry(QgsGeometry.fromPolylineXY(pts_geom(sm["coords"])))
+                    f.setAttributes([vals[sub_fields.at(i).name()]
+                                     for i in range(sub_fields.count())])
+                    ssink.addFeature(f, QgsFeatureSink.FastInsert)
+                out[self.SUBMAINS] = sub_id
+                if context.willLoadLayerOnCompletion(sub_id):
+                    _POST[sub_id] = _SubmainStyler()
+                    context.layerToLoadOnCompletionDetails(sub_id).setPostProcessor(
+                        _POST[sub_id])
 
         # ---------------------------------------------------- log
         s = res["summary"]
@@ -565,10 +641,14 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
         feedback.pushInfo(self.tr("Chosen main: {}").format(s["method"]))
         feedback.pushInfo(self.tr("Main length: {:,.0f} {}").format(
             s["main_length_m"] / uf, u_lbl))
-        feedback.pushInfo(self.tr("Drainable area whose laterals reach the main: {:.1f}% "
+        if params.add_submains:
+            feedback.pushInfo(self.tr("Submains added: {} ({:,.0f} {}); the main alone "
+                                      "serves {:.1f}%").format(
+                s["submains"], s["submain_length_m"] / uf, u_lbl, s["main_served_pct"]))
+        feedback.pushInfo(self.tr("Drainable area whose laterals reach the {}: {:.1f}% "
                                   "(converge first: {:.1f}%, do not reach: {:.1f}%, "
                                   "uphill: {:.1f}%)").format(
-            s["served_pct"], s["converge_pct"], s["noreach_pct"], s["uphill_pct"]))
+            "main and submains" if params.add_submains else "main", s["served_pct"], s["converge_pct"], s["noreach_pct"], s["uphill_pct"]))
         feedback.pushInfo(self.tr("Lateral run to the main: mean {:,.0f} {}, longest "
                                   "{:,.0f} {}").format(s["mean_lateral_run_m"] / uf, u_lbl,
                                                        s["longest_lateral_run_m"] / uf,

@@ -35,10 +35,11 @@ processing.run("maintilelocator:maintilelocator", {
 | Field boundary | Polygon layer. All features are merged; holes (waterways, buildings) are excluded. |
 | Laterals to be installed | *Parallel to the contour lines* (across the slope, default) or *Perpendicular to the contour lines* (down the slope). |
 | Lateral shape | *Bend with the terrain* (follow the contours, or the fall line; default) or *Straight* (on the field's dominant contour or fall bearing). |
+| Add submains to cover the field | Off by default. When on, submains are added to the chosen main until no further submain is worth adding (see below). |
 | Main alignment | *Best of all candidates* (default), *Bend with the terrain only*, or *Straight lines only*. |
 | Design units | Feet (default) or metres, for every length, depth and output. |
 | Lateral spacing | Default 80 ft. Sets the boundary setback, the terrain smoothing and the scoring. |
-| Maximum lateral length | Default 0 (no limit). When set, laterals that would run farther to reach the main count as not served. |
+| Maximum lateral length | Default 1320 ft; 0 = no limit. Laterals that would run farther to reach the main count as not served. |
 | Burying: target band, absolute depths, slopes, offset, lower the outlet | Routine J settings for burying the main. Defaults 3.25–4.25 ft band, 2.5 ft and 6 ft absolute, 0.1% minimum and 5% maximum slope. |
 | Minimum slope of the laterals | Default 0.1%. A lateral must be able to reach the main at this grade, using the ground fall plus the depth range (absolute upper to absolute lower tile depth). |
 | Outlet invert elevation | Optional, in DEM elevation units. Flags the main if it arrives below the outlet. |
@@ -47,7 +48,7 @@ Advanced: DEM elevation units (default US survey feet), target grade of
 contour-parallel laterals (0.2%), longest burying segment between grade breaks
 (50 ft), bearing step of straight mains (5°), where the low-ground main ends
 (2% of the field), the scoring cost of main length, boundary setback, smoothing
-radius and analysis cell size.
+radius and analysis cell size, and the most submains to add (20).
 
 ## How the main is located
 
@@ -85,10 +86,21 @@ radius and analysis cell size.
    length that cannot be buried within the depth and slope limits.
 5. **Trimming.** The upper end of each arm of the best main is shortened while
    that raises the score.
-6. **Burying.** The chosen main is buried with the scheme of Routine J (Tile
+6. **Submains** (optional). The tool finds the largest patches (up to five at a
+   time) whose laterals still cannot drain to the network: they converge in a
+   draw, fall short of the maximum lateral length, or would run uphill. For
+   each patch it tries submains from several points in it: down the low ground
+   (priority-flood route) to the network, straight to the nearest point of the
+   network, and headers along the contours from where the low-ground route
+   meets the network. Each try is scored on the whole network (main plus
+   submains) the same way as the main; the best is trimmed at its upper end
+   and added if it drains at least one spacing-square more area than it costs.
+   This repeats until no submain is worth adding or the limit is reached.
+7. **Burying.** The chosen main is buried with the scheme of Routine J (Tile
    Burying System) of the Illini Drainage Tools, from the outlet upstream,
    exactly as in the Illini Subsurface Drain Layout plugin; the four runners-up
-   are buried the same way.
+   are buried the same way. With submains, the main is buried together with
+   them, so its depths and grade in the candidate layer are those of the network.
 
 ## Outputs
 
@@ -110,12 +122,27 @@ dashed, and every candidate is labelled with its rank.
 
 The log summarises the result and lists warnings.
 
+**Submains** (only when *Add submains to cover the field* is on): one line per
+submain, digitised from its upper end to where it joins, drawn orange and
+labelled with its name.
+
+| Field | Meaning |
+|---|---|
+| `name`, `joins` | e.g. `submain 2` joins `main` or `submain 1`. |
+| `method` | Along the low ground, straight, or header along the contours. |
+| `length`, `ground_us/ds`, `invert_us/ds`, `max_depth`, `min_depth` | Design units. |
+| `design_grade_pct` | Percent. |
+| `gain_pct` | Share of the drainable area it added when it was placed. |
+| `BURY_CHECK`, `flag` | Routine J notes; depth problems (drawn purple). |
+
 ## Going on to a full layout
 
 Select the chosen main (or any runner-up) in the **Candidate mains** layer and
 use it as the *Main line(s)* input of the **Illini Subsurface Drain Layout**
 plugin with *Selected features only* ticked, and the same outlet. The arm
-ending nearest the outlet becomes the main and any second arm a submain.
+ending nearest the outlet becomes the main and any second arm a submain. To
+include the submains, merge them with the chosen main into one line layer
+first (Vector ▸ Data Management Tools ▸ Merge Vector Layers).
 
 ## Tips
 
@@ -125,8 +152,8 @@ ending nearest the outlet becomes the main and any second arm a submain.
   contours, expect a header across the low side, often turning up a low edge.
 - In **draws and swales**, laterals perpendicular to the contours drain to a
   main in the low ground; contour-parallel laterals there run nearly parallel
-  to the draw, so a single main may serve little; the log reports how much of
-  the field needs submains.
+  to the draw, so a single main may serve little; tick *Add submains to cover
+  the field* to fill the gaps.
 - A low `served_pct` means the outlet or the orientation doesn't suit part of
   the field. Try the other orientation, a larger maximum lateral length, or a
   second outlet for that zone.
@@ -135,8 +162,8 @@ ending nearest the outlet becomes the main and any second arm a submain.
 
 - This is a planning tool. Check the main against field conditions and local
   standards before installation.
-- One outlet and one main (with up to two arms) per run; submains are not laid
-  out; the log reports where they are needed.
+- One outlet per run. Submains are added greedily, one at a time, so the set is
+  good but not guaranteed optimal; ground below the outlet cannot be covered.
 - The lateral check uses net fall over the whole lateral; humps along a
   lateral are caught only when they exceed the available depth range.
 
