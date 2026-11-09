@@ -96,7 +96,10 @@ class StreamStatsDelineatorPlugin:
 
         task = DelineationTask(lat, lon, region=region, snap=cfg["snap"],
                                timeout=float(cfg["timeout_s"]),
-                               streams=cfg["streams"])
+                               streams=cfg["streams"],
+                               subbasins=cfg["subbasins"],
+                               split_order=settings_dialog.split_order_value(cfg),
+                               max_subbasins=int(cfg["max_subbasins"]))
         task.done.connect(lambda res, t=task: self._on_done(t, res, cfg))
         task.failed.connect(lambda msg, t=task: self._on_failed(t, msg))
         self.running[task] = marker
@@ -139,6 +142,16 @@ class StreamStatsDelineatorPlugin:
                     feat["n_streams"], feat["stream_km"])
             else:
                 msg += " No NHDPlus streams inside this watershed (likely a small headwater basin)."
+        if cfg["subbasins"]:
+            sb = result.get("subbasin_parts")
+            if sb:
+                msg += " {} sub-basin{} (split at stream order ≥ {}).".format(
+                    len(sb), "" if len(sb) == 1 else "s",
+                    result["subbasins"]["split_order"])
+            else:
+                msg += " Sub-basins unavailable: {}".format(
+                    result.get("subbasins_error") or "no NHDPlus catchments found.")
+                level = "Warning"
         if cfg["snap"] and result["snap_distance_m"] > cfg["warn_snap_m"]:
             msg += (" Outlet snapped {:,.0f} m from your click — check it is on the "
                     "intended stream.").format(result["snap_distance_m"])

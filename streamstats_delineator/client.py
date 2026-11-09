@@ -42,6 +42,15 @@ NLDI_BASE = "https://api.water.usgs.gov/nldi/linked-data"
 NLDI_POSITION_URL = NLDI_BASE + "/comid/position"
 NLDI_UT_URL = NLDI_BASE + "/comid/{comid}/navigation/UT/flowlines"
 
+# USGS WaterData GeoServer: NHDPlus V2 flowline topology and catchment polygons
+# (one catchment per flowline; catchmentsp.featureid == flowline comid).
+WFS_URL = "https://api.water.usgs.gov/geoserver/wmadata/ows"
+FLOWLINE_TYPE = "wmadata:nhdflowline_network"
+CATCHMENT_TYPE = "wmadata:catchmentsp"
+WFS_CHUNK = 100                # COMIDs per WFS request
+MAX_SUBBASIN_COMIDS = 6000     # ~15,000-20,000 km² of NHDPlus catchments
+DEFAULT_MAX_SUBBASINS = 20     # target for automatic split order
+
 USER_AGENT = "QGIS-StreamStats-Delineator/1.0"
 
 # StreamStats study-area codes: the 50 states, DC and PR, plus regional studies.
@@ -233,16 +242,105 @@ class StreamStatsClient:
                  (f.get("geometry") or {}).get("type") in ("LineString", "MultiLineString")]
         return comid, lines
 
+    # ---------------------------------------------------------------- NHDPlus WFS
+    def _wfs_by_ids(self, type_name, id_field, ids, properties):
+        """GeoJSON features of ``type_name`` whose ``id_field`` is in ``ids``.
+
+        Uses WFS 1.0.0 (always lon/lat axis order) with an ECQL ``IN`` filter,
+        in chunks so URLs stay short and no server-side paging is needed.
+        """
+        out = []
+        ids = list(ids)
+        for i in range(0, len(ids), WFS_CHUNK):
+            if self.is_canceled():
+                raise StreamStatsError("Canceled")
+            chunk = ids[i:i + WFS_CHUNK]
+            params = {
+                "service": "WFS", "version": "1.0.0", "request": "GetFeature",
+                "typeName": type_name, "outputFormat": "application/json",
+                "propertyName": ",".join(properties),
+                "CQL_FILTER": "{} IN ({})".format(id_field, ",".join(str(int(c)) for c in chunk)),
+            }
+            data = self._get_json(WFS_URL, params)
+            feats = data.get("features") if isinstance(data, dict) else None
+            if feats is None:
+                raise UnexpectedResponseError(
+                    "WFS {} response has no features: {}".format(
+                        type_name, _short(json.dumps(data))))
+            out.extend(f for f in feats if isinstance(f, dict))
+        return out
+
+    def network_attributes(self, comids):
+        """{comid: {hydroseq, dnhydroseq, order, name}} from NHDPlus V2."""
+        feats = self._wfs_by_ids(FLOWLINE_TYPE, "comid", comids,
+                                 ["comid", "hydroseq", "dnhydroseq", "streamorde",
+                                  "gnis_name"])
+        net = {}
+        for f in feats:
+            p = f.get("properties") or {}
+            try:
+                c = str(int(p["comid"]))
+                net[c] = {"hydroseq": int(p["hydroseq"]),
+                          "dnhydroseq": int(p.get("dnhydroseq") or 0),
+                          "order": int(p.get("streamorde") or 0),
+                          "name": (p.get("gnis_name") or "").strip()}
+            except (KeyError, TypeError, ValueError):
+                continue
+        return net
+
+    def catchments(self, comids):
+        """{comid: GeoJSON (Multi)Polygon geometry} of NHDPlus V2 catchments."""
+        feats = self._wfs_by_ids(CATCHMENT_TYPE, "featureid", comids,
+                                 ["featureid", "the_geom"])
+        out = {}
+        for f in feats:
+            p = f.get("properties") or {}
+            g = f.get("geometry")
+            if not g or g.get("type") not in ("Polygon", "MultiPolygon"):
+                continue
+            try:
+                out[str(int(p["featureid"]))] = _ensure_lonlat(g)
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
+    def subbasins(self, outlet_comid, comids, split_order=None,
+                  max_subbasins=DEFAULT_MAX_SUBBASINS):
+        """Group the NHDPlus catchments above ``outlet_comid`` into sub-basins.
+
+        Returns dict(split_order, subbasins=[...] (see build_subbasins),
+        network={comid: attrs}, catchments={comid: geometry}).
+        """
+        comids = list(dict.fromkeys([str(outlet_comid)] + [str(c) for c in comids]))
+        if len(comids) > MAX_SUBBASIN_COMIDS:
+            raise StreamStatsError(
+                "Watershed too large for sub-basins ({:,} NHDPlus reaches; limit "
+                "{:,}).".format(len(comids), MAX_SUBBASIN_COMIDS))
+        net = self.network_attributes(comids)
+        if str(outlet_comid) not in net:
+            raise UnexpectedResponseError(
+                "Outlet reach {} not found in the NHDPlus network.".format(outlet_comid))
+        if split_order is None:
+            split_order = choose_split_order(net, str(outlet_comid), max_subbasins)
+        groups = build_subbasins(net, str(outlet_comid), split_order)
+        cats = self.catchments(list(net))
+        return {"split_order": split_order, "subbasins": groups,
+                "network": net, "catchments": cats}
+
     # ---------------------------------------------------------------- pipeline
     def delineate_from_click(self, lat, lon, region=None, snap=True,
-                             max_outside_m=100.0, streams=False):
+                             max_outside_m=100.0, streams=False, subbasins=False,
+                             split_order=None, max_subbasins=DEFAULT_MAX_SUBBASINS):
         """
-        Full pipeline: region -> snap -> delineate -> validate.
+        Full pipeline: region -> snap -> delineate -> validate
+        [-> NLDI upstream flowlines] [-> NHDPlus sub-basins].
 
         Returns a dict:
             region, clicked (lat, lon), snapped (lat, lon), snap_distance_m,
             polygon (GeoJSON geometry dict, WGS84), pour_point (lat, lon),
-            properties (dict from the watershed feature), huc, raw (full JSON)
+            properties (dict from the watershed feature), huc, raw (full JSON),
+            streams / stream_outlet_comid / streams_error,
+            subbasins (see ``subbasins()``, or None) / subbasins_error
         """
         if not region:
             region = self.find_region(lat, lon)
@@ -265,20 +363,31 @@ class StreamStatsClient:
 
         pp = ws["pour_point"] or (s_lat, s_lon)
 
-        # Streams are a bonus: a failure here never discards the watershed.
+        # Streams and sub-basins are extras: a failure in either never
+        # discards the watershed; it is reported in *_error instead.
         stream_feats, stream_comid, stream_error = [], None, None
-        if streams:
+        sb, sb_error = None, None
+        if streams or subbasins:
             try:
                 stream_comid, stream_feats = self.upstream_flowlines(
                     pp[0], pp[1], geojson_area_km2(ws["polygon"]))
-            except StreamStatsError as e:
-                if str(e) == "Canceled":
-                    raise
-                stream_error = str(e)
             except Exception as e:
-                stream_error = "{}: {}".format(type(e).__name__, e)
+                stream_error = _extra_error(e)
+                sb_error = stream_error
+        if subbasins and stream_comid is not None:
+            try:
+                comids = [_comid_of(f) for f in stream_feats]
+                sb = self.subbasins(stream_comid, [c for c in comids if c],
+                                    split_order=split_order,
+                                    max_subbasins=max_subbasins)
+            except Exception as e:
+                sb_error = _extra_error(e)
+        if not streams:
+            stream_feats, stream_error = [], None
 
         return {
+            "subbasins": sb,
+            "subbasins_error": sb_error,
             "streams": stream_feats,
             "stream_outlet_comid": stream_comid,
             "streams_error": stream_error,
@@ -390,6 +499,130 @@ def validate_watershed(ws, snapped_latlon, max_outside_m=100.0):
         if d > max_outside_m:
             raise DegenerateDelineationError(
                 "Snapped outlet is {:.0f} m outside the returned watershed.".format(d))
+
+
+# --------------------------------------------------------------------------- sub-basins
+def build_subbasins(net, outlet, split_order):
+    """Group NHDPlus reaches into sub-basins split at stream confluences.
+
+    ``net`` is {comid: {"hydroseq", "dnhydroseq", "order", "name"}} for every
+    reach upstream of (and including) ``outlet``. A reach is the bottom of a
+    sub-basin when it is the watershed outlet, or when it has Strahler order
+    >= ``split_order`` and meets another such reach at its downstream end.
+    Every reach belongs to the first sub-basin bottom found by walking
+    downstream from it, so each sub-basin is one link of the order >=
+    ``split_order`` network plus all the smaller streams draining to it.
+
+    Returns a list ordered outlet-first (upstream breadth-first) of dicts:
+        sb_id, ds_sb_id (None at the outlet), outlet_comid, comids,
+        max_order, name
+    """
+    outlet = str(outlet)
+    hs2c = {a["hydroseq"]: c for c, a in net.items()}
+    major = [c for c, a in net.items() if a["order"] >= split_order]
+    inflows = {}
+    for c in major:
+        dn = net[c]["dnhydroseq"]
+        inflows[dn] = inflows.get(dn, 0) + 1
+
+    heads = set()
+    for c, a in net.items():
+        dn = a["dnhydroseq"]
+        if c == outlet or dn not in hs2c:
+            heads.add(c)  # watershed outlet, or a piece cut off from the network
+        elif a["order"] >= split_order and inflows.get(dn, 0) >= 2:
+            heads.add(c)
+
+    owner = {h: h for h in heads}
+    for c in net:
+        path, cur = [], c
+        while cur not in owner:
+            path.append(cur)
+            if len(path) > len(net):
+                raise UnexpectedResponseError("Loop in NHDPlus network topology.")
+            cur = hs2c[net[cur]["dnhydroseq"]]
+        for p in path:
+            owner[p] = owner[cur]
+
+    members = {h: [] for h in heads}
+    for c, h in owner.items():
+        members[h].append(c)
+
+    def downstream_head(h):
+        if h == outlet:
+            return None
+        dn = net[h]["dnhydroseq"]
+        return owner[hs2c[dn]] if dn in hs2c else None
+
+    ds = {h: downstream_head(h) for h in heads}
+    children = {}
+    for h, d in ds.items():
+        if d is not None:
+            children.setdefault(d, []).append(h)
+
+    order, queue = [], [outlet] if outlet in heads else []
+    while queue:
+        h = queue.pop(0)
+        order.append(h)
+        queue.extend(sorted(children.get(h, []), key=lambda x: net[x]["hydroseq"]))
+    order += sorted((h for h in heads if h not in set(order)),
+                    key=lambda x: net[x]["hydroseq"])
+    ids = {h: i + 1 for i, h in enumerate(order)}
+
+    out = []
+    for h in order:
+        comids = sorted(members[h], key=lambda x: net[x]["hydroseq"])
+        max_order = max(net[c]["order"] for c in comids)
+        name = net[h]["name"] or next(
+            (net[c]["name"] for c in comids
+             if net[c]["name"] and net[c]["order"] == max_order), "")
+        out.append({"sb_id": ids[h], "ds_sb_id": ids.get(ds[h]),
+                    "outlet_comid": h, "comids": comids,
+                    "max_order": max_order, "name": name})
+    return out
+
+
+def choose_split_order(net, outlet, max_subbasins=DEFAULT_MAX_SUBBASINS):
+    """Smallest Strahler order whose split gives at most ``max_subbasins``."""
+    top = max((a["order"] for a in net.values()), default=1)
+    for n in range(1, max(top, 1) + 1):
+        if len(build_subbasins(net, outlet, n)) <= max_subbasins:
+            return n
+    return max(top, 1)
+
+
+def _comid_of(feature):
+    p = feature.get("properties") or {}
+    c = p.get("nhdplus_comid") or p.get("comid") or p.get("identifier")
+    try:
+        return str(int(c))
+    except (TypeError, ValueError):
+        return None
+
+
+def _extra_error(e):
+    """Message for an optional step that failed; re-raise cancellation."""
+    if isinstance(e, StreamStatsError):
+        if str(e) == "Canceled":
+            raise e
+        return str(e)
+    return "{}: {}".format(type(e).__name__, e)
+
+
+def _ensure_lonlat(geom):
+    """Swap axes if a WFS answered in lat/lon order (US data: lon < 0 or |lon| > 90)."""
+    c = geom["coordinates"]
+    while isinstance(c[0], list):
+        c = c[0]
+    x, y = c[0], c[1]
+    if not ((abs(y) > 90 >= abs(x)) or (x > 0 > y)):
+        return geom
+
+    def swap(obj):
+        if obj and isinstance(obj[0], (int, float)):
+            return [obj[1], obj[0]] + list(obj[2:])
+        return [swap(o) for o in obj]
+    return {"type": geom["type"], "coordinates": swap(geom["coordinates"])}
 
 
 # --------------------------------------------------------------------------- geometry helpers

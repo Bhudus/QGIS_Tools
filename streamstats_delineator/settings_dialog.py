@@ -15,7 +15,17 @@ DEFAULTS = {
     "zoom": True,
     "timeout_s": 120,
     "streams": True,
+    "subbasins": True,
+    "split_order": "Auto",   # "Auto" or "1".."8"
+    "max_subbasins": 20,
 }
+SPLIT_AUTO = "Auto"
+
+
+def split_order_value(cfg):
+    """Settings value -> int split order, or None for automatic."""
+    v = str(cfg.get("split_order", SPLIT_AUTO))
+    return int(v) if v.isdigit() else None
 
 
 def load():
@@ -29,6 +39,8 @@ def load():
             v = float(v)
         elif isinstance(default, int):
             v = int(v)
+        else:
+            v = str(v)
         out[k] = v
     return out
 
@@ -75,6 +87,37 @@ class SettingsDialog(QDialog):
                                 "headwater channels may not be in NHDPlus.")
         form.addRow(self.streams)
 
+        self.subbasins = QCheckBox("Add sub-basins (NHDPlus catchments grouped "
+                                   "between stream confluences)")
+        self.subbasins.setChecked(cfg["subbasins"])
+        self.subbasins.setToolTip(
+            "Splits the watershed at confluences of the larger streams, using "
+            "NHDPlus V2 catchments clipped to the StreamStats boundary. Each "
+            "sub-basin records the sub-basin it drains to (ds_sb_id).")
+        form.addRow(self.subbasins)
+
+        self.split_order = QComboBox()
+        self.split_order.addItems([SPLIT_AUTO] + [str(i) for i in range(1, 9)])
+        self.split_order.setCurrentText(str(cfg["split_order"]))
+        self.split_order.setToolTip(
+            "Split where two streams of at least this Strahler order meet. Lower "
+            "= more, smaller sub-basins. Auto picks the lowest order that gives "
+            "no more than the number below.")
+        form.addRow("Split at confluences of stream order ≥", self.split_order)
+
+        self.max_sb = QSpinBox()
+        self.max_sb.setRange(2, 500)
+        self.max_sb.setValue(cfg["max_subbasins"])
+        form.addRow("Auto: at most this many sub-basins", self.max_sb)
+
+        def sync():
+            on = self.subbasins.isChecked()
+            self.split_order.setEnabled(on)
+            self.max_sb.setEnabled(on and self.split_order.currentText() == SPLIT_AUTO)
+        self.subbasins.toggled.connect(lambda *_: sync())
+        self.split_order.currentTextChanged.connect(lambda *_: sync())
+        sync()
+
         self.zoom = QCheckBox("Zoom to new watershed")
         self.zoom.setChecked(cfg["zoom"])
         form.addRow(self.zoom)
@@ -101,5 +144,8 @@ class SettingsDialog(QDialog):
         save({"region": self.region.currentText(), "snap": self.snap.isChecked(),
               "warn_snap_m": float(self.warn.value()), "zoom": self.zoom.isChecked(),
               "timeout_s": int(self.timeout.value()),
-              "streams": self.streams.isChecked()})
+              "streams": self.streams.isChecked(),
+              "subbasins": self.subbasins.isChecked(),
+              "split_order": self.split_order.currentText(),
+              "max_subbasins": int(self.max_sb.value())})
         self.accept()
