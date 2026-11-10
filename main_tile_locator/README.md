@@ -1,4 +1,4 @@
-# Main Tile Locator (QGIS plugin)
+# Illini Main Tile Locator (QGIS plugin)
 
 Locates a subsurface (tile) drainage **main** from an **outlet location**, a
 **DEM** and the **field boundary**, for laterals to be installed either
@@ -11,8 +11,8 @@ Requires QGIS 3.34 LTR or newer. Uses only QGIS, GDAL and numpy.
 1. In QGIS: **Plugins ▸ Manage and Install Plugins ▸ Install from ZIP**.
 2. Pick `main_tile_locator.zip` and install. (Enable *Show also experimental
    plugins* under Settings if QGIS hides it.)
-3. Run it from the toolbar button, **Plugins ▸ Main Tile Locator**, or the
-   Processing Toolbox (*Main tile locator*). The toolbar button fills in the
+3. Run it from the toolbar button, **Plugins ▸ Illini Main Tile Locator**, or the
+   Processing Toolbox (*Illini main tile locator*). The toolbar button fills in the
    DEM and field from the active layer (or the first raster and polygon layer
    in the project); click the **…** button next to *Outlet location* to pick the
    outlet on the map.
@@ -39,7 +39,8 @@ processing.run("maintilelocator:maintilelocator", {
 | Main alignment | *Best of all candidates* (default), *Bend with the terrain only*, or *Straight lines only*. |
 | Design units | Feet (default) or metres, for every length, depth and output. |
 | Lateral spacing | Default 80 ft. Sets the boundary setback, the terrain smoothing and the scoring. |
-| Maximum lateral length | Default 1320 ft; 0 = no limit. Laterals that would run farther to reach the main count as not served. |
+| Maximum lateral length | Laterals that would run farther than this to reach the main count as not served. Default: *Capacity of the lateral tile (maxLength routine)*. Alternatives: *Fixed length* (default 1320 ft) or *No limit*. |
+| Lateral capacity: drainage intensity, inside diameter, slope, tile material, Manning's n | Inputs to the maxLength routine (Table 6). Defaults: 3/8 in/day, 4 in, 0.1%, corrugated plastic tubing (n = 0.013; clay or concrete tile 0.012). An entered Manning's n overrides the material. With the default 80 ft spacing this gives about 2,080 ft. |
 | Burying: target band, absolute depths, slopes, offset, lower the outlet | Routine J settings for burying the main. Defaults 3.25–4.25 ft band, 2.5 ft and 6 ft absolute, 0.1% minimum and 5% maximum slope. |
 | Minimum slope of the laterals | Default 0.1%. A lateral must be able to reach the main at this grade, using the ground fall plus the depth range (absolute upper to absolute lower tile depth). |
 | Outlet invert elevation | Optional, in DEM elevation units. Flags the main if it arrives below the outlet. |
@@ -101,6 +102,22 @@ radius and analysis cell size, and the most submains to add (20).
    exactly as in the Illini Subsurface Drain Layout plugin; the four runners-up
    are buried the same way. With submains, the main is buried together with
    them, so its depths and grade in the candidate layer are those of the network.
+
+## Maximum lateral length from tile capacity
+
+By default the longest lateral is the length a lateral tile can drain flowing
+full, from the maxLength routine (Maximum Lengths of Corrugated Plastic Tubing
+and Clay and Concrete Drain Tile, Table 6). Manning's equation for a full
+circular pipe is solved for the length of a strip one lateral spacing wide
+that it can serve at the drainage intensity:
+
+    L = 10000 / (DI · S · n) · (D · s^0.1875 / 51.7)^(1/0.375)
+
+with DI the drainage intensity (mm/day), S the lateral spacing (m), n Manning's
+roughness coefficient, D the inside diameter (mm) and s the slope (m/m), giving
+L in metres. The plugin takes the lateral spacing from the *Lateral spacing*
+input, so a wider spacing gives a shorter maximum length. The log reports the
+length used.
 
 ## Outputs
 

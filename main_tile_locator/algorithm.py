@@ -48,6 +48,8 @@ from .core import (
     LocatorCancelled,
     LocatorError,
     LocatorParams,
+    MANNING_N,
+    lateral_capacity_length,
     run_locator,
 )
 
@@ -166,7 +168,13 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
     ALIGNMENT = "ALIGNMENT"
     UNITS = "UNITS"
     SPACING = "SPACING"
+    MAX_LAT_MODE = "MAX_LAT_MODE"
     MAX_LAT_LEN = "MAX_LAT_LEN"
+    INTENSITY = "INTENSITY"
+    LAT_DIAMETER = "LAT_DIAMETER"
+    LAT_SLOPE = "LAT_SLOPE"
+    LAT_MATERIAL = "LAT_MATERIAL"
+    MANNING = "MANNING"
     UPPER_DEPTH = "UPPER_DEPTH"
     LOWER_DEPTH = "LOWER_DEPTH"
     MIN_COVER = "MIN_COVER"
@@ -203,7 +211,7 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
         return "maintilelocator"
 
     def displayName(self):
-        return self.tr("Main tile locator")
+        return self.tr("Illini main tile locator")
 
     def group(self):
         return ""
@@ -253,6 +261,12 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
             "the main, and records the share of the field it adds (<i>gain_pct</i>). Ground "
             "below the outlet or beyond the maximum lateral length may still be left "
             "uncovered; the log reports how much.</p>"
+            "<p><b>Maximum lateral length.</b> By default it is the capacity of the lateral "
+            "tile, from the maxLength routine (Table 6): the length a tile of the given inside "
+            "diameter, slope and Manning's n can drain flowing full, for a strip one lateral "
+            "spacing wide at the given drainage intensity. The defaults, a 4-inch corrugated "
+            "plastic tube on a 0.1% slope at 3/8 in/day, give about 2,080 ft at 80 ft "
+            "spacing. A fixed length or no limit can be chosen instead.</p>"
             "<p>All lengths, depths and elevations on this form and in the outputs are in the "
             "chosen design units; grades are in percent. The DEM must be in a projected "
             "CRS.</p>"
@@ -294,9 +308,33 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
             options=[self.tr("Metres"), self.tr("Feet")], defaultValue=1))
         self.addParameter(QgsProcessingParameterNumber(
             self.SPACING, self.tr("Lateral spacing"), D, defaultValue=80.0, minValue=1.0))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.MAX_LAT_MODE, self.tr("Maximum lateral length"),
+            options=[self.tr("Capacity of the lateral tile (maxLength routine)"),
+                     self.tr("Fixed length (below)"),
+                     self.tr("No limit")],
+            defaultValue=0))
         self.addParameter(QgsProcessingParameterNumber(
-            self.MAX_LAT_LEN, self.tr("Maximum lateral length (0 = no limit)"), D,
-            defaultValue=1320.0, minValue=0.0))
+            self.INTENSITY, self.tr("Lateral capacity: drainage intensity (inches per day)"),
+            D, defaultValue=0.375, minValue=0.001))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.LAT_DIAMETER, self.tr("Lateral capacity: inside diameter (inches)"), D,
+            defaultValue=4.0, minValue=0.5))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.LAT_SLOPE, self.tr("Lateral capacity: slope (%)"), D, defaultValue=0.1,
+            minValue=0.001))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.LAT_MATERIAL, self.tr("Lateral capacity: tile material"),
+            options=[self.tr("Corrugated plastic tubing (n = 0.013)"),
+                     self.tr("Clay or concrete tile (n = 0.012)")],
+            defaultValue=0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.MANNING,
+            self.tr("Lateral capacity: Manning's roughness coefficient [optional, overrides "
+                    "the material]"), D, optional=True, minValue=0.001, maxValue=0.1))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.MAX_LAT_LEN, self.tr("Fixed maximum lateral length"), D,
+            defaultValue=1320.0, minValue=1.0))
         self.addParameter(QgsProcessingParameterNumber(
             self.UPPER_DEPTH, self.tr("Burying: upper tile depth (target band)"), D,
             defaultValue=3.25, minValue=0.0))
@@ -453,7 +491,29 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
         smooth_r = num(self.SMOOTH, True)
         cell_in = num(self.CELL_SIZE, True)
         outlet_inv = num(self.OUTLET_INVERT, True)
-        max_lat = num(self.MAX_LAT_LEN)
+        max_mode = self.parameterAsEnum(parameters, self.MAX_LAT_MODE, context)
+        if max_mode == 0:
+            n_man = num(self.MANNING, True)
+            if n_man is None:
+                n_man = MANNING_N["plastic" if self.parameterAsEnum(
+                    parameters, self.LAT_MATERIAL, context) == 0 else "clay_concrete"]
+            dia_in = num(self.LAT_DIAMETER)
+            slope_pct = num(self.LAT_SLOPE)
+            di_in = num(self.INTENSITY)
+            try:
+                max_lat_m = lateral_capacity_length(di_in * 0.0254, spacing, dia_in * 0.0254,
+                                                    slope_pct / 100.0, n_man)
+            except ValueError as e:
+                raise QgsProcessingException(str(e))
+            feedback.pushInfo(self.tr(
+                "Maximum lateral length {:,.0f} {}: capacity of a {:g}-inch tile (n = {:g}) "
+                "on a {:g}% slope at a drainage intensity of {:g} in/day and {:g} {} "
+                "spacing.").format(max_lat_m / uf, u_lbl, dia_in, n_man, slope_pct, di_in,
+                                   spacing / uf, u_lbl))
+        elif max_mode == 1:
+            max_lat_m = num(self.MAX_LAT_LEN) * uf
+        else:
+            max_lat_m = None
 
         source = self.parameterAsSource(parameters, self.FIELD, context)
         if source is None:
@@ -516,7 +576,7 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
             lateral_shape=SHAPES[self.parameterAsEnum(parameters, self.LATERAL_SHAPE, context)],
             alignment=ALIGNS[self.parameterAsEnum(parameters, self.ALIGNMENT, context)],
             spacing=spacing,
-            max_lateral_length=max_lat * uf if max_lat and max_lat > 0 else None,
+            max_lateral_length=max_lat_m,
             contour_grade=num(self.CONTOUR_GRADE) / 100.0,
             min_lateral_grade=num(self.MIN_LAT_GRADE) / 100.0,
             min_main_grade=num(self.MIN_MAIN_GRADE) / 100.0,

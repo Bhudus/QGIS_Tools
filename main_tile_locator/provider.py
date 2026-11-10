@@ -11,10 +11,10 @@ class MainTileLocatorProvider(QgsProcessingProvider):
         return "maintilelocator"
 
     def name(self):
-        return "Main tile locator"
+        return "Illini main tile locator"
 
     def longName(self):
-        return "Main tile locator"
+        return "Illini main tile locator"
 
     def icon(self):
         return QIcon(os.path.join(os.path.dirname(__file__), "icon.png"))

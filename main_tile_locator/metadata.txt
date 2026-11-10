@@ -1,9 +1,9 @@
 [general]
-name=Main Tile Locator
+name=Illini Main Tile Locator
 qgisMinimumVersion=3.34
 description=Locates a subsurface (tile) drainage main from an outlet, a DEM and a field boundary, for laterals parallel or perpendicular to the contour lines.
-about=Prompts for the outlet location (click on the map), the DEM and the field boundary, and finds the tile main that best serves laterals installed either parallel to the contour lines (across the slope) or perpendicular to them (down the slope). It traces the path a lateral would take from every part of the field, builds candidate mains from the outlet (low-ground thalweg, fall line, contour headers with or without following the field edge, straight mains on every bearing, and dog-legs along the low side then up the slope), and scores each by the drainable area whose laterals reach it with enough fall, within the maximum lateral length and without converging into a draw, less the cost of its length and of any length that cannot be buried within the depth and slope limits. The chosen main is buried with the scheme of Routine J (Tile Burying System) of the Illini Drainage Tools. Outputs: a Candidate mains layer with the chosen main and the four best distinct runners-up, each with its served area, length, grade, depths and Routine J notes (select one to use as the Main line(s) input of the Illini Subsurface Drain Layout plugin). Optionally adds submains to the chosen main, one at a time along the low ground, straight, or as contour headers, until the field is covered as far as the outlet allows. Uses only QGIS, GDAL and numpy. Terrain handling and the burying scheme come from the Illini Subsurface Drain Layout plugin and the Illini Drainage Tools by Anamelechi Falasy and Richard Cooke, University of Illinois Urbana-Champaign (GPL v3).
-version=0.2.0
+about=Prompts for the outlet location (click on the map), the DEM and the field boundary, and finds the tile main that best serves laterals installed either parallel to the contour lines (across the slope) or perpendicular to them (down the slope). It traces the path a lateral would take from every part of the field, builds candidate mains from the outlet (low-ground thalweg, fall line, contour headers with or without following the field edge, straight mains on every bearing, and dog-legs along the low side then up the slope), and scores each by the drainable area whose laterals reach it with enough fall, within the maximum lateral length (by default the capacity of the lateral tile, from the maxLength routine) and without converging into a draw, less the cost of its length and of any length that cannot be buried within the depth and slope limits. The chosen main is buried with the scheme of Routine J (Tile Burying System) of the Illini Drainage Tools. Outputs: a Candidate mains layer with the chosen main and the four best distinct runners-up, each with its served area, length, grade, depths and Routine J notes (select one to use as the Main line(s) input of the Illini Subsurface Drain Layout plugin). Optionally adds submains to the chosen main, one at a time along the low ground, straight, or as contour headers, until the field is covered as far as the outlet allows. Uses only QGIS, GDAL and numpy. Terrain handling and the burying scheme come from the Illini Subsurface Drain Layout plugin and the Illini Drainage Tools by Anamelechi Falasy and Richard Cooke, University of Illinois Urbana-Champaign (GPL v3).
+version=0.3.0
 author=Richard Cooke and Anamelechi Falasy
 email=raccooke@gmail.com
 
@@ -11,7 +11,8 @@ tracker=https://github.com/Bhudus/QGIS_Tools/issues
 repository=https://github.com/Bhudus/QGIS_Tools
 homepage=https://bhudus.github.io/QGIS_Tools/
 
-changelog=0.2.0 - Optional submains to cover the field; maximum lateral length back to 1320 ft by default; candidates labelled by rank.
+changelog=0.3.0 - Renamed Illini Main Tile Locator. Maximum lateral length defaults to the capacity of a 4-inch tile on a 0.1% slope (maxLength routine, Table 6), with drainage intensity, diameter, slope and tile material adjustable; a fixed length or no limit can still be chosen.
+  0.2.0 - Optional submains to cover the field; maximum lateral length back to 1320 ft by default; candidates labelled by rank.
   0.1.0 - First release: candidate mains for laterals parallel or perpendicular to the contours, lateral-coverage scoring, trimming and Routine J burying; outputs the chosen main with four distinct runners-up.
 tags=drainage,tile,subsurface,agriculture,main,dem,contour,outlet,illini,burying
 category=Analysis

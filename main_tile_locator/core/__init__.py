@@ -4,6 +4,7 @@ from .locator import (  # noqa: F401
     ALIGN_STRAIGHT,
     ALIGN_TERRAIN,
     LAT_PARALLEL,
+    MANNING_N,
     LAT_PERPENDICULAR,
     SHAPE_CONTOUR,
     SHAPE_STRAIGHT,
@@ -12,5 +13,6 @@ from .locator import (  # noqa: F401
     LocatorError,
     LocatorParams,
     MainLocator,
+    lateral_capacity_length,
     run_locator,
 )

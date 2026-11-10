@@ -1,4 +1,4 @@
-"""Main Tile Locator engine: find a tile main for a chosen lateral orientation.
+"""Illini Main Tile Locator engine: find a tile main for a chosen lateral orientation.
 
 Pure numpy, no QGIS imports, so it can be tested on its own. All lengths and
 elevations are in metres; grades are fractions (m/m).
@@ -75,13 +75,43 @@ class LocatorCancelled(Exception):
     pass
 
 
+# ====================================================================== tile capacity
+
+MANNING_N = {"plastic": 0.013, "clay_concrete": 0.012}
+
+
+def lateral_capacity_length(intensity, spacing, diameter, slope, manning_n=0.013):
+    """Longest lateral a tile can carry flowing full (the maxLength routine, Table 6).
+
+    Manning's equation for a full circular pipe, solved for the length that
+    drains a strip one spacing wide at the given drainage intensity:
+
+        L = 10000 / (DI * S * n) * (D * s**0.1875 / 51.7) ** (1 / 0.375)
+
+    with DI in mm/day, S in m, D in mm and s in m/m, giving L in m. Arguments
+    here are in metres (intensity in m/day) and the result is in metres.
+    """
+    di = float(intensity) * 1000.0
+    d = float(diameter) * 1000.0
+    if di <= 0 or spacing <= 0 or d <= 0 or slope <= 0 or manning_n <= 0:
+        raise ValueError("Drainage intensity, spacing, diameter, slope and Manning's n "
+                         "must all be positive.")
+    return 10000.0 / (di * float(spacing) * manning_n) * (
+        d * float(slope) ** 0.1875 / 51.7) ** (1.0 / 0.375)
+
+
+# defaults: 3/8 in/day, 80 ft spacing, 4 in corrugated plastic tubing on 0.1%
+DEFAULT_MAX_LATERAL = lateral_capacity_length(0.375 * 0.0254, 80 * 0.3048, 4 * 0.0254, 0.001,
+                                              MANNING_N["plastic"])
+
+
 @dataclass
 class LocatorParams:
     lateral_orientation: str = LAT_PARALLEL
     lateral_shape: str = SHAPE_CONTOUR
     alignment: str = ALIGN_BEST
     spacing: float = 80 * 0.3048         # lateral spacing: setback, smoothing, scoring
-    max_lateral_length: Optional[float] = 1320 * 0.3048   # None = no limit
+    max_lateral_length: Optional[float] = DEFAULT_MAX_LATERAL   # None = no limit
     contour_grade: float = 0.002         # target grade of contour-parallel laterals
     min_lateral_grade: float = 0.001     # net fall a lateral needs to reach the main
     min_main_grade: float = 0.001        # main minimum slope (Routine J)

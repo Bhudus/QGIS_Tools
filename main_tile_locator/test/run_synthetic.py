@@ -1,4 +1,4 @@
-"""Exercise the Main Tile Locator engine on synthetic terrain and plot the results.
+"""Exercise the Illini Main Tile Locator engine on synthetic terrain and plot the results.
 
     python test/run_synthetic.py [plane|swale|rolling|corner|all]
 

@@ -7,7 +7,7 @@ from qgis.PyQt.QtWidgets import QAction
 from .provider import MainTileLocatorProvider
 
 ALGORITHM_ID = "maintilelocator:maintilelocator"
-MENU = "&Main Tile Locator"
+MENU = "&Illini Main Tile Locator"
 
 
 def _is_raster(layer):
@@ -34,7 +34,7 @@ class MainTileLocatorPlugin:
     def initGui(self):
         self.initProcessing()
         icon = QIcon(os.path.join(os.path.dirname(__file__), "icon.png"))
-        self.action = QAction(icon, "Main tile locator…", self.iface.mainWindow())
+        self.action = QAction(icon, "Illini main tile locator…", self.iface.mainWindow())
         self.action.setToolTip("Locate a tile main from an outlet, a DEM and a field boundary")
         self.action.triggered.connect(self.run)
         self.iface.addPluginToMenu(MENU, self.action)
