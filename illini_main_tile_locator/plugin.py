@@ -6,7 +6,7 @@ from qgis.PyQt.QtWidgets import QAction
 
 from .provider import MainTileLocatorProvider
 
-ALGORITHM_ID = "maintilelocator:maintilelocator"
+ALGORITHM_ID = "illinimaintilelocator:illinimaintilelocator"
 MENU = "&Illini Main Tile Locator"
 
 

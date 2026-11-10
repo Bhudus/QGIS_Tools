@@ -15,7 +15,7 @@ from matplotlib.colors import ListedColormap  # noqa: E402
 import numpy as np  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from main_tile_locator.core import Grid, LocatorParams, run_locator  # noqa: E402
+from illini_main_tile_locator.core import Grid, LocatorParams, run_locator  # noqa: E402
 
 OUT = os.path.join(os.getcwd(), "out")
 os.makedirs(OUT, exist_ok=True)

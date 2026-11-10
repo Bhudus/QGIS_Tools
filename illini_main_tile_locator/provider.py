@@ -8,7 +8,7 @@ from .algorithm import MainTileLocatorAlgorithm
 
 class MainTileLocatorProvider(QgsProcessingProvider):
     def id(self):
-        return "maintilelocator"
+        return "illinimaintilelocator"
 
     def name(self):
         return "Illini main tile locator"

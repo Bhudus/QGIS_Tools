@@ -9,7 +9,7 @@ Requires QGIS 3.34 LTR or newer. Uses only QGIS, GDAL and numpy.
 ## Install
 
 1. In QGIS: **Plugins ▸ Manage and Install Plugins ▸ Install from ZIP**.
-2. Pick `main_tile_locator.zip` and install. (Enable *Show also experimental
+2. Pick `illini_main_tile_locator.zip` and install. (Enable *Show also experimental
    plugins* under Settings if QGIS hides it.)
 3. Run it from the toolbar button, **Plugins ▸ Illini Main Tile Locator**, or the
    Processing Toolbox (*Illini main tile locator*). The toolbar button fills in the
@@ -20,7 +20,7 @@ Requires QGIS 3.34 LTR or newer. Uses only QGIS, GDAL and numpy.
 From Python:
 
 ```python
-processing.run("maintilelocator:maintilelocator", {
+processing.run("illinimaintilelocator:illinimaintilelocator", {
     "OUTLET": "612345.0,4441234.0 [EPSG:26916]", "DEM": "dem.tif", "FIELD": "field.gpkg",
     "ORIENTATION": 0,            # 0 parallel to contours, 1 perpendicular
     "SPACING": 80, "CANDIDATES": "TEMPORARY_OUTPUT"})

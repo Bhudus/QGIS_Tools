@@ -208,7 +208,7 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
         return MainTileLocatorAlgorithm()
 
     def name(self):
-        return "maintilelocator"
+        return "illinimaintilelocator"
 
     def displayName(self):
         return self.tr("Illini main tile locator")
@@ -437,7 +437,7 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
             try:
                 from osgeo import gdal
                 src = layer.dataProvider().dataSourceUri()
-                tmp = "/vsimem/main_tile_locator_dem.tif"
+                tmp = "/vsimem/illini_main_tile_locator_dem.tif"
                 ds = gdal.Warp(tmp, src, format="GTiff",
                                outputBounds=(xmin, ymin, xmax, ymax),
                                width=ncols, height=nrows, resampleAlg="bilinear",
