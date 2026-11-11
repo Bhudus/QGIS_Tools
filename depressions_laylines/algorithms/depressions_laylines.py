@@ -145,6 +145,7 @@ class DepressionsLaylines(QgsProcessingAlgorithm):
 
     DEM = "DEM"
     FILLED = "FILLED"
+    FILLED_OUT = "FILLED_OUT"
     FIELD = "FIELD"
     Z_UNITS = "Z_UNITS"
     DEPTH_FT = "DEPTH_FT"
@@ -214,6 +215,9 @@ class DepressionsLaylines(QgsProcessingAlgorithm):
             "and odd edge cells don't wash out the field. Hillshade (on by default) adds a "
             "shaded-relief layer just above the DEM, multiplied at 45% with 3x vertical "
             "exaggeration, to show micro-relief such as swales and old furrows.\n"
+            "Filled DEM output: when no filled DEM is given, the one filled here is saved "
+            "and added to the map, so it can be reused for later runs. It is not written "
+            "when a filled DEM is supplied.\n"
             "Field boundary: optional; blank uses the whole DEM.\n"
             "Elevation units: the DEM's vertical units (LiDAR Field DEM's default is feet). "
             "Thresholds and results are always in feet and acres.")
@@ -261,6 +265,9 @@ class DepressionsLaylines(QgsProcessingAlgorithm):
             QgsProcessingParameterNumber.Integer, defaultValue=5, minValue=0))
         self.addParameter(QgsProcessingParameterRasterDestination(
             self.DEPTH, self.tr("Depression depth (filled - unfilled)"),
+            optional=True, createByDefault=True))
+        self.addParameter(QgsProcessingParameterRasterDestination(
+            self.FILLED_OUT, self.tr("Filled DEM (Wang & Liu), when filled here"),
             optional=True, createByDefault=True))
         self.addParameter(QgsProcessingParameterFeatureSink(
             self.DEPRESSIONS, self.tr("Depressions"), QgsProcessing.TypeVectorPolygon))
@@ -376,6 +383,14 @@ class DepressionsLaylines(QgsProcessingAlgorithm):
         depth = terrain.depression_depth(z, zf, nodata)        # elevation units
         depth_ft = depth * z_unit_ft
         results = {}
+        if filled_layer is None:
+            filled_path = self.parameterAsOutputLayer(parameters, self.FILLED_OUT, context)
+            if filled_path:
+                filled_path = self._write(filled_path, np.where(nodata, -9999.0, zf),
+                                          gt, proj, gdal)
+                results[self.FILLED_OUT] = filled_path
+                self._style(context, filled_path, "filled", "Filled DEM (Wang & Liu)")
+                feedback.pushInfo("Filled DEM saved: %s" % filled_path)
         depth_path = self.parameterAsOutputLayer(parameters, self.DEPTH, context)
         if depth_path:
             out = np.where(nodata, -9999.0, depth_ft)
