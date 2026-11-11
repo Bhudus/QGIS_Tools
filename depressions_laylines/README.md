@@ -22,6 +22,7 @@ Maps the depressions and laylines (flow channels) in a field from a LiDAR DEM, f
 
 | Output | What it is |
 |---|---|
+| **Filled DEM** (only when none is supplied) | The DEM with sinks filled here by the Wang & Liu method, over the whole DEM, added to the map so it can be supplied as the Filled DEM on later runs. Not written when a filled DEM is supplied. |
 | **Depression depth** | Filled DEM − unfilled DEM, in feet, inside the field. |
 | **Depressions** | Polygons of the cells deeper than the threshold (default **0.75 ft**). Cells touching at edges or corners are one depression. Fields: `area_ac`, `max_dep_ft`, `mean_dep_ft`, `vol_cu_yd` (storage within the polygon), `pond_elev` (filled-DEM level), `cells`. Numbered largest volume first. |
 | **Laylines** | The flow channels within the field: cells draining at least the contributing-area threshold (default **2 acres**), joined into lines between channel heads, junctions and outlets, clipped to the field. Fields: `strahler` (stream order), `ac_top` / `ac_bottom` (contributing acres at each end), `length_ft`. Drawn thicker with higher order. |

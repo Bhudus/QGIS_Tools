@@ -7,10 +7,11 @@ about=For subsurface (tile) drainage design. From a field's bare-earth DEM (for 
     Laylines: the flow channels within the field, routed downhill over the filled DEM, with Strahler order and contributing area - the natural routes for mains and submains.
     Contours: optional contour lines of the filled DEM (default 1 ft), with labeled index contours.
     Sinks are filled with the Wang & Liu (2006) method when no filled DEM is given. Pure Python + NumPy; needs no SAGA or GRASS.
-version=0.3.0
+version=0.3.1
 author=Richard Cooke
 email=raccooke@gmail.com
-changelog=0.3.0 - DEM color scheme choice: Hypsometric green-yellow-brown (default), Greens or Tan/brown, stretched over the field (2nd-98th percentile), with an optional multiplied hillshade (on by default). Darker contours.
+changelog=0.3.1 - When no filled DEM is supplied, the DEM filled here (Wang & Liu) is saved and added to the map.
+    0.3.0 - DEM color scheme choice: Hypsometric green-yellow-brown (default), Greens or Tan/brown, stretched over the field (2nd-98th percentile), with an optional multiplied hillshade (on by default). Darker contours.
     0.2.2 - Colors the DEM with the Greens color ramp (option, on by default).
     0.2.1 - Contours are drawn from the filled DEM.
     0.2.0 - Optional contours output (default 1 ft interval, labeled index contour every 5th), clipped to the field.
