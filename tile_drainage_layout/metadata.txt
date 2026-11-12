@@ -1,0 +1,22 @@
+[general]
+name=Tile Drainage Layout
+qgisMinimumVersion=3.16
+description=Tile drainage layout helper: half-spacing setback guide inside field boundaries, parallel laterals at a set angle, and connection of laterals to a supplied main.
+version=2.0.2
+author=Richard Cooke
+email=raccooke@gmail.com
+about=For each field boundary polygon, builds the area inset by half of the tile (lateral) spacing plus a guide line on that edge, so laterals in neighboring fields end up one full spacing apart. Optionally fills the inset with parallel laterals at full spacing (set azimuth, per-field angle attribute, or parallel to the longest edge; aligned to the guide line or centered) and connects them to a supplied mains layer by splitting at crossings, extending straight to the main, or adding a shortest connector. A junctions layer marks tees and crosses. Spacing in feet or meters; geographic layers are processed in the local UTM zone. Available in the Processing Toolbox (Tile Drainage > Layout > Tile drainage layout), the Vector menu, and a toolbar button.
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+tags=drainage,tile,buffer,laterals,main,agriculture,field,digitizing,processing
+homepage=https://bhudus.github.io/QGIS_Tools/
+category=Vector
+icon=icon.png
+experimental=False
+deprecated=False
+hasProcessingProvider=yes
+changelog=2.0.2 Vector menu renamed to Tile Drainage.
+    2.0.1 Fix "TileDrainageProvider has been deleted" error on install/unload.
+    2.0.0 Renamed to Tile Drainage Layout. Connect laterals to a supplied main; junctions output.
+    1.2.0 Lateral alignment option: start on guide line or centered.
+    1.1.0 Optional lateral generation at a specified angle within the buffer.
