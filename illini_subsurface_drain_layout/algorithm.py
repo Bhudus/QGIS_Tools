@@ -62,6 +62,7 @@ SHAPES = [SHAPE_STRAIGHT, SHAPE_CONTOUR]
 Z_FACTORS = [1.0, 0.3048, 1200.0 / 3937.0]
 UNIT_FACTORS = [1.0, 0.3048]
 INTENSITIES = [0.375, 0.500, 0.750, 1.000]   # inch/day, Routine K options A-D
+BEARINGS = ["terrain", "ns", "ew", "nwse", "nesw"]   # straight-lateral bearing options
 
 # keep post-processors alive until QGIS has used them
 _POST = {}
@@ -130,6 +131,7 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
     ORIENTATION = "ORIENTATION"
     SHAPE = "SHAPE"
     PARALLELISM = "PARALLELISM"
+    LATERAL_BEARING = "LATERAL_BEARING"
     UNITS = "UNITS"
     Z_UNITS = "Z_UNITS"
     HERRINGBONE_ANGLE = "HERRINGBONE_ANGLE"
@@ -216,6 +218,14 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             "lateral to run parallel to its neighbour at exactly one spacing: 0 follows "
             "the terrain freely, 1 makes each lateral an offset of its neighbour; 0.9 keeps "
             "laterals near parallel while still bending with the land.</p>"
+            "<p><b>Straight laterals: bearing</b> keeps straight laterals running "
+            "north-south, east-west, northwest-southeast or northeast-southwest (on the "
+            "map grid of the DEM's CRS) instead of "
+            "following the terrain; the lateral orientation setting is then not used. With "
+            "the parallel pattern the main runs at right angles to the laterals, both ways "
+            "from the outlet, following the field edge where needed. Laterals that slope "
+            "uphill to their collector are reported in BURY_CHECK. It has no effect on "
+            "contour-following laterals.</p>"
             "<p><b>Tile burying</b> follows Routine J (Tile Burying System) of the Illini "
             "Drainage Tools. Every pipe is cut at its junctions and at grade breaks, and "
             "the segments are buried from the outlet upstream. The outlet tile sits at the "
@@ -291,6 +301,12 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             self.SHAPE, self.tr("Lateral shape"),
             options=[self.tr("Straight"),
                      self.tr("Contour-following (bend with the terrain)")],
+            defaultValue=0))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.LATERAL_BEARING, self.tr("Straight laterals: bearing"),
+            options=[self.tr("Follow the terrain (lateral orientation)"),
+                     self.tr("North-south"), self.tr("East-west"),
+                     self.tr("Northwest-southeast"), self.tr("Northeast-southwest")],
             defaultValue=0))
         self.addParameter(QgsProcessingParameterNumber(
             self.PARALLELISM,
@@ -602,6 +618,8 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             orientation=ORIENTS[self.parameterAsEnum(parameters, self.ORIENTATION, context)],
             shape=SHAPES[self.parameterAsEnum(parameters, self.SHAPE, context)],
             parallelism=num(self.PARALLELISM),
+            lateral_bearing=BEARINGS[self.parameterAsEnum(parameters, self.LATERAL_BEARING,
+                                                          context)],
             herringbone_angle=num(self.HERRINGBONE_ANGLE),
             contour_grade=num(self.CONTOUR_GRADE) / 100.0,
             min_lateral_grade=num(self.MIN_LAT_GRADE) / 100.0,

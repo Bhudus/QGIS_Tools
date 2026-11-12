@@ -85,6 +85,7 @@ class LayoutParams:
     setback: Optional[float] = None      # default: spacing / 2
     smooth_radius: Optional[float] = None  # default: spacing
     units: str = "m"                     # design units for messages: "m" or "ft"
+    lateral_bearing: str = "terrain"     # straight laterals: "terrain", "ns", "ew", "nwse", "nesw"
     parallelism: float = 0.9            # curved laterals: 0 = follow terrain, 1 = offset of neighbour
     main_stop_frac: float = 0.02         # main ends where contributing area < this share of field
     submain_frac: float = 0.10           # branches above this share become submains (0 = none)
@@ -244,6 +245,13 @@ class DrainageLayout:
         if float((gx[m] * uf[0] + gy[m] * uf[1]).sum()) > 0:
             uf = (-uf[0], -uf[1])
         self.uc, self.uf = uc, uf
+        # straight laterals on a fixed map bearing (grid north of the CRS)
+        r2 = math.sqrt(0.5)
+        bearings = {"ns": (0.0, 1.0), "ew": (1.0, 0.0),
+                    "nwse": (r2, -r2), "nesw": (r2, r2)}
+        self.fixed_b = None
+        if p.shape == SHAPE_STRAIGHT and p.lateral_bearing in bearings:
+            self.fixed_b = bearings[p.lateral_bearing]
         self.mean_slope = float(self.slope[self.inner].mean())
 
         if self.outlet is None:
@@ -377,11 +385,17 @@ class DrainageLayout:
                               "outlet lies at or near a low point of the field.")
         return out
 
-    def _trace_field(self, p0, ax, ay, max_len=1e6, slide=60.0):
+    def _trace_field(self, p0, ax, ay, max_len=1e6, slide=60.0, kink=0.5,
+                     min_progress=None):
         """Trace a collector through a direction field.
 
         Where the ideal direction would leave the drainable area the collector
-        slides along the edge, turning by up to `slide` degrees.
+        slides along the edge, turning by up to `slide` degrees from the ideal
+        direction and changing direction by no more than acos(`kink`) a step.
+        With `min_progress`, the trace stops once its mean progress in the ideal
+        direction over one lateral spacing drops below that fraction (it is
+        running along a side edge, not across the field), and any sideways
+        steps at its end are trimmed.
         """
         pts = [p0]
         x, y = p0
@@ -393,6 +407,8 @@ class DrainageLayout:
         turns = [0.0]
         for a in range(10, int(slide) + 1, 10):
             turns += [math.radians(a), -math.radians(a)]
+        progress = []
+        window = max(3, int(math.ceil(self.S / h)))
         while L < max_len:
             v = self._vec(ax, ay, x, y)
             if v is None:
@@ -405,7 +421,7 @@ class DrainageLayout:
                 ca, sa = math.cos(a), math.sin(a)
                 dx = ca * v2[0] - sa * v2[1]
                 dy = sa * v2[0] + ca * v2[1]
-                if prev_step is not None and dx * prev_step[0] + dy * prev_step[1] < 0.5:
+                if prev_step is not None and dx * prev_step[0] + dy * prev_step[1] < kink:
                     continue
                 if self.inside(x + h * dx, y + h * dy):
                     step = (dx, dy)
@@ -417,6 +433,14 @@ class DrainageLayout:
             prev_ideal = v2
             prev_step = step
             L += h
+            if min_progress is not None:
+                progress.append(step[0] * v2[0] + step[1] * v2[1])
+                if (len(progress) >= window
+                        and sum(progress[-window:]) / window < min_progress):
+                    while len(progress) > 0 and progress[-1] < 0.5 and len(pts) > 1:
+                        progress.pop()
+                        pts.pop()
+                    break
         return np.array(pts)
 
     def _parallel_collectors(self):
@@ -426,7 +450,15 @@ class DrainageLayout:
         upx, upy = -self.fx, -self.fy                 # uphill fall line
         cx, cy = -self.fy, self.fx                    # contour tangent
         arms = []
-        if p.orientation == ORIENT_ACROSS:
+        if self.fixed_b is not None:
+            # laterals on a fixed bearing: the main runs at right angles to them,
+            # both ways from the outlet (one arm ends at once if the outlet is at an edge)
+            px_, py_ = -self.fixed_b[1], self.fixed_b[0]
+            for sgn in (1.0, -1.0):
+                arms.append(self._trace_field(self.o_snap, np.full(shp, sgn * px_),
+                                              np.full(shp, sgn * py_), slide=135.0,
+                                              kink=0.0, min_progress=0.35))
+        elif p.orientation == ORIENT_ACROSS:
             # main runs up the slope; laterals cross it along the contours
             if curved:
                 ax, ay = upx, upy
@@ -594,7 +626,12 @@ class DrainageLayout:
         S = self.slope[fi]
         w = np.clip(S / 0.002, 0.0, 1.0)
 
-        if p.pattern == PATTERN_HERRINGBONE and p.shape == SHAPE_STRAIGHT:
+        if self.fixed_b is not None:
+            u = self.fixed_b
+            s = np.sign(u[0] * vx + u[1] * vy)
+            s[s == 0] = 1.0
+            dx, dy = s * u[0], s * u[1]
+        elif p.pattern == PATTERN_HERRINGBONE and p.shape == SHAPE_STRAIGHT:
             b = math.radians(min(max(p.herringbone_angle, 15.0), 90.0))
             dx = math.sin(b) * vx + math.cos(b) * mx
             dy = math.sin(b) * vy + math.cos(b) * my
@@ -754,7 +791,8 @@ class DrainageLayout:
         reg = self.region_at(sx, sy)
         if reg < 0:
             return "bad", None
-        if self.straight and self.p.pattern == PATTERN_HERRINGBONE:
+        if (self.straight and self.p.pattern == PATTERN_HERRINGBONE
+                and self.fixed_b is None):
             b = math.radians(min(max(self.p.herringbone_angle, 15.0), 90.0))
             dx = -math.sin(b) * nx + math.cos(b) * tx / tn
             dy = -math.sin(b) * ny + math.cos(b) * ty / tn

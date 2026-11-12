@@ -44,6 +44,7 @@ processing.run("illinidrainlayout:illinisubsurfacedrainlayout", {
 | Layout pattern | *Parallel / gridiron* or *Herringbone* (see below). |
 | Lateral orientation | *Down the slope* (near perpendicular to contours; default) or *Across the slope* (near parallel). |
 | Lateral shape | *Straight* (default) or *Contour-following*. |
+| Straight laterals: bearing | *Follow the terrain* (default: set by the lateral orientation), *North-south*, *East-west*, *Northwest-southeast* or *Northeast-southwest*, on the map grid of the DEM's CRS. Straight laterals only. |
 | Parallelism | Contour-following laterals only, 0–1 (default 0.9). Steers each lateral to run parallel to its neighbour at exactly one spacing; 0 follows the terrain freely, 1 makes every lateral an offset of its neighbour. |
 | Burying: upper and lower tile depth | The target depth band (Routine J). Tile aims for the middle of it. Defaults 3.25 ft and 4.25 ft. |
 | Burying: absolute upper and lower tile depth | Tile is never shallower or deeper than these (minimum cover, maximum depth). Defaults 2.5 ft and 6 ft. |
@@ -99,6 +100,13 @@ OutSlope.
    - *Down the slope, contour-following*: the fall line.
    - *Straight*: a constant bearing (dominant contour or fall direction);
      herringbone laterals leave the main at the herringbone angle.
+   - *Straight, fixed bearing*: every lateral runs exactly north-south,
+     east-west, northwest-southeast or northeast-southwest on the map grid,
+     whatever the terrain and the orientation setting. With the parallel pattern the main runs at right
+     angles to the laterals, both ways from the outlet, following the field
+     edge where a straight line would leave the field and stopping at the
+     corners. Laterals that slope uphill to their collector are reported in
+     BURY_CHECK; drawing the main along the low side avoids them.
 4. **Spacing.** Laterals are seeded along each collector and grown upslope,
    then gaps are filled by seeding new laterals exactly one spacing from
    existing ones (Jobard–Lefer evenly spaced streamlines). Laterals stop half a
