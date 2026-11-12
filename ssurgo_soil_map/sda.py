@@ -60,7 +60,7 @@ select @aoi = geometry::STGeomFromText('{wkt}', 4326).MakeValid()
 ~DeclareIdGeomTable(@outTable)~
 ~GetClippedMapunits(@aoi,polygon,geo,@outTable)~
 select t.id as mukey, mu.musym, mu.muname,
-  c.compname, c.drainagecl, c.hydgrp,
+  c.cokey, c.compname, c.drainagecl, c.hydgrp,
   l.areasymbol,
   t.geom.STAsText() as wkt
 from @outTable t
@@ -68,4 +68,32 @@ join mapunit mu on mu.mukey = t.id
 join legend l on l.lkey = mu.lkey
 outer apply (select top 1 c2.* from component c2
              where c2.mukey = t.id order by c2.comppct_r desc, c2.cokey) c
+"""
+
+
+# Restrictive layers that are a change in texture, not a barrier to water.
+_NOT_BARRIERS = ("Abrupt textural change", "Strongly contrasting textural stratification")
+
+
+def horizons_sql(cokeys):
+    """Horizon depths (cm) and saturated hydraulic conductivity (um/s) for components."""
+    keys = ",".join(str(int(k)) for k in cokeys)
+    return f"""
+select cokey, hzdept_r, hzdepb_r, ksat_r
+from chorizon
+where cokey in ({keys})
+order by cokey, hzdept_r
+"""
+
+
+def restrictions_sql(cokeys):
+    """Depth (cm) to the shallowest restrictive layer that limits water movement."""
+    keys = ",".join(str(int(k)) for k in cokeys)
+    not_barriers = ",".join("'" + k + "'" for k in _NOT_BARRIERS)
+    return f"""
+select cokey, min(resdept_r) as resdept_r
+from corestrictions
+where cokey in ({keys}) and resdept_r is not null
+  and (reskind is null or reskind not in ({not_barriers}))
+group by cokey
 """

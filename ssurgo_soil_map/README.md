@@ -20,7 +20,7 @@ The plugin is also listed under **Vector → Tile Drainage**, a menu shared by t
    - **Vector → SSURGO Soil Map → Get Soil Map for Polygons…**
    - The soil-layers toolbar button.
    - In the Processing Toolbox, **SSURGO Soil Map → Soils → Get soil map for polygons (SSURGO)**.
-3. Pick the input layer and choose what to label the soils with: the soil name, the map unit symbol, both, or the series name only (e.g. Drummer).
+3. Pick the input layer and choose what to label the soils with: the soil name, the map unit symbol, both, the series name only (e.g. Drummer), the drain spacing, or soil name and drain spacing. Enter the drain depth and drainage coefficient (see [Drain spacing](#drain-spacing)).
 4. Under **Soil map**, click **…**, choose **Save to File**, and pick a `.shp` file name.
 5. Click **Run**.
 
@@ -53,6 +53,27 @@ The traced field is a temporary layer. To keep it, save the **Field boundary out
 | drainage | Drainage class |
 | hydgrp | Hydrologic soil group |
 | acres | Geodesic acres of this soil polygon |
+| ka_ftday | Ksat above the drains (ft/day), thickness-weighted from the surface to drain depth |
+| kb_ftday | Ksat below the drains (ft/day), thickness-weighted from drain depth to the impermeable layer |
+| barrier_ft | Depth to the impermeable layer (ft) |
+| spacing_ft | Drain spacing (ft) from the Hooghoudt equation |
+
+## Drain spacing
+
+Set **Drain depth (ft)** (default 3.5) and **Drainage coefficient (in/day)** (default 0.375, i.e. 3/8 in/day). The **Drain diameter** under Advanced Parameters (default 4 in) only affects the equivalent depth.
+
+Spacing comes from the steady-state [Hooghoudt equation](https://en.wikipedia.org/wiki/Drainage_equation), with the water table midway between drains at the soil surface, so the head h equals the drain depth:
+
+q L² = 8 Kb d h + 4 Ka h²
+
+- q is the drainage coefficient and L is the drain spacing.
+- Ka and Kb come from SSURGO `ksat_r` for the dominant component's horizons, thickness-weighted above and below drain depth.
+- d is the equivalent depth. It is computed from L, the depth D of the impermeable layer below the drains and the drain radius, using van der Molen and Wesseling (1991). Because d depends on L, the equation is solved numerically.
+- The impermeable layer is the shallowest SSURGO restrictive layer, such as bedrock, a fragipan or a dense till. Abrupt textural changes don't count. If there is no restrictive layer, the bottom of the soil description is used, usually 60 to 80 in.
+- If the impermeable layer is at or above drain depth, D is 0. Spacing then uses only flow above the drains, and the log shows a warning.
+- Soils with no Ksat data, such as water, pits or urban land, get no spacing.
+
+Treat the result as a design starting point. SSURGO Ksat values are estimates for a soil series, not field measurements.
 
 ## Notes
 

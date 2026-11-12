@@ -18,9 +18,11 @@ from qgis.core import (
     QgsProcessingException,
     QgsProcessingLayerPostProcessorInterface,
     QgsProcessingParameterBoolean,
+    QgsProcessingParameterDefinition,
     QgsProcessingParameterEnum,
     QgsProcessingParameterFeatureSink,
     QgsProcessingParameterFeatureSource,
+    QgsProcessingParameterNumber,
     QgsRendererCategory,
     QgsSymbol,
     QgsTextBufferSettings,
@@ -31,7 +33,8 @@ from qgis.core import (
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.PyQt.QtGui import QColor
 
-from .sda import SdaError, clipped_mapunits_sql, run_query
+from .hooghoudt import spacing_for_component
+from .sda import SdaError, clipped_mapunits_sql, horizons_sql, restrictions_sql, run_query
 from .style import apply_boundary_style
 
 SQ_M_PER_ACRE = 4046.8564224
@@ -48,12 +51,18 @@ WKB_MULTIPOLYGON = _pick(lambda: Qgis.WkbType.MultiPolygon, lambda: QgsWkbTypes.
 WKB_COLLECTION = _pick(lambda: Qgis.WkbType.GeometryCollection, lambda: QgsWkbTypes.GeometryCollection)
 SOURCE_POLYGON = _pick(lambda: Qgis.ProcessingSourceType.VectorPolygon, lambda: QgsProcessing.TypeVectorPolygon)
 FAST_INSERT = _pick(lambda: QgsFeatureSink.Flag.FastInsert, lambda: QgsFeatureSink.FastInsert)
+NUMBER_DOUBLE = _pick(lambda: Qgis.ProcessingNumberParameterType.Double,
+                      lambda: QgsProcessingParameterNumber.Double)
+FLAG_ADVANCED = _pick(lambda: Qgis.ProcessingParameterFlag.Advanced,
+                      lambda: QgsProcessingParameterDefinition.FlagAdvanced)
 
 LABEL_CHOICES = [
     ("Soil name (map unit name)", '"muname"'),
     ("Map unit symbol", '"musym"'),
     ("Symbol and soil name", "\"musym\" || '\\n' || \"muname\""),
     ("Series name only (first word, e.g. Drummer)", '"series"'),
+    ("Drain spacing (ft)", "format_number(\"spacing_ft\", 0) || ' ft'"),
+    ("Soil name and drain spacing", "\"muname\" || '\\n' || format_number(\"spacing_ft\", 0) || ' ft'"),
 ]
 
 # Series names that are two words, so "Du Page silt loam" gives "Du Page", not "Du".
@@ -79,6 +88,10 @@ OUTPUT_FIELDS = [
     ("drainage", "str", 40, 0),
     ("hydgrp", "str", 6, 0),
     ("acres", "dbl", 12, 2),
+    ("ka_ftday", "dbl", 12, 3),    # Ksat above drain depth
+    ("kb_ftday", "dbl", 12, 3),    # Ksat from drain depth to the barrier
+    ("barrier_ft", "dbl", 12, 2),  # depth to impermeable layer
+    ("spacing_ft", "dbl", 12, 1),  # Hooghoudt drain spacing
 ]
 
 
@@ -102,6 +115,10 @@ def _to_float(v):
 def _to_int(v):
     f = _to_float(v)
     return int(round(f)) if f is not None else None
+
+
+def _round(v, n):
+    return round(v, n) if v is not None else None
 
 
 def _polygon_only(geom):
@@ -226,6 +243,9 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
     DISSOLVE = "DISSOLVE"
     LABEL = "LABEL"
     OUTLINE = "OUTLINE"
+    DRAIN_DEPTH = "DRAIN_DEPTH"
+    DRAIN_COEF = "DRAIN_COEF"
+    DRAIN_DIAM = "DRAIN_DIAM"
     OUTPUT = "OUTPUT"
     BOUNDARY = "BOUNDARY"
 
@@ -253,7 +273,14 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
             "to each input polygon and returns them as a polygon layer labeled with the soil name.\n\n"
             "Fields: map unit key, symbol and soil name; series (first word of the soil name, "
             "e.g. Drummer); dominant component; drainage class; "
-            "hydrologic group; and acres.\n\n"
+            "hydrologic group; acres; and drain spacing.\n\n"
+            "Drain spacing (spacing_ft) comes from the Hooghoudt equation, steady state, with the water "
+            "table midway between drains at the soil surface: q L² = 8 Kb d h + 4 Ka h², where q is the "
+            "drainage coefficient, h the drain depth, d the equivalent depth (van der Molen and Wesseling, "
+            "1991) and L the spacing. Ka (ka_ftday) is the thickness-weighted SSURGO Ksat from the surface "
+            "to the drains; Kb (kb_ftday) is the same from the drains down to the impermeable layer "
+            "(barrier_ft), taken as the shallowest restrictive layer or, if there is none, the bottom of "
+            "the soil description. Ksat and depths are for the dominant component.\n\n"
             "Save the output as a .shp file to get a shapefile. A .qml style file with the same name is "
             "written next to it so the colors and labels come back whenever the shapefile is opened.\n\n"
             "Check \"Outline the field boundary on the soil map\" to add the field boundary as a bold "
@@ -273,6 +300,17 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
             self.LABEL, self.tr("Label soils with"), options=[c[0] for c in LABEL_CHOICES], defaultValue=0))
         self.addParameter(QgsProcessingParameterBoolean(
             self.OUTLINE, self.tr("Outline the field boundary on the soil map"), defaultValue=True))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.DRAIN_DEPTH, self.tr("Drain depth (ft)"), NUMBER_DOUBLE,
+            defaultValue=3.5, minValue=0.5, maxValue=15.0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.DRAIN_COEF, self.tr("Drainage coefficient (in/day)"), NUMBER_DOUBLE,
+            defaultValue=0.375, minValue=0.01, maxValue=5.0))
+        diam = QgsProcessingParameterNumber(
+            self.DRAIN_DIAM, self.tr("Drain diameter for equivalent depth (in)"), NUMBER_DOUBLE,
+            defaultValue=4.0, minValue=1.0, maxValue=36.0)
+        diam.setFlags(diam.flags() | FLAG_ADVANCED)
+        self.addParameter(diam)
         self.addParameter(QgsProcessingParameterFeatureSink(
             self.OUTPUT, self.tr("Soil map"), SOURCE_POLYGON))
         self.addParameter(QgsProcessingParameterFeatureSink(
@@ -286,6 +324,14 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
         dissolve = self.parameterAsBool(parameters, self.DISSOLVE, context)
         label_expr = LABEL_CHOICES[self.parameterAsEnum(parameters, self.LABEL, context)][1]
         outline = self.parameterAsBool(parameters, self.OUTLINE, context)
+        drain = (
+            self.parameterAsDouble(parameters, self.DRAIN_DEPTH, context),
+            self.parameterAsDouble(parameters, self.DRAIN_COEF, context),
+            self.parameterAsDouble(parameters, self.DRAIN_DIAM, context),
+        )
+        feedback.pushInfo(self.tr(
+            f"Drain spacing: drains {drain[0]:g} ft deep, drainage coefficient {drain[1]:g} in/day, "
+            f"{drain[2]:g} in drains, water table at the surface midway between drains."))
 
         src_crs = source.sourceCrs()
         if not src_crs.isValid():
@@ -329,7 +375,7 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
         if sink is None:
             raise QgsProcessingException(self.invalidSinkError(parameters, self.OUTPUT))
 
-        written = 0
+        all_rows = []
         for n, (src_id, geom) in enumerate(parts):
             if feedback.isCanceled():
                 break
@@ -343,27 +389,40 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
                 feedback.pushWarning(self.tr(
                     f"No SSURGO soil data for polygon {src_id}. It may be outside the survey area."))
 
-            for r in rows:
-                g = _polygon_only(QgsGeometry.fromWkt(r.get("wkt") or ""))
-                if g.isEmpty():
-                    continue
-                acres = area_calc.measureArea(g) / SQ_M_PER_ACRE
-                g.transform(from_wgs)
-                feat = QgsFeature(fields)
-                feat.setGeometry(g)
-                feat.setAttributes([
-                    r.get("mukey"),
-                    r.get("musym"),
-                    (r.get("muname") or "").split(",")[0].strip() or None,  # drop slope/flooding phase
-                    series_name(r.get("muname")),
-                    r.get("compname"),
-                    r.get("drainagecl"),
-                    r.get("hydgrp"),
-                    round(acres, 2),
-                ])
-                sink.addFeature(feat, FAST_INSERT)
-                written += 1
-            feedback.setProgress(100.0 * (n + 1) / len(parts))
+            all_rows.extend(rows)
+            feedback.setProgress(90.0 * (n + 1) / len(parts))
+
+        spacing = self._drain_spacing(all_rows, drain, feedback)
+
+        written = 0
+        for r in all_rows:
+            if feedback.isCanceled():
+                break
+            g = _polygon_only(QgsGeometry.fromWkt(r.get("wkt") or ""))
+            if g.isEmpty():
+                continue
+            acres = area_calc.measureArea(g) / SQ_M_PER_ACRE
+            g.transform(from_wgs)
+            sp = spacing.get(_to_int(r.get("cokey")), {})
+            feat = QgsFeature(fields)
+            feat.setGeometry(g)
+            feat.setAttributes([
+                r.get("mukey"),
+                r.get("musym"),
+                (r.get("muname") or "").split(",")[0].strip() or None,  # drop slope/flooding phase
+                series_name(r.get("muname")),
+                r.get("compname"),
+                r.get("drainagecl"),
+                r.get("hydgrp"),
+                round(acres, 2),
+                _round(sp.get("ka_ftday"), 3),
+                _round(sp.get("kb_ftday"), 3),
+                _round(sp.get("barrier_ft"), 2),
+                _round(sp.get("spacing_ft"), 1),
+            ])
+            sink.addFeature(feat, FAST_INSERT)
+            written += 1
+        feedback.setProgress(100.0)
 
         feedback.pushInfo(self.tr(f"Wrote {written} soil polygons."))
 
@@ -374,6 +433,40 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
         if outline and parameters.get(self.BOUNDARY) is not None:
             results.update(self._write_boundary(parameters, context, parts, src_crs, from_wgs, area_calc))
         return results
+
+    def _drain_spacing(self, rows, drain, feedback):
+        """Hooghoudt drain spacing for each dominant component, keyed by cokey.
+
+        A failed lookup only warns, so the soil map is still written.
+        """
+        drain_depth_ft, coef_in_day, diam_in = drain
+        cokeys = sorted({k for k in (_to_int(r.get("cokey")) for r in rows) if k is not None})
+        if not cokeys:
+            return {}
+        horizons, barriers = {}, {}
+        feedback.pushInfo(self.tr(f"Getting horizon Ksat and restrictive layers for {len(cokeys)} soils…"))
+        try:
+            for i in range(0, len(cokeys), 200):
+                chunk = cokeys[i:i + 200]
+                for h in run_query(horizons_sql(chunk), feedback):
+                    horizons.setdefault(_to_int(h.get("cokey")), []).append(
+                        (_to_float(h.get("hzdept_r")), _to_float(h.get("hzdepb_r")), _to_float(h.get("ksat_r"))))
+                for b in run_query(restrictions_sql(chunk), feedback):
+                    barriers[_to_int(b.get("cokey"))] = _to_float(b.get("resdept_r"))
+        except SdaError as e:
+            feedback.pushWarning(self.tr(f"Drain spacing skipped; horizon data could not be read: {e}"))
+            return {}
+
+        result = {}
+        for k in cokeys:
+            sp = spacing_for_component(horizons.get(k, []), barriers.get(k), drain_depth_ft, coef_in_day, diam_in)
+            result[k] = sp
+            b = sp.get("barrier_ft")
+            if sp.get("spacing_ft") is not None and b is not None and b <= drain_depth_ft:
+                feedback.pushWarning(self.tr(
+                    f"Component {k}: the impermeable layer ({b:.1f} ft) is not below the drains; "
+                    "spacing uses flow above the drains only."))
+        return result
 
     def _write_boundary(self, parameters, context, parts, src_crs, from_wgs, area_calc):
         fields = QgsFields()
