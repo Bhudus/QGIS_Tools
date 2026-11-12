@@ -35,6 +35,8 @@ Requires QGIS ≥ 3.16. No SAGA or other add-on Processing provider is needed.
 If the earlier **Illini System Design** plugin is installed, uninstall it first; this version replaces it.
 Can be installed alongside Illini Drainage Tools.
 
+The plugin is also listed under **Raster → Tile Drainage**, a menu shared by the drainage tools in this repository, as well as under **Plugins → Illini Drainage System Design**.
+
 ## Credits
 Based on [Illini Drainage Tools](https://github.com/FVW-Services/Illini-Drainage-Tools) by Anamelechi Falasy and Richard Cooke (GPL v2 or later).
 Includes the per-segment drainage coefficient fix for Network Pipe Sizing.

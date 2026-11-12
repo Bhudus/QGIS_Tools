@@ -36,6 +36,8 @@ Requires QGIS ≥ 3.16. Only numpy and GDAL are required (both ship with QGIS).
 Natural neighbor needs a Delaunay triangulation: scipy is used if installed,
 otherwise the GEOS triangulation built into QGIS.
 
+Open it from **Raster → Tile Drainage → Surface Interpolation (Minimum Curvature / Natural Neighbor)…** (a menu shared by the drainage tools in this repository) or from the Processing Toolbox.
+
 ## Methods
 
 **Minimum curvature** solves `(1 − T)∇⁴z − T∇²z = 0` on the output grid (13-point

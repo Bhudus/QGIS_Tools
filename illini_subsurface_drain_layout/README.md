@@ -31,6 +31,8 @@ processing.run("illinidrainlayout:illinisubsurfacedrainlayout", {
     "NETWORK": "TEMPORARY_OUTPUT", "SURFACE_LAYOUT": "TEMPORARY_OUTPUT"})
 ```
 
+The plugin is also listed under **Raster → Tile Drainage**, a menu shared by the drainage tools in this repository, as well as under **Plugins → Illini Subsurface Drain Layout**.
+
 ## Inputs
 
 | Parameter | Notes |

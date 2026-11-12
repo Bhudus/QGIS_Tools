@@ -2,7 +2,7 @@
 name=Random Point Selection
 qgisMinimumVersion=3.16
 description=Randomly select a specified number or percentage of points from a point layer.
-version=1.0.0
+version=1.1.0
 author=Richard Cooke
 email=raccooke@gmail.com
 about=Adds a "Random Point Selection" algorithm to the Processing Toolbox (Random Point Selection > Random selection). It randomly selects a given number, or a given percentage, of the points of a point layer (sampling without replacement), with an optional random seed for reproducible results and an optional second output holding the points that were not selected.
@@ -15,4 +15,5 @@ icon=icon.svg
 experimental=False
 deprecated=False
 hasProcessingProvider=yes
-changelog=1.0.0 - Initial release
+changelog=1.1.0 - New Vector → Tile Drainage menu item that opens the Processing dialog. Fixed "provider has been deleted" error when unloading or reinstalling.
+    1.0.0 - Initial release

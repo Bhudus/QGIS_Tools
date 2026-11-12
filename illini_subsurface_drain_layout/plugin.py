@@ -6,6 +6,8 @@ from qgis.PyQt.QtWidgets import QAction
 
 from .provider import IlliniDrainLayoutProvider
 
+TILE_DRAINAGE_MENU = "&Tile Drainage"  # submenu shared by the QGIS_Tools drainage plugins
+
 ALGORITHM_ID = "illinidrainlayout:illinisubsurfacedrainlayout"
 
 
@@ -27,11 +29,13 @@ class IlliniDrainLayoutPlugin:
         self.action = QAction(icon, "Illini subsurface drain layout…", self.iface.mainWindow())
         self.action.triggered.connect(self.run)
         self.iface.addPluginToMenu("&Illini Subsurface Drain Layout", self.action)
+        self.iface.addPluginToRasterMenu(TILE_DRAINAGE_MENU, self.action)
         self.iface.addToolBarIcon(self.action)
 
     def unload(self):
         if self.action is not None:
             self.iface.removePluginMenu("&Illini Subsurface Drain Layout", self.action)
+            self.iface.removePluginRasterMenu(TILE_DRAINAGE_MENU, self.action)
             self.iface.removeToolBarIcon(self.action)
             self.action = None
         if self.provider is not None:

@@ -5,6 +5,8 @@ from qgis.core import QgsApplication
 
 from .provider import LidarFieldDemProvider, ICON
 
+TILE_DRAINAGE_MENU = "&Tile Drainage"  # submenu shared by the QGIS_Tools drainage plugins
+
 ALG_ID = "lidarfielddem:lidarfielddem"
 MENU = "&LiDAR Field DEM"
 
@@ -17,6 +19,8 @@ class LidarFieldDemPlugin:
         self.actions = []
 
     def initProcessing(self):  # noqa: N802 (QGIS API name)
+        if self.provider is not None:
+            return
         self.provider = LidarFieldDemProvider()
         QgsApplication.processingRegistry().addProvider(self.provider)
 
@@ -30,10 +34,12 @@ class LidarFieldDemPlugin:
         a_find.triggered.connect(self.open_collections)
         self.iface.addToolBarIcon(a_find)
         self.iface.addPluginToRasterMenu(MENU, a_find)
+        self.iface.addPluginToRasterMenu(TILE_DRAINAGE_MENU, a_find)
 
         a_dem = QAction(QIcon(ICON), "Bare-earth DEM for a field (Processing dialog)…", win)
         a_dem.triggered.connect(self.run_dem)
         self.iface.addPluginToRasterMenu(MENU, a_dem)
+        self.iface.addPluginToRasterMenu(TILE_DRAINAGE_MENU, a_dem)
 
         self.actions = [a_find, a_dem]
         self._toolbar_action = a_find
@@ -47,6 +53,7 @@ class LidarFieldDemPlugin:
             self._dlg = None
         for a in self.actions:
             self.iface.removePluginRasterMenu(MENU, a)
+            self.iface.removePluginRasterMenu(TILE_DRAINAGE_MENU, a)
         if getattr(self, "_toolbar_action", None) is not None:
             self.iface.removeToolBarIcon(self._toolbar_action)
             self._toolbar_action = None

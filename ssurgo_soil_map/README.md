@@ -11,6 +11,8 @@ Turns a field boundary into a labeled soil map. It uses USDA-NRCS Soil Data Acce
 
 Requires QGIS 3.22 or newer and an internet connection.
 
+The plugin is also listed under **Vector → Tile Drainage**, a menu shared by the drainage tools in this repository, as well as under **Vector → SSURGO Soil Map**.
+
 ## Use with a shapefile
 
 1. Load your field boundary shapefile, or any polygon layer. The layer needs a CRS, which for a shapefile means a `.prj` file.

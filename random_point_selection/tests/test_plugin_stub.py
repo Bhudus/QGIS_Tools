@@ -56,7 +56,27 @@ REG = Reg()
 mod('qgis')
 mod('qgis.PyQt')
 mod('qgis.PyQt.QtCore', QCoreApplication=type('Q', (), {'translate': staticmethod(lambda c, s: s)}))
-mod('qgis.PyQt.QtGui', QIcon=lambda p: None)
+class Action(object):
+    def __init__(self, *a):
+        self.text = a[1] if len(a) > 1 else ''
+        self.triggered = type('Sig', (), {'connect': lambda s, f: None})()
+
+
+class Iface(object):
+    def __init__(self):
+        self.menus = []
+
+    def mainWindow(self):
+        return None
+
+    def addPluginToVectorMenu(self, menu, action):
+        self.menus.append((menu, action.text))
+
+    def removePluginVectorMenu(self, menu, action):
+        self.menus.remove((menu, action.text))
+
+
+mod('qgis.PyQt.QtGui', QIcon=lambda p: None, QAction=Action)
 mod('qgis.core', Qgis=type('Qgis', (), {}),
     QgsApplication=type('App', (), {'processingRegistry': staticmethod(lambda: REG)}),
     QgsFeatureRequest=type('R', (), {'NoGeometry': 1, 'setFlags': lambda s, f: s,
@@ -69,9 +89,12 @@ mod('qgis.core', Qgis=type('Qgis', (), {}),
     QgsProcessingParameterNumber=type('N', (Base,), {'Integer': 0, 'Double': 1}))
 
 pkg = __import__(PKG)
-plugin = pkg.classFactory(object())
-plugin.initGui()
+IFACE = Iface()
+plugin = pkg.classFactory(IFACE)
+plugin.initProcessing()  # QGIS calls this first (hasProcessingProvider=yes) ...
+plugin.initGui()         # ... then initGui, which must not register a second provider
 assert len(REG.providers) == 1
+assert IFACE.menus == [('&Tile Drainage', 'Random Point Selection…')], IFACE.menus
 prov = REG.providers[0]
 assert prov.id() == 'randompointselection' and len(prov.algs) == 1
 alg = prov.algs[0].createInstance()
@@ -176,3 +199,6 @@ print('uniformity (expected 200): min %d max %d, hit %d/100' % (min(c.values()),
 plugin.unload()
 assert not REG.providers
 print('OK')
+plugin.unload()
+assert REG.providers == [] and IFACE.menus == []
+print('menu and unload OK')

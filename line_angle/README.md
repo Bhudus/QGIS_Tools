@@ -9,6 +9,8 @@ positive horizontal direction.
 3. Choose `line_angle.zip`, click **Install Plugin**.
 4. A **Line Angle** button appears on the Plugins toolbar (and under Plugins → Line Angle).
 
+The plugin is also listed under **Vector → Tile Drainage**, a menu shared by the drainage tools in this repository, as well as under **Plugins → Line Angle**.
+
 ## Use
 1. Click the Line Angle button.
 2. Click on (or near) any line feature in a visible line layer. The active layer is preferred.

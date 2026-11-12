@@ -6,6 +6,8 @@ from qgis.core import QgsRasterLayer
 
 from .dialog import RasterExtremesDialog
 
+TILE_DRAINAGE_MENU = "&Tile Drainage"  # submenu shared by the QGIS_Tools drainage plugins
+
 
 class RasterExtremesPlugin:
     def __init__(self, iface):
@@ -19,10 +21,12 @@ class RasterExtremesPlugin:
         self.action.triggered.connect(self.show_dialog)
         self.iface.addRasterToolBarIcon(self.action)
         self.iface.addPluginToRasterMenu("Raster Extremes", self.action)
+        self.iface.addPluginToRasterMenu(TILE_DRAINAGE_MENU, self.action)
 
     def unload(self):
         self.iface.removeRasterToolBarIcon(self.action)
         self.iface.removePluginRasterMenu("Raster Extremes", self.action)
+        self.iface.removePluginRasterMenu(TILE_DRAINAGE_MENU, self.action)
         if self.dialog:
             self.dialog.close()
             self.dialog = None

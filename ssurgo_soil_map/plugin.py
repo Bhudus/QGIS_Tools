@@ -11,6 +11,8 @@ except ImportError:
 from .provider import SsurgoProvider
 from .trace_tool import FieldTraceTool
 
+TILE_DRAINAGE_MENU = "&Tile Drainage"  # submenu shared by the QGIS_Tools drainage plugins
+
 MENU = "&SSURGO Soil Map"
 ALG_ID = "ssurgosoilmap:soilmap"
 
@@ -25,6 +27,8 @@ class SsurgoSoilMapPlugin:
         self.previous_tool = None
 
     def initProcessing(self):
+        if self.provider is not None:
+            return
         self.provider = SsurgoProvider()
         QgsApplication.processingRegistry().addProvider(self.provider)
 
@@ -47,6 +51,7 @@ class SsurgoSoilMapPlugin:
 
         for act in (self.action, self.trace_action):
             self.iface.addPluginToVectorMenu(MENU, act)
+            self.iface.addPluginToVectorMenu(TILE_DRAINAGE_MENU, act)
             self.iface.addToolBarIcon(act)
 
     def unload(self):
@@ -56,6 +61,7 @@ class SsurgoSoilMapPlugin:
         for act in (self.action, self.trace_action):
             if act:
                 self.iface.removePluginVectorMenu(MENU, act)
+                self.iface.removePluginVectorMenu(TILE_DRAINAGE_MENU, act)
                 self.iface.removeToolBarIcon(act)
         self.action = self.trace_action = self.trace_tool = None
         if self.provider:

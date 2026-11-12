@@ -7,10 +7,11 @@ about=Given a field boundary, finds the LiDAR covering it and builds a bare-eart
     USGS 3DEP (any U.S. state): streams the field's points from the public AWS Entwine Point Tile archive.
     Ground points are triangulated and rasterized with PDAL, then clipped to the field plus a 100 ft margin with GDAL. Optionally also writes a DEM with sinks filled by the Wang & Liu (2006) method.
     Requires the PDAL command-line program (for example from the OSGeo4W installer).
-version=0.3.2
+version=0.4.0
 author=Richard Cooke
 email=raccooke@gmail.com
-changelog=0.3.2 - Default minimum slope across filled sinks is 0.06 degrees.
+changelog=0.4.0 - Also listed under Raster → Tile Drainage with the other drainage tools (existing menu entry kept). Fixed "provider has been deleted" error when unloading or reinstalling.
+    0.3.2 - Default minimum slope across filled sinks is 0.06 degrees.
     0.3.1 - Find collections and Build in background run as QGIS background tasks.
     0.3.0 - Optional DEM with sinks filled (Wang & Liu); blank cell size = 10 x the LiDAR native cell size.
     0.2.2 - Trace the field boundary on the map from the LiDAR Field DEM window.

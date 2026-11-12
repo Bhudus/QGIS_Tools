@@ -19,6 +19,8 @@ Processing: keep ground points (ASPRS class 2 by default) → crop → reproject
 3. Choose `lidar_field_dem.zip`, click **Install Plugin**.
 4. Click the toolbar button (or **Raster → LiDAR Field DEM → Find LiDAR collections and build DEM…**).
 
+The plugin is also listed under **Raster → Tile Drainage**, a menu shared by the drainage tools in this repository, as well as under **Raster → LiDAR Field DEM**.
+
 ## Finding the available collection years
 The toolbar window lists every LiDAR collection that covers the field:
 

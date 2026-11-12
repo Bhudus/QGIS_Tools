@@ -22,3 +22,5 @@ The algorithm also returns the number of selected points for use in models.
 Download [`random_point_selection.zip`](https://github.com/Bhudus/QGIS_Tools/raw/main/random_point_selection/random_point_selection.zip), then in QGIS use
 `Plugins → Manage and Install Plugins → Install from ZIP`, choose `random_point_selection.zip`, tick the plugin.
 Requires QGIS ≥ 3.16.
+
+Open it from **Vector → Tile Drainage → Random Point Selection…** (a menu shared by the drainage tools in this repository) or from the Processing Toolbox.

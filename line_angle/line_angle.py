@@ -9,6 +9,8 @@ from .angle_tool import LineAngleMapTool
 from .provider import LineAngleProvider
 from .two_point_tool import TwoPointAngleMapTool
 
+TILE_DRAINAGE_MENU = "&Tile Drainage"  # submenu shared by the QGIS_Tools drainage plugins
+
 MENU = "&Line Angle"
 
 
@@ -44,6 +46,7 @@ class LineAnglePlugin:
         self.action.triggered.connect(self.activate)
         self.iface.addToolBarIcon(self.action)
         self.iface.addPluginToMenu(MENU, self.action)
+        self.iface.addPluginToVectorMenu(TILE_DRAINAGE_MENU, self.action)
 
         self.tool = LineAngleMapTool(self.canvas)
         self.tool.setAction(self.action)
@@ -63,6 +66,7 @@ class LineAnglePlugin:
         self.two_point_action.triggered.connect(self.activate_two_point)
         self.iface.addToolBarIcon(self.two_point_action)
         self.iface.addPluginToMenu(MENU, self.two_point_action)
+        self.iface.addPluginToVectorMenu(TILE_DRAINAGE_MENU, self.two_point_action)
 
         self.two_point_tool = TwoPointAngleMapTool(self.canvas)
         self.two_point_tool.setAction(self.two_point_action)
@@ -80,6 +84,7 @@ class LineAnglePlugin:
         for action in (self.action, self.two_point_action):
             if action is not None:
                 self.iface.removePluginMenu(MENU, action)
+                self.iface.removePluginVectorMenu(TILE_DRAINAGE_MENU, action)
                 self.iface.removeToolBarIcon(action)
         self.iface.mainWindow().statusBar().clearMessage()
         self.tool = self.two_point_tool = None

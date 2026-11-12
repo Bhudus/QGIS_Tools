@@ -6,6 +6,8 @@ from qgis.PyQt.QtWidgets import QAction
 
 from .provider import MainTileLocatorProvider
 
+TILE_DRAINAGE_MENU = "&Tile Drainage"  # submenu shared by the QGIS_Tools drainage plugins
+
 ALGORITHM_ID = "illinimaintilelocator:illinimaintilelocator"
 MENU = "&Illini Main Tile Locator"
 
@@ -38,11 +40,13 @@ class MainTileLocatorPlugin:
         self.action.setToolTip("Locate a tile main from an outlet, a DEM and a field boundary")
         self.action.triggered.connect(self.run)
         self.iface.addPluginToMenu(MENU, self.action)
+        self.iface.addPluginToRasterMenu(TILE_DRAINAGE_MENU, self.action)
         self.iface.addToolBarIcon(self.action)
 
     def unload(self):
         if self.action is not None:
             self.iface.removePluginMenu(MENU, self.action)
+            self.iface.removePluginRasterMenu(TILE_DRAINAGE_MENU, self.action)
             self.iface.removeToolBarIcon(self.action)
             self.action = None
         if self.provider is not None:

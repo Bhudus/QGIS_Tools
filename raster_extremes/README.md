@@ -9,6 +9,8 @@ their X and Y coordinates.
 3. Choose `raster_extremes.zip`, click **Install Plugin**.
 4. A **Raster Min / Max Cells…** button appears on the Raster toolbar (and under Raster → Raster Extremes).
 
+The plugin is also listed under **Raster → Tile Drainage**, a menu shared by the drainage tools in this repository, as well as under **Raster → Raster Extremes**.
+
 ## Use
 1. Click the button. The active raster layer is pre-selected.
 2. Choose the **Raster layer** and **Band**.

@@ -26,6 +26,8 @@ processing.run("illinimaintilelocator:illinimaintilelocator", {
     "SPACING": 80, "CANDIDATES": "TEMPORARY_OUTPUT"})
 ```
 
+The plugin is also listed under **Raster → Tile Drainage**, a menu shared by the drainage tools in this repository, as well as under **Plugins → Illini Main Tile Locator**.
+
 ## Inputs
 
 | Parameter | Notes |

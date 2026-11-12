@@ -16,6 +16,8 @@ Maps the depressions and laylines (flow channels) in a field from a LiDAR DEM, f
 2. In QGIS: **Plugins → Manage and Install Plugins… → Install from ZIP**, choose the zip, click **Install Plugin**.
 3. Click the toolbar button, or **Raster → Depressions and Laylines → Depressions and laylines for a field…**, or Processing Toolbox → *Depressions and Laylines → Subsurface drainage*.
 
+The plugin is also listed under **Raster → Tile Drainage**, a menu shared by the drainage tools in this repository, as well as under **Raster → Depressions and Laylines**.
+
 ## Use
 1. In LiDAR Field DEM, build the DEM with **Also produce a DEM with sinks filled (Wang & Liu)** ticked. Keep the default 100 ft *Extend DEM beyond field*, so water from outside the field is counted.
 2. Run **Depressions and laylines for a field** with the **DEM**, the **Filled DEM** and the **Field boundary**.
