@@ -25,7 +25,9 @@ from .bury import BuryParams, Segment, bury_network
 from . import sizing as K
 from .geometry import (
     SegmentHash,
+    limit_bends,
     cumulative_length,
+    densify,
     dist_to_segments,
     label_regions,
     moving_average,
@@ -33,6 +35,7 @@ from .geometry import (
     polyline_length,
     rasterize_rings,
     resample,
+    refine_turns,
     ring_segments,
     segments_cross,
     simplify,
@@ -91,6 +94,7 @@ class LayoutParams:
     submain_frac: float = 0.10           # branches above this share become submains (0 = none)
     min_lateral_length: Optional[float] = None  # default: spacing
     max_connector: Optional[float] = None       # default: 2.5 * spacing
+    min_bend_angle: float = 120.0        # degrees between tile legs at a bend; 0 = no limit
     tile_raster: bool = False            # also return a raster of tile elevation and depth
 
 
@@ -178,6 +182,7 @@ class DrainageLayout:
         self._direction_field()
         self._progress(40, "Placing laterals")
         self._place_laterals()
+        self._limit_bends()
         self._progress(85, "Designing inverts")
         self._design()
         self._progress(95, "Summarising")
@@ -518,7 +523,7 @@ class DrainageLayout:
         if dists[k][0] > 2 * S:
             self._warn("The main line ends {} from the outlet; a straight pipe "
                        "joins it to the outlet.".format(self._fmt(dists[k][0], 0)))
-        cols = [{"pts": resample(main, self.hc), "kind": "main", "to": None}]
+        cols = [{"pts": resample(main, self.hc), "kind": "main", "to": None, "user": True}]
         while lines:
             best = None
             for i, a in enumerate(lines):
@@ -536,7 +541,8 @@ class DrainageLayout:
             if d > 2 * S:
                 self._warn("Submain {} ends {} from the main; a straight pipe joins "
                            "them.".format(len(cols), self._fmt(d, 0)))
-            cols.append({"pts": resample(a, self.hc), "kind": "submain", "to": (h, None)})
+            cols.append({"pts": resample(a, self.hc), "kind": "submain", "to": (h, None),
+                         "user": True})
         return cols
 
     def _build_collectors(self):
@@ -969,6 +975,102 @@ class DrainageLayout:
         self._seed_from_collectors()
         self._infill()
 
+    # ------------------------------------------------------------ bends
+    def _limit_bends(self):
+        """Round bends sharper than the minimum bend angle (e.g. 120 degrees
+        between the two legs, a change of direction of at most 60 degrees).
+
+        Generated mains and submains, and laterals with their connectors, are
+        straightened to within half a cell and rounded where they turn too
+        sharply. Pipes are done downstream first, and each pipe's end is moved
+        to wherever the point it joins has moved, so the network stays joined.
+        User-supplied lines are left as drawn.
+        """
+        ang = float(self.p.min_bend_angle or 0.0)
+        if ang <= 0.0:
+            return
+        # aim 3 degrees inside the limit, for the simplification of the output lines
+        max_turn = math.radians(max(180.0 - min(ang, 179.0) - 3.0, 1.0))
+        tol = 0.25 * self.g.cell
+        kw = dict(tol=tol, t_max=0.5 * self.S, t_min=3.0 * tol)
+        cap = max(0.25 * self.S, 0.5 * self.g.cell)
+        rounded = left = 0
+        done = set()
+
+        # points at most a third of a cell apart (connectors are single segments),
+        # with every junction index renumbered to match
+        step = self.g.cell / 3.0
+        cmap, lmap = [], []
+        for c in self.cols:
+            c["pts"], mp = densify(c["pts"], step)
+            cmap.append(mp)
+        for L in self.lats:
+            pts, mp = densify(L["pts"], step)
+            L["pts"] = pts if isinstance(L["pts"], np.ndarray) else [tuple(q) for q in pts]
+            lmap.append(mp)
+        for c in self.cols:
+            to = c.get("to")
+            if to is not None and to[1] is not None:
+                c["to"] = (to[0], int(cmap[to[0]][to[1]])) + tuple(to[2:])
+        for L in self.lats:
+            conn = L["conn"]
+            if conn:
+                mp = cmap[conn[1]] if conn[0] == "collector" else lmap[conn[1]]
+                L["conn"] = (conn[0], conn[1], int(mp[conn[2]])) + tuple(conn[3:])
+
+        def bend(pts, trim=0.0):
+            # straighten as little as possible: half a cell, doubling while a bend
+            # is left that cannot be rounded, up to a quarter of the spacing
+            st = 0.5 * self.g.cell
+            while True:
+                out = limit_bends(pts, max_turn, straighten=st, trim_start=trim, **kw)
+                if out[2] == 0 or st >= cap:
+                    return out
+                st = min(2.0 * st, cap)
+
+        def do_col(k, stack=()):
+            nonlocal rounded, left
+            if ("c", k) in done or k in stack:
+                return
+            c = self.cols[k]
+            to = c.get("to")
+            if to is not None and to[1] is not None:
+                do_col(to[0], stack + (k,))
+                c["pts"] = np.array(c["pts"], float)
+                c["pts"][-1] = self.cols[to[0]]["pts"][to[1]]
+            if not c.get("user"):
+                c["pts"], r, l = bend(c["pts"])
+                rounded += r
+                left += l
+            done.add(("c", k))
+
+        def do_lat(lid, stack=()):
+            nonlocal rounded, left
+            if ("l", lid) in done or lid in stack:
+                return
+            L = self.lats[lid]
+            pts = np.array(L["pts"], float)
+            conn = L["conn"]
+            if conn and conn[0] == "collector":
+                pts[-1] = self.cols[conn[1]]["pts"][conn[2]]
+            elif conn:
+                do_lat(conn[1], stack + (lid,))
+                pts[-1] = np.asarray(self.lats[conn[1]]["pts"][conn[2]], float)
+            pts, r, l = bend(pts, trim=0.5 * self.S)
+            rounded += r
+            left += l
+            L["pts"] = pts if isinstance(L["pts"], np.ndarray) else [tuple(q) for q in pts]
+            done.add(("l", lid))
+
+        for k in range(len(self.cols)):
+            do_col(k)
+        for lid in range(len(self.lats)):
+            do_lat(lid)
+        self.bends_rounded = rounded
+        if left:
+            self._warn("{} bend(s) sharper than {:g} degrees could not be rounded (legs "
+                       "too short).".format(left, ang))
+
     # ------------------------------------------------------------ inverts
     def _junction_sets(self):
         """Vertex indices where other pipes join each collector and lateral."""
@@ -1364,10 +1466,20 @@ class DrainageLayout:
             if end != pkey + (n - 1,):
                 alias[pkey + (n - 1,)] = end
 
+        ang = float(self.p.min_bend_angle or 0.0)
+        out_turn = math.radians(180.0 - min(ang, 179.0)) if ang > 0 else None
         links = []
         for pid, (kind, name, pts, z, s, inv, fixed, pkey, end, flag, is_lat, n, steps,
                   gmin, gbreaks) in enumerate(pipes, start=1):
             cuts = sorted({0, n - 1} | {int(v) for v in fixed if 0 < int(v) < n - 1})
+            # simplify the whole pipe once: junctions and grade breaks are kept (the
+            # tile is straight between vertices), and with a bend limit, points are
+            # put back wherever dropping them would make a bend too sharp
+            anchors = sorted(set(cuts) | {int(i) for i in gbreaks if 0 < int(i) < n - 1})
+            _, kept = simplify(pts, tol, anchors, return_index=True)
+            if out_turn is not None:
+                kept = refine_turns(pts, kept, out_turn, min_span=2.0 * tol)
+            kept = np.asarray(kept, dtype=int)
             for a, b in zip(cuts[:-1], cuts[1:]):
                 if s[b] - s[a] < 1e-6:
                     continue
@@ -1394,12 +1506,11 @@ class DrainageLayout:
                               # flattest Routine J segment in the line governs sizing
                               "seg_in_slope": min(seg_in) if seg_in else None,
                               "seg_out_slope": min(seg_out) if seg_out else None})
-                # keep every grade break, so the tile between vertices is straight
-                keep = [int(i) - a for i in gbreaks if a < int(i) < b]
-                coords, idx = simplify(pts[a:b + 1], tol, keep, return_index=True)
-                links.append({"coords": coords, "attrs": attrs, "lateral": is_lat,
-                              "tile_z": np.asarray(inv[a:b + 1])[idx],
-                              "ground_m": np.asarray(z[a:b + 1])[idx]})
+                idx = kept[(kept >= a) & (kept <= b)]
+                links.append({"coords": np.asarray(pts, dtype=float)[idx], "attrs": attrs,
+                              "lateral": is_lat,
+                              "tile_z": np.asarray(inv)[idx],
+                              "ground_m": np.asarray(z)[idx]})
 
         # downstream link and accumulated upstream quantities
         out_of = {}

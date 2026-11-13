@@ -32,6 +32,37 @@ Requires QGIS 3.34 LTR or newer. Uses only QGIS.
    that runs flat or uphill is marked (flat) or (reverse).
 4. **Save image…** writes a PNG; **Save table…** writes a CSV with station,
    ground, tile, depth and the four depth lines.
+5. **Lower network by** moves the whole tile network down by that amount
+   (a negative value raises it). The profile, the depth check, the hover
+   readout and both exports show it at once, as a preview; the layer is not
+   changed. **Apply to layer…** writes it into the network layer after you
+   confirm: every tile elevation (the Z values, `invert_us`/`invert_ds`,
+   `ElevDepth1`/`ElevDepth2`) goes down by the offset and every depth
+   (`min_depth`, `max_depth`, `depth_ds`, `BuryDepth1`/`BuryDepth2`) goes up
+   by it. Ground elevations and slopes do not change, and the `flag` and
+   `BURY_CHECK` fields are not checked again. The change is one edit, and
+   the layer is left in edit mode: save the edits to keep them, undo them,
+   or roll them back.
+6. **Check network** finds the profiles to check. It goes through every
+   pipe of the network, sampling the tile every third of a cell against the
+   absolute upper and lower depths (and any offset you are previewing), and:
+   - lists the pipes where the tile is shallower than the absolute upper
+     depth or deeper than the absolute lower depth, worst first, with the
+     length of tile outside each limit and the pipe's shallowest and deepest
+     tile. Click a pipe in the list to open its profile and pan the map to it.
+   - adds two raster layers in a **Tile Profile check** group: **Tile
+     elevation** (the tile coloured from low to high) and **Tile depth
+     check** above it, which shows only the cells outside the limits, red
+     where the tile is too shallow and purple where it is too deep. The file
+     has three bands: tile elevation, tile depth (ground minus tile) and the
+     depth check (1 within the limits, 2 too shallow, 3 too deep), in the
+     panel's units. Checking again replaces them. They are temporary files:
+     use **Export ▸ Save As…** to keep them.
+
+   Choose a DEM for the check: the raster then uses the DEM's own cells and
+   the ground is the DEM everywhere along the tile. Without a DEM the ground
+   is straight between the line's vertices, so dips between them are missed,
+   and the raster uses 1 m cells.
 
 ## What the profile shows
 
@@ -56,9 +87,10 @@ the pipe. The title gives the pipe's length and nominal sizes.
 | Units | ft | The design units of the network. Stations are converted from the map units of the layer's CRS. |
 | Upper / Lower tile depth | 3.25 / 4.25 ft | The target band (Routine J defaults; 1.0 / 1.3 m in metres). |
 | Absolute upper / lower | 2.5 / 6.0 ft | The absolute limits (0.75 / 1.8 m in metres). |
+| Lower network by | 0 | Preview offset for the whole network, in the units above; not remembered. |
 
 Set the four depths to the values used when the network was designed. The
-settings are remembered between sessions.
+settings, apart from the offset, are remembered between sessions.
 
 ## Where the elevations come from
 

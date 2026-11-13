@@ -16,6 +16,7 @@ class IlliniDrainLayoutPlugin:
         self.iface = iface
         self.provider = None
         self.action = None
+        self.reset_action = None
 
     def initProcessing(self):
         if self.provider is not None:
@@ -31,8 +32,14 @@ class IlliniDrainLayoutPlugin:
         self.iface.addPluginToMenu("&Illini Subsurface Drain Layout", self.action)
         self.iface.addPluginToRasterMenu(TILE_DRAINAGE_MENU, self.action)
         self.iface.addToolBarIcon(self.action)
+        self.reset_action = QAction("Reset saved settings to defaults", self.iface.mainWindow())
+        self.reset_action.triggered.connect(self.reset_settings)
+        self.iface.addPluginToMenu("&Illini Subsurface Drain Layout", self.reset_action)
 
     def unload(self):
+        if self.reset_action is not None:
+            self.iface.removePluginMenu("&Illini Subsurface Drain Layout", self.reset_action)
+            self.reset_action = None
         if self.action is not None:
             self.iface.removePluginMenu("&Illini Subsurface Drain Layout", self.action)
             self.iface.removePluginRasterMenu(TILE_DRAINAGE_MENU, self.action)
@@ -41,6 +48,15 @@ class IlliniDrainLayoutPlugin:
         if self.provider is not None:
             QgsApplication.processingRegistry().removeProvider(self.provider)
             self.provider = None
+
+    def reset_settings(self):
+        from qgis.core import Qgis
+        from .algorithm import reset_saved_settings
+        reset_saved_settings()
+        self.iface.messageBar().pushMessage(
+            "Illini subsurface drain layout",
+            "Settings reset: the tool opens with the plugin defaults next time.",
+            level=Qgis.Info, duration=5)
 
     def run(self):
         import processing

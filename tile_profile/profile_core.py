@@ -201,6 +201,8 @@ def build_profile(lines, all_lines=None, ground_sampler=None, sample_step=None, 
         "tile_source": tile_source,
         "ground_source": ground_source,
         "line_ids": [_get(l["attrs"], "id") for l in lines],
+        # map position along the pipe: (station from the downstream end, x, y)
+        "path": sorted(((total - s) * k_, x, y) for s, x, y in path),
     }
 
 
@@ -256,3 +258,140 @@ def table_rows(profile, step=None):
         t = interp(profile["tile"], s)
         rows.append((s, g, t, g - t))
     return rows
+
+
+# fields the network offset changes: tile elevations go down, depths go up
+TILE_ELEV_FIELDS = ("invert_us", "invert_ds", "ElevDepth1", "ElevDepth2")
+DEPTH_FIELDS = ("min_depth", "max_depth", "depth_ds", "BuryDepth1", "BuryDepth2")
+
+
+def offset_profile(profile, offset):
+    """The profile with every tile elevation lowered by offset (negative raises)."""
+    if not offset:
+        return profile
+    p = dict(profile)
+    p["tile"] = [(s, v - offset) for s, v in profile["tile"]]
+    p["offset"] = offset
+    return p
+
+
+def offset_changes(attrs, offset, ndigits=4):
+    """{field: new value} for one line of the network lowered by offset.
+
+    Tile elevation fields drop by offset and depth fields grow by it; missing
+    or NULL fields are left alone. Field names match case-insensitively; the
+    returned keys are the layer's own names."""
+    out = {}
+    if not offset:
+        return out
+    low = {str(k).lower(): k for k in attrs}
+    for names, sign in ((TILE_ELEV_FIELDS, -1.0), (DEPTH_FIELDS, 1.0)):
+        for n in names:
+            k = low.get(n.lower())
+            if k is None:
+                continue
+            v = _num(attrs, k)
+            if v is not None:
+                out[k] = round(v + sign * offset, ndigits)
+    return out
+
+
+
+# ---------------------------------------------------------------- network check
+DEPTH_OK, DEPTH_SHALLOW, DEPTH_DEEP = 1, 2, 3
+
+
+def group_pipes(records):
+    """{pipe key: [records]}; lines without a pipe_id are each their own pipe."""
+    out = {}
+    for k, r in enumerate(records):
+        pid = _get(r["attrs"], "pipe_id")
+        out.setdefault(("p", pid) if pid is not None else ("l", k), []).append(r)
+    return out
+
+
+def check_pipe(profile, abs_upper, abs_lower, step, tol=0.005):
+    """Sample a pipe's profile every `step` (profile units) and at every tile and
+    ground point, and classify the tile depth against the absolute limits.
+
+    Returns {"samples": [(x, y, tile, depth, code)], "shallow": length shallower
+    than abs_upper, "deep": length deeper than abs_lower, "min_depth",
+    "max_depth", "worst": (station, depth) farthest outside the limits or None}.
+    Lengths are in profile units; x, y in the layer's map units.
+    """
+    L = profile["length"]
+    st = set(s for s, _ in profile["tile"]) | set(s for s, _ in profile["ground"])
+    if step and step > 0:
+        n = int(L // step)
+        st |= {i * step for i in range(n + 1)}
+    st = sorted(s for s in st if 0.0 <= s <= L) or [0.0, L]
+    path = profile["path"]
+    pxs = [(p[0], p[1]) for p in path]
+    pys = [(p[0], p[2]) for p in path]
+    samples, codes, depths = [], [], []
+    for s in st:
+        t = interp(profile["tile"], s)
+        g = interp(profile["ground"], s)
+        d = g - t
+        c = (DEPTH_SHALLOW if d < abs_upper - tol else
+             DEPTH_DEEP if d > abs_lower + tol else DEPTH_OK)
+        x = interp(pxs, s)
+        y = interp(pys, s)
+        samples.append((x, y, t, d, c))
+        codes.append(c)
+        depths.append(d)
+    shallow = deep = 0.0
+    for i in range(len(st) - 1):
+        ds = st[i + 1] - st[i]
+        for c, attr in ((DEPTH_SHALLOW, "s"), (DEPTH_DEEP, "d")):
+            # a stretch counts by the share of its two ends that are outside
+            w = 0.5 * ((codes[i] == c) + (codes[i + 1] == c)) * ds
+            if attr == "s":
+                shallow += w
+            else:
+                deep += w
+    worst, excess = None, 0.0
+    for s, d in zip(st, depths):
+        e = max(abs_upper - d, d - abs_lower)
+        if e > excess + 1e-12 and e > tol:
+            worst, excess = (s, d), e
+    return {"samples": samples, "shallow": shallow, "deep": deep,
+            "min_depth": min(depths), "max_depth": max(depths), "worst": worst}
+
+
+def rasterize_samples(samples, x0, y0, cell, ncols, nrows, cell_y=None):
+    """Burn check samples onto a north-up grid (x0, y0 = top-left corner).
+
+    A cell crossed by the tile gets the tile elevation, the depth and the depth
+    check of its worst sample (shallow before deep); a cell within the limits
+    keeps its shallowest sample. Returns (tile, depth, code) numpy arrays, NaN
+    and 0 off the tile, and the numbers of cells (on tile, shallow, deep).
+    """
+    import numpy as np
+    tile = np.full((nrows, ncols), np.nan)
+    depth = np.full((nrows, ncols), np.nan)
+    code = np.zeros((nrows, ncols), dtype=np.int8)
+    if not samples:
+        return tile, depth, code, (0, 0, 0)
+    a = np.asarray([s[:5] for s in samples], dtype=float)
+    j = np.floor((a[:, 0] - x0) / cell).astype(int)
+    i = np.floor((y0 - a[:, 1]) / (cell_y or cell)).astype(int)
+    ok = (i >= 0) & (i < nrows) & (j >= 0) & (j < ncols) & np.isfinite(a[:, 3])
+    a, i, j = a[ok], i[ok], j[ok]
+    if not len(a):
+        return tile, depth, code, (0, 0, 0)
+    cid = i * ncols + j
+    # rank: shallow first, then deep, then ok; within a class the worst first
+    cls = a[:, 4]
+    key = np.where(cls == DEPTH_SHALLOW, a[:, 3],
+                   np.where(cls == DEPTH_DEEP, -a[:, 3], a[:, 3]))
+    rank = np.where(cls == DEPTH_SHALLOW, 0, np.where(cls == DEPTH_DEEP, 1, 2))
+    order = np.lexsort((key, rank, cid))
+    cid, a = cid[order], a[order]
+    first = np.r_[True, cid[1:] != cid[:-1]]
+    ii, jj = np.divmod(cid[first], ncols)
+    tile[ii, jj] = a[first, 2]
+    depth[ii, jj] = a[first, 3]
+    code[ii, jj] = a[first, 4].astype(np.int8)
+    return tile, depth, code, (int(first.sum()), int((code == DEPTH_SHALLOW).sum()),
+                               int((code == DEPTH_DEEP).sum()))

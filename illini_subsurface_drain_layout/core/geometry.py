@@ -393,3 +393,212 @@ class SegmentHash:
                         bd = dd
                         best = (dd, owner, k, t)
         return best
+
+
+
+def _onto_chords(p, K):
+    """Move the points between consecutive kept vertices K onto the straight chord
+    between them, at the same fraction of the path length (point count unchanged)."""
+    q = p.copy()
+    s = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(p, axis=0).T))])
+    for a, b in zip(K[:-1], K[1:]):
+        if b <= a + 1 or s[b] <= s[a]:
+            continue
+        f = (s[a + 1:b] - s[a]) / (s[b] - s[a])
+        q[a + 1:b] = p[a] + f[:, None] * (p[b] - p[a])
+    return q
+
+
+
+def _turn(u, w):
+    """Signed change of direction from unit vector u to unit vector w (radians)."""
+    return math.atan2(u[0] * w[1] - u[1] * w[0], u[0] * w[0] + u[1] * w[1])
+
+
+def _unit(v):
+    n = float(np.hypot(*v))
+    return v / n if n > 1e-12 else None
+
+
+def _bend_path(A, B, u_in, u_out, total, max_turn):
+    """A path from A (arriving along u_in) to B (leaving along u_out) whose every
+    bend turns by at most max_turn: a straight cut, else a polygonal arc with
+    evenly spaced headings and chord lengths solved to end exactly at B."""
+    d = B - A
+    ud = _unit(d)
+    if ud is None:
+        return None
+    if abs(_turn(u_in, ud)) <= max_turn + 1e-6 and abs(_turn(ud, u_out)) <= max_turn + 1e-6:
+        return np.array([A, B])
+    th0 = math.atan2(u_in[1], u_in[0])
+    nb0 = max(2, int(math.ceil(abs(total) / max_turn - 1e-9)))
+    for nb in range(nb0, nb0 + 4):
+        phi = total / nb
+        U = np.array([[math.cos(th0 + j * phi), math.sin(th0 + j * phi)]
+                      for j in range(1, nb)])
+        M = U.T                                        # 2 x (nb - 1)
+        k = float(np.hypot(*d)) / max(float(np.hypot(*U.sum(axis=0))), 1e-12)
+        c0 = np.full(nb - 1, k)
+        c = c0 + np.linalg.pinv(M) @ (d - M @ c0)
+        if np.hypot(*(M @ c - d)) > 1e-6 * max(1.0, float(np.hypot(*d))):
+            continue
+        if np.all(c > 1e-9):
+            pts = [A]
+            for cj, uj in zip(c, U):
+                pts.append(pts[-1] + cj * uj)
+            pts[-1] = B
+            return np.array(pts)
+    return None
+
+
+def limit_bends(pts, max_turn, tol=0.0, t_max=None, t_min=0.0, straighten=None,
+                trim_start=0.0, passes=6):
+    """Round every bend sharper than allowed, keeping the number of points.
+
+    pts: dense polyline (N x 2); only its last point is held in place, and its
+    first point unless trim_start > 0, so the caller moves anything attached
+    to its other points (by index) with them.
+    First the line is straightened: its points are put on the chords of its
+    Douglas-Peucker simplification at tolerance `straighten`, which removes
+    grid staircases. A bend is a vertex of the simplification (tolerance tol)
+    where the direction changes by more than max_turn (radians). The corner is
+    cut at distance T back along each leg, T = min(t_max, 0.45 x the leg), and
+    the points in between are moved, in order, onto a straight cut or an
+    evenly bent polygonal arc (see _bend_path). Two sharp bends joined by a
+    leg too short to cut are done together, from the far side of each. A sharp
+    bend at the end of a first leg shorter than trim_start is removed by
+    trimming that leg off (the free upstream end of a lateral). A bend whose
+    legs are too short (T < t_min) is left as it is.
+
+    Returns (new points, number of bends rounded, number left sharper than max_turn).
+    """
+    p = np.array(pts, dtype=float)
+    n = len(p)
+    if n < 3 or max_turn <= 0:
+        return p, 0, 0
+    if straighten:
+        _, K = simplify(p, straighten, return_index=True)
+        p = _onto_chords(p, [int(k) for k in K])
+    rounded = left = 0
+    tmax = float("inf") if t_max is None else t_max
+    for _ in range(passes):
+        s = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(p, axis=0).T))])
+        _, K = simplify(p, tol, return_index=True)
+        K = [int(k) for k in K]
+        nk = len(K)
+        U = [_unit(p[K[j + 1]] - p[K[j]]) for j in range(nk - 1)]
+        turns = [0.0] + [(_turn(U[j - 1], U[j]) if U[j - 1] is not None and U[j] is not None
+                          else 0.0) for j in range(1, nk - 1)] + [0.0]
+        leg = [s[K[j + 1]] - s[K[j]] for j in range(nk - 1)]
+        q = p.copy()
+        changed = False
+        left = 0
+        last_hi = -1.0
+        m = 1
+        while m < nk - 1:
+            if abs(turns[m]) <= max_turn + 1e-6:
+                m += 1
+                continue
+            v = K[m]
+            # trim a short first leg at a free start
+            if m == 1 and trim_start > 0 and leg[0] < trim_start and s[v] > last_hi:
+                # the trimmed points sit in order between the bend and the next point
+                f = np.linspace(0.0, 0.5, v + 1)
+                q[:v + 1] = p[v] + f[:, None] * (p[v + 1] - p[v])
+                last_hi = s[v]
+                rounded += 1
+                changed = True
+                m += 1
+                continue
+            T_in, T_out = min(tmax, 0.45 * leg[m - 1]), min(tmax, 0.45 * leg[m])
+            w, total, u_out = m, turns[m], U[m]
+            if min(T_in, T_out) < t_min and m + 1 < nk - 1 and leg[m] <= leg[m - 1]:
+                # join with the next bend across the short leg
+                w = m + 1
+                total = turns[m] + turns[w]
+                T_out = min(tmax, 0.45 * leg[w])
+                u_out = U[w]
+            T = min(T_in, T_out)
+            if w == m:
+                T_in = T_out = T
+            lo, hi = s[v] - T_in, s[K[w]] + T_out
+            if min(T_in, T_out) < t_min or lo <= last_hi:
+                left += 1
+                m = w + 1
+                continue
+            A = p[v] - T_in * U[m - 1]
+            B = p[K[w]] + T_out * u_out
+            path = _bend_path(A, B, U[m - 1], u_out, total, max_turn)
+            idx = [i for i in range(K[m - 1] + 1, K[w + 1]) if lo < s[i] < hi]
+            if path is None or len(idx) < 2:
+                left += 1
+                m = w + 1
+                continue
+            sa = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(path, axis=0).T))])
+            for i in idx:
+                f = (s[i] - lo) / (hi - lo) * sa[-1]
+                q[i] = [np.interp(f, sa, path[:, 0]), np.interp(f, sa, path[:, 1])]
+            q[idx[0]], q[idx[-1]] = A, B          # the cut's ends are points of the line
+            last_hi = hi
+            rounded += 1
+            changed = True
+            m = w + 1
+        p = q
+        if not changed:
+            break
+    return p, rounded, left
+
+
+def densify(pts, step):
+    """Add points so that no segment is longer than step.
+
+    Returns (new points, index map): old point i is new point map[i].
+    """
+    p = np.asarray(pts, dtype=float)
+    out, idx = [p[0]], [0]
+    for i in range(1, len(p)):
+        L = float(np.hypot(*(p[i] - p[i - 1])))
+        k = int(math.ceil(L / step - 1e-9)) if step > 0 else 1
+        for j in range(1, k):
+            out.append(p[i - 1] + (p[i] - p[i - 1]) * (j / k))
+        out.append(p[i])
+        idx.append(len(out) - 1)
+    return np.array(out), np.array(idx, dtype=int)
+
+
+def refine_turns(pts, K, max_turn, min_span=0.0, max_iter=10000):
+    """Add back points to a simplification (kept indices K of pts) until no kept
+    vertex turns by more than max_turn, or no point is left to add next to it.
+    Each step adds, in the longer span next to the offending vertex, the point
+    farthest from that span's chord. Spans shorter than min_span are not split,
+    so a bend that could not be rounded is not broken into noise."""
+    p = np.asarray(pts, dtype=float)
+    K = sorted(int(k) for k in K)
+    for _ in range(max_iter):
+        changed = False
+        j = 1
+        while j < len(K) - 1:
+            a, v, b = K[j - 1], K[j], K[j + 1]
+            u, w = _unit(p[v] - p[a]), _unit(p[b] - p[v])
+            if u is None or w is None or abs(_turn(u, w)) <= max_turn + 1e-9:
+                j += 1
+                continue
+            best = None
+            for lo, hi in sorted(((a, v), (v, b)), key=lambda r: -(r[1] - r[0])):
+                d = p[hi] - p[lo]
+                L = float(np.hypot(*d))
+                if hi - lo < 2 or L < min_span:
+                    continue
+                seg = p[lo + 1:hi] - p[lo]
+                dev = (np.abs(seg[:, 0] * d[1] - seg[:, 1] * d[0]) / L if L > 0
+                       else np.hypot(seg[:, 0], seg[:, 1]))
+                best = lo + 1 + int(np.argmax(dev))
+                break
+            if best is None:
+                j += 1
+                continue
+            K.insert(j if best < v else j + 1, best)
+            changed = True
+        if not changed:
+            break
+    return np.array(K, dtype=int)

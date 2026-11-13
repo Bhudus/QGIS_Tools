@@ -122,6 +122,9 @@ class ChartModel:
             sub += "  ·  pipe {}".format(sizes)
         sub += "  ·  {}; {}".format(SOURCES.get(p["tile_source"], ""),
                                       SOURCES.get("g_" + str(p["ground_source"]), ""))
+        if p.get("offset"):
+            sub += "  ·  preview: tile {} {:g} {}".format(
+                "lowered" if p["offset"] > 0 else "raised", abs(p["offset"]), u)
         out.append(("text", self.ml, 8, title, C["text"], 13, "lt", True))
         out.append(("text", self.ml, 27, sub, C["muted"], FONT, "lt", False))
 

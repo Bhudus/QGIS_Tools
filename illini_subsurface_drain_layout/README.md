@@ -60,7 +60,8 @@ The plugin is also listed under **Raster → Tile Drainage**, a menu shared by t
 | Outlet invert elevation | Optional, in DEM elevation units. Flags the main if it arrives below the outlet. |
 
 Advanced: DEM elevation units (m / ft / US survey ft; default US survey ft), target grade for
-contour-following laterals (default 0.1%), herringbone angle (default 60°),
+contour-following laterals (default 0.1%), sharpest bend (default 120°),
+herringbone angle (default 60°),
 boundary setback (default half the spacing), terrain smoothing radius (default
 the spacing), analysis cell size (automatic), where the main ends and how large
 a branch must be to get a submain, and the longest burying segment between
@@ -209,6 +210,21 @@ Flags:
 A second layer, **Surface Layout**, holds the same lines with only the `id`
 field, as input for the Illini Drainage Tools. Lines run upstream to
 downstream and connect end to end; save it as a shapefile if needed.
+
+**Saved settings.** Each time the tool runs it saves its settings, and it
+opens with them next time, also after QGIS is restarted. The DEM, field
+boundary, outlet, main line and output destinations are not saved, since
+they belong to one field. **Plugins → Illini Subsurface Drain Layout → Reset
+saved settings to defaults** returns to the plugin defaults.
+
+**Sharpest bend.** No tile line turns more sharply than this angle between its
+legs: 120° (the default) means a change of direction of at most 60°.
+Corners that are sharper, in laterals, their connectors and generated mains
+and submains, are rounded with a short straight cut or a few gentle bends.
+Junctions move with the corner, so the network stays joined. A short stub
+that doubles back at the upper end of a lateral is trimmed. Lines you supply
+as the main are left as drawn. The setting goes up to 135°; 0 turns it off.
+Bends that cannot be rounded (very short legs) are counted in the log.
 
 An optional raster, **Tile elevation**, maps the buried tile on the analysis
 grid: every cell the tile passes through has the tile elevation, and all

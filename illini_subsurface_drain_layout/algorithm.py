@@ -1,5 +1,6 @@
 """Processing algorithm: automated subsurface drainage layout."""
 import html
+import json
 import math
 import os
 
@@ -40,6 +41,7 @@ from qgis.core import (
     QgsRasterLayer,
     QgsRasterShader,
     QgsRectangle,
+    QgsSettings,
     QgsSingleBandPseudoColorRenderer,
     QgsRendererCategory,
     QgsRuleBasedRenderer,
@@ -194,6 +196,14 @@ class _RasterStyler(QgsProcessingLayerPostProcessorInterface):
         parent.insertLayer(idx, check)
 
 
+SETTINGS_GROUP = "illini_subsurface_drain_layout/last_run"
+
+
+def reset_saved_settings():
+    """Forget the settings saved by the last run (back to the plugin defaults)."""
+    QgsSettings().remove(SETTINGS_GROUP)
+
+
 class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
     DEM = "DEM"
     FIELD = "FIELD"
@@ -208,6 +218,7 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
     UNITS = "UNITS"
     Z_UNITS = "Z_UNITS"
     HERRINGBONE_ANGLE = "HERRINGBONE_ANGLE"
+    MIN_BEND = "MIN_BEND"
     CONTOUR_GRADE = "CONTOUR_GRADE"
     MIN_LAT_GRADE = "MIN_LAT_GRADE"
     MIN_MAIN_GRADE = "MIN_MAIN_GRADE"
@@ -245,6 +256,43 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
 
     def createInstance(self):
         return IlliniSubsurfaceDrainLayoutAlgorithm()
+
+    # ------------------------------------------------------------ saved settings
+    # Every design setting is saved when the algorithm runs and becomes the
+    # default the next time the dialog opens (QGIS builds a fresh algorithm, and
+    # so reads these again, for every dialog). Inputs that belong to one field
+    # (DEM, boundary, outlet, main line) and the output destinations are not saved.
+    NOT_SAVED = ("DEM", "FIELD", "OUTLET", "MAIN", "NETWORK", "SURFACE_LAYOUT", "REPORT",
+                 "TILE_RASTER")
+
+    def addParameter(self, definition, createOutput=True):
+        name = definition.name()
+        if name not in self.NOT_SAVED:
+            if not hasattr(self, "_saved_names"):
+                self._saved_names = []
+            self._saved_names.append(name)
+            raw = QgsSettings().value("{}/{}".format(SETTINGS_GROUP, name), None)
+            if raw is not None:
+                try:
+                    value = json.loads(str(raw))
+                    ok = (definition.checkValueIsAcceptable(value)
+                          if hasattr(definition, "checkValueIsAcceptable") else True)
+                    if ok:
+                        definition.setDefaultValue(value)
+                except (ValueError, TypeError):
+                    pass
+        return super().addParameter(definition, createOutput)
+
+    def _save_settings(self, parameters):
+        settings = QgsSettings()
+        for name in getattr(self, "_saved_names", []):
+            if name not in parameters:
+                continue
+            try:
+                settings.setValue("{}/{}".format(SETTINGS_GROUP, name),
+                                  json.dumps(parameters[name]))
+            except (TypeError, ValueError):
+                pass
 
     def name(self):
         return "illinisubsurfacedrainlayout"
@@ -324,6 +372,13 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             "(in/day), D_AREA (acres), CUM_SEG_FLOW (cfs), ACTUAL_SIZE and NOMINAL (inches), "
             "with TILE_ORDER, FLOW_LENGTH (ft) and SIZE_SLOPE. The drain spacing is the "
             "lateral spacing.</p>"
+            "<p><b>Sharpest bend</b>: no tile line turns more sharply than this angle "
+            "between its legs (120 degrees = a change of direction of at most 60 degrees). "
+            "Sharper corners in laterals, connectors and generated mains and submains are "
+            "rounded with short straight cuts or a few gentle bends; junctions move with "
+            "them, so the network stays joined. A short stub at the upper end of a lateral "
+            "that doubles back is trimmed. Lines you supply as the main are left as drawn. "
+            "0 turns this off.</p>"
             "<p><b>TileLength</b> is each line's length rounded to the nearest 5 ft, or the "
             "nearest metre.</p>"
             "<p><b>Tile elevation</b> (optional raster output) maps the buried tile on "
@@ -460,6 +515,12 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             self.CONTOUR_GRADE, self.tr("Target grade for contour-following laterals (%)"),
             QgsProcessingParameterNumber.Double, defaultValue=0.1, minValue=0.01)))
         self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.MIN_BEND,
+            self.tr("Sharpest bend: smallest angle between tile legs (degrees; "
+                    "180 = straight, 0 = no limit)"),
+            QgsProcessingParameterNumber.Double, defaultValue=120.0,
+            minValue=0.0, maxValue=135.0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
             self.HERRINGBONE_ANGLE,
             self.tr("Herringbone angle between lateral and main (degrees)"),
             QgsProcessingParameterNumber.Double, defaultValue=60.0,
@@ -570,6 +631,7 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
 
     # ------------------------------------------------------------ run
     def processAlgorithm(self, parameters, context, feedback):
+        self._save_settings(parameters)
         # Ask for the raster path once only: for a temporary output every call
         # returns a new file name, and QGIS loads the first one it handed out.
         raster_path = self.parameterAsOutputLayer(parameters, self.TILE_RASTER, context)
@@ -707,6 +769,7 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             lateral_bearing=BEARINGS[self.parameterAsEnum(parameters, self.LATERAL_BEARING,
                                                           context)],
             herringbone_angle=num(self.HERRINGBONE_ANGLE),
+            min_bend_angle=num(self.MIN_BEND),
             contour_grade=num(self.CONTOUR_GRADE) / 100.0,
             min_lateral_grade=num(self.MIN_LAT_GRADE) / 100.0,
             min_main_grade=num(self.MIN_MAIN_GRADE) / 100.0,
