@@ -60,7 +60,7 @@ The plugin is also listed under **Raster → Tile Drainage**, a menu shared by t
 | Outlet invert elevation | Optional, in DEM elevation units. Flags the main if it arrives below the outlet. |
 
 Advanced: DEM elevation units (m / ft / US survey ft; default US survey ft), target grade for
-contour-following laterals (default 0.2%), herringbone angle (default 60°),
+contour-following laterals (default 0.1%), herringbone angle (default 60°),
 boundary setback (default half the spacing), terrain smoothing radius (default
 the spacing), analysis cell size (automatic), where the main ends and how large
 a branch must be to get a submain, and the longest burying segment between
@@ -209,6 +209,26 @@ Flags:
 A second layer, **Surface Layout**, holds the same lines with only the `id`
 field, as input for the Illini Drainage Tools. Lines run upstream to
 downstream and connect end to end; save it as a shapefile if needed.
+
+An optional raster, **Tile elevation**, maps the buried tile on the analysis
+grid: every cell the tile passes through has the tile elevation, and all
+other cells are empty. It has three bands, in design units:
+
+| Band | Contents |
+|---|---|
+| 1 | Tile elevation |
+| 2 | Tile depth (ground minus tile) |
+| 3 | Depth check: 1 within the limits, 2 shallower than the minimum cover, 3 deeper than the maximum installation depth |
+
+The tile is checked about every third of a cell, so the check finds a
+limit broken between grade breaks as well as at them (by more than 1 cm). A
+cell that breaks a limit keeps the elevation and depth of its worst point.
+It loads as two layers: **Tile elevation**, coloured from low to high, and
+**Tile depth check** above it, which shows only the cells outside the
+limits, red where the tile is too shallow and purple where it is too deep.
+The log gives the number of cells of each. It is made by default as a
+temporary layer; choose **Skip output** under **Tile elevation** to leave it
+out, or **Save to file** to keep it.
 
 The log and the optional HTML report give the pipe length by nominal size.
 The report also summarises totals, pipe per hectare, coverage and warnings. Coverage is the share of the drainable area (inside the setback)

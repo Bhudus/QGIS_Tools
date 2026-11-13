@@ -61,7 +61,7 @@ class LayoutParams:
     orientation: str = ORIENT_ACROSS
     shape: str = SHAPE_CONTOUR
     herringbone_angle: float = 60.0      # degrees between lateral and main
-    contour_grade: float = 0.002         # target lateral grade, contour-following (m/m)
+    contour_grade: float = 0.001         # target lateral grade, contour-following (m/m)
     min_lateral_grade: float = 0.001     # m/m
     min_main_grade: float = 0.001        # m/m
     min_cover: float = 0.75              # m, ground to invert at the shallowest point

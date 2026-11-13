@@ -30,9 +30,17 @@ from qgis.core import (
     QgsProcessingParameterFileDestination,
     QgsProcessingParameterNumber,
     QgsProcessingParameterPoint,
+    QgsProcessingParameterRasterDestination,
     QgsProcessingParameterRasterLayer,
     QgsProcessingParameterString,
+    QgsColorRampShader,
+    QgsPalettedRasterRenderer,
+    QgsProject,
+    QgsRasterFileWriter,
+    QgsRasterLayer,
+    QgsRasterShader,
     QgsRectangle,
+    QgsSingleBandPseudoColorRenderer,
     QgsRendererCategory,
     QgsRuleBasedRenderer,
     QgsUnitTypes,
@@ -40,7 +48,7 @@ from qgis.core import (
     QgsWkbTypes,
 )
 from qgis.PyQt.QtCore import QCoreApplication, QVariant
-from qgis.PyQt.QtGui import QIcon
+from qgis.PyQt.QtGui import QColor, QIcon
 
 from .core import (
     ORIENT_ACROSS,
@@ -123,6 +131,69 @@ class _Styler(QgsProcessingLayerPostProcessorInterface):
         layer.triggerRepaint()
 
 
+# tile-raster bands: 1 tile elevation, 2 tile depth, 3 depth check
+DEPTH_OK, DEPTH_SHALLOW, DEPTH_DEEP = 1, 2, 3
+RASTER_NODATA = -9999.0
+ELEV_RAMP = ["#440154", "#3b528b", "#21918c", "#5ec962", "#fde725"]   # viridis
+
+
+def _elevation_renderer(provider, vmin, vmax):
+    """Band 1 (tile elevation) on a viridis ramp from vmin to vmax."""
+    if not vmax > vmin:
+        vmax = vmin + 1.0
+    n = len(ELEV_RAMP)
+    items = [QgsColorRampShader.ColorRampItem(
+        vmin + (vmax - vmin) * k / (n - 1), QColor(c), "{:.2f}".format(
+            vmin + (vmax - vmin) * k / (n - 1))) for k, c in enumerate(ELEV_RAMP)]
+    fn = QgsColorRampShader(vmin, vmax)
+    try:
+        from qgis.core import Qgis
+        fn.setColorRampType(Qgis.ShaderInterpolationMethod.Linear)
+    except (ImportError, AttributeError):
+        fn.setColorRampType(QgsColorRampShader.Interpolated)
+    fn.setColorRampItemList(items)
+    shader = QgsRasterShader()
+    shader.setRasterShaderFunction(fn)
+    r = QgsSingleBandPseudoColorRenderer(provider, 1, shader)
+    r.setClassificationMin(vmin)
+    r.setClassificationMax(vmax)
+    return r
+
+
+def _depth_check_renderer(provider, shallow_label, deep_label):
+    """Band 3 (depth check): only cells outside the depth limits are drawn."""
+    return QgsPalettedRasterRenderer(provider, 3, [
+        QgsPalettedRasterRenderer.Class(DEPTH_SHALLOW, QColor(220, 38, 38), shallow_label),
+        QgsPalettedRasterRenderer.Class(DEPTH_DEEP, QColor(147, 51, 234), deep_label)])
+
+
+class _RasterStyler(QgsProcessingLayerPostProcessorInterface):
+    """Tile elevation on a colour ramp, with a "Tile depth check" layer above it
+    (from the same file) that shows only the cells outside the depth limits."""
+
+    def __init__(self, vmin, vmax, shallow_label, deep_label):
+        super().__init__()
+        self.vmin, self.vmax = vmin, vmax
+        self.labels = (shallow_label, deep_label)
+
+    def postProcessLayer(self, layer, context, feedback):
+        if not isinstance(layer, QgsRasterLayer):
+            return
+        layer.setRenderer(_elevation_renderer(layer.dataProvider(), self.vmin, self.vmax))
+        layer.triggerRepaint()
+        check = QgsRasterLayer(layer.source(), "Tile depth check", "gdal")
+        if not check.isValid():
+            return
+        check.setRenderer(_depth_check_renderer(check.dataProvider(), *self.labels))
+        project = (context.project() if context is not None else None) or QgsProject.instance()
+        project.addMapLayer(check, False)
+        root = project.layerTreeRoot()
+        node = root.findLayer(layer.id())
+        parent = node.parent() if node is not None else root
+        idx = parent.children().index(node) if node is not None else 0
+        parent.insertLayer(idx, check)
+
+
 class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
     DEM = "DEM"
     FIELD = "FIELD"
@@ -166,6 +237,7 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
     NETWORK = "NETWORK"
     SURFACE_LAYOUT = "SURFACE_LAYOUT"
     REPORT = "REPORT"
+    TILE_RASTER = "TILE_RASTER"
 
     # ------------------------------------------------------------ metadata
     def tr(self, s):
@@ -254,6 +326,12 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             "lateral spacing.</p>"
             "<p><b>TileLength</b> is each line's length rounded to the nearest 5 ft, or the "
             "nearest metre.</p>"
+            "<p><b>Tile elevation</b> (optional raster output) maps the buried tile on "
+            "the analysis grid, in design units: band 1 tile elevation, band 2 tile depth, "
+            "band 3 depth check (1 within limits, 2 shallower than the minimum cover, 3 "
+            "deeper than the maximum depth). It loads with a <i>Tile depth check</i> "
+            "layer above it that shows only the cells outside the limits: red too "
+            "shallow, purple too deep.</p>"
             "<p>Long connectors, laterals with no collector downstream and cover outside "
             "the absolute depths between grade breaks are flagged in the <i>flag</i> "
             "field.</p>"
@@ -380,7 +458,7 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
                      self.tr("US survey feet")], defaultValue=2)))
         self.addParameter(_advanced(QgsProcessingParameterNumber(
             self.CONTOUR_GRADE, self.tr("Target grade for contour-following laterals (%)"),
-            QgsProcessingParameterNumber.Double, defaultValue=0.2, minValue=0.01)))
+            QgsProcessingParameterNumber.Double, defaultValue=0.1, minValue=0.01)))
         self.addParameter(_advanced(QgsProcessingParameterNumber(
             self.HERRINGBONE_ANGLE,
             self.tr("Herringbone angle between lateral and main (degrees)"),
@@ -426,6 +504,9 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterFileDestination(
             self.REPORT, self.tr("Layout report"), self.tr("HTML files (*.html)"),
             optional=True, createByDefault=False))
+        self.addParameter(QgsProcessingParameterRasterDestination(
+            self.TILE_RASTER, self.tr("Tile elevation"),
+            optional=True, createByDefault=True))
 
         for key, desc in (("TOTAL_LENGTH", "Total pipe length"),
                           ("LATERAL_LENGTH", "Lateral length"),
@@ -650,6 +731,8 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             smooth_radius=smooth_m,
             main_stop_frac=num(self.MAIN_STOP) / 100.0,
             submain_frac=num(self.SUBMAIN) / 100.0,
+            tile_raster=bool(self.parameterAsOutputLayer(parameters, self.TILE_RASTER,
+                                                         context)),
         )
 
         def progress(pct, msg):
@@ -768,6 +851,13 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
         for w in res["warnings"]:
             feedback.pushWarning(w)
 
+        raster_path = self.parameterAsOutputLayer(parameters, self.TILE_RASTER, context)
+        raster_counts = None
+        if raster_path and res.get("tile_raster") is not None:
+            raster_counts = self._write_tile_raster(
+                raster_path, res["tile_raster"], grid, xf, uf, crs, params, u_lbl, context,
+                feedback)
+
         report = self.parameterAsFileOutput(parameters, self.REPORT, context)
         out = {self.NETWORK: net_id, self.SURFACE_LAYOUT: ids_id,
                "TOTAL_LENGTH": s["total_length_m"] / uf,
@@ -778,10 +868,67 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
                "OUTLET_DEPTH": (s["outlet_depth_m"] / uf
                                 if s.get("outlet_depth_m") is not None else None),
                "WARNINGS": "\n".join(res["warnings"])}
+        if raster_path and raster_counts is not None:
+            out[self.TILE_RASTER] = raster_path
         if report:
             self._write_report(report, res, params, uf, u_lbl)
             out[self.REPORT] = report
         return out
+
+    def _write_tile_raster(self, path, tr, grid, xf, uf, crs, params, u_lbl, context,
+                           feedback):
+        """Write the tile raster (3 bands, design units) and style it on loading."""
+        from osgeo import gdal, osr
+        tile = np.where(np.isfinite(tr["tile"]), tr["tile"] / uf, RASTER_NODATA)
+        depth = np.where(np.isfinite(tr["depth"]), tr["depth"] / uf, RASTER_NODATA)
+        code = tr["code"].astype(np.float32)
+        nrows, ncols = tile.shape
+        mem = gdal.GetDriverByName("MEM").Create("", ncols, nrows, 3, gdal.GDT_Float32)
+        cell_map = grid.cell / xf
+        mem.SetGeoTransform((grid.x0 / xf, cell_map, 0.0, grid.y0 / xf, 0.0, -cell_map))
+        srs = osr.SpatialReference()
+        srs.ImportFromWkt(crs.toWkt())
+        mem.SetProjection(srs.ExportToWkt())
+        for b, (arr, desc, nd) in enumerate((
+                (tile, "Tile elevation ({})".format(u_lbl), RASTER_NODATA),
+                (depth, "Tile depth ({})".format(u_lbl), RASTER_NODATA),
+                (code, "Depth check: 1 within limits, 2 shallower than minimum cover, "
+                       "3 deeper than maximum depth", 0.0)), start=1):
+            band = mem.GetRasterBand(b)
+            band.WriteArray(arr.astype(np.float32))
+            band.SetNoDataValue(nd)
+            band.SetDescription(desc)
+        ext = os.path.splitext(path)[1].lstrip(".").lower()
+        driver = None
+        if ext and ext not in ("tif", "tiff"):
+            try:
+                driver = QgsRasterFileWriter.driverForExtension(ext)
+            except Exception:  # noqa: BLE001
+                driver = None
+        drv = gdal.GetDriverByName(driver or "GTiff")
+        opts = ["COMPRESS=DEFLATE"] if (driver or "GTiff") == "GTiff" else []
+        out = drv.CreateCopy(path, mem, 0, opts)
+        if out is None:
+            raise QgsProcessingException(self.tr("Could not write the tile raster to {}.")
+                                         .format(path))
+        out.FlushCache()
+        out = mem = None
+
+        mc, md = params.min_cover / uf, params.max_depth / uf
+        feedback.pushInfo(self.tr(
+            "Tile raster: {:,} cells on the tile; {:,} shallower than the minimum cover "
+            "({:g} {}), {:,} deeper than the maximum depth ({:g} {}).").format(
+            tr["cells"], tr["shallow"], round(mc, 2), u_lbl, tr["deep"], round(md, 2), u_lbl))
+        if context.willLoadLayerOnCompletion(path):
+            vals = tile[tile != RASTER_NODATA]
+            vmin = float(vals.min()) if vals.size else 0.0
+            vmax = float(vals.max()) if vals.size else 1.0
+            _POST[path] = _RasterStyler(
+                vmin, vmax,
+                self.tr("Shallower than minimum cover ({:g} {})").format(round(mc, 2), u_lbl),
+                self.tr("Deeper than maximum depth ({:g} {})").format(round(md, 2), u_lbl))
+            context.layerToLoadOnCompletionDetails(path).setPostProcessor(_POST[path])
+        return tr["shallow"], tr["deep"]
 
     def _write_report(self, path, res, params, uf, u):
         s = res["summary"]

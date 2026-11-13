@@ -47,7 +47,7 @@ The plugin is also listed under **Raster → Tile Drainage**, a menu shared by t
 | Outlet invert elevation | Optional, in DEM elevation units. Flags the main if it arrives below the outlet. |
 
 Advanced: DEM elevation units (m / ft / US survey ft; default US survey ft), target grade for
-contour-following laterals (default 0.2%), herringbone angle (default 60°),
+contour-following laterals (default 0.1%), herringbone angle (default 60°),
 boundary setback (default half the spacing), terrain smoothing radius (default
 the spacing), analysis cell size (automatic), where the main ends and how large
 a branch must be to get a submain.

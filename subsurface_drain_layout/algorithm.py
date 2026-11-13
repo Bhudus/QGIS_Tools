@@ -269,7 +269,7 @@ class SubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
                      self.tr("US survey feet")], defaultValue=2)))
         self.addParameter(_advanced(QgsProcessingParameterNumber(
             self.CONTOUR_GRADE, self.tr("Target grade for contour-following laterals (%)"),
-            QgsProcessingParameterNumber.Double, defaultValue=0.2, minValue=0.01)))
+            QgsProcessingParameterNumber.Double, defaultValue=0.1, minValue=0.01)))
         self.addParameter(_advanced(QgsProcessingParameterNumber(
             self.HERRINGBONE_ANGLE,
             self.tr("Herringbone angle between lateral and main (degrees)"),

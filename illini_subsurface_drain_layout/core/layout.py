@@ -63,7 +63,7 @@ class LayoutParams:
     orientation: str = ORIENT_ACROSS
     shape: str = SHAPE_CONTOUR
     herringbone_angle: float = 60.0      # degrees between lateral and main
-    contour_grade: float = 0.002         # target lateral grade, contour-following (m/m)
+    contour_grade: float = 0.001         # target lateral grade, contour-following (m/m)
     min_lateral_grade: float = 0.001     # m/m
     min_main_grade: float = 0.001        # m/m
     min_cover: float = 0.75              # m, absolute upper tile depth (Routine J)
@@ -91,6 +91,7 @@ class LayoutParams:
     submain_frac: float = 0.10           # branches above this share become submains (0 = none)
     min_lateral_length: Optional[float] = None  # default: spacing
     max_connector: Optional[float] = None       # default: 2.5 * spacing
+    tile_raster: bool = False            # also return a raster of tile elevation and depth
 
 
 # ====================================================================== engine
@@ -180,7 +181,10 @@ class DrainageLayout:
         self._progress(85, "Designing inverts")
         self._design()
         self._progress(95, "Summarising")
-        return self._results()
+        res = self._results()
+        if self.p.tile_raster:
+            res["tile_raster"] = self.tile_raster()
+        return res
 
     # ------------------------------------------------------------ prepare
     def _prepare(self):
@@ -1105,6 +1109,69 @@ class DrainageLayout:
         if flagged:
             self._warn("{} burying segment(s) could not be buried within the slope limits; "
                        "see the BURY_CHECK field.".format(flagged))
+
+    # ------------------------------------------------------------ tile raster
+    DEPTH_OK, DEPTH_SHALLOW, DEPTH_DEEP = 1, 2, 3
+
+    def tile_raster(self, tol=0.01):
+        """Rasterize the buried tile onto the analysis grid.
+
+        Every pipe is sampled at most a third of a cell apart, with ground and
+        tile interpolated along it as in the design. A cell crossed by the tile
+        gets the tile elevation, the tile depth (ground - tile) and a depth
+        check: DEPTH_SHALLOW where the tile anywhere in the cell has less than
+        the minimum cover, DEPTH_DEEP where it is deeper than the maximum
+        installation depth, else DEPTH_OK. A shallow or deep cell keeps the
+        elevation and depth of its worst sample; a cell within limits keeps
+        its shallowest sample. Other cells are NaN (code 0).
+        Returns {"tile", "depth", "code"} arrays in metres, and the counts.
+        """
+        g, p = self.g, self.p
+        step = g.cell / 3.0
+        X, Y, T, D = [], [], [], []
+        for o in list(self.cols) + list(self.lats):
+            if "inv" not in o:
+                continue
+            pts = np.asarray(o["pts"], float)
+            s = np.asarray(o["s"], float)
+            if len(pts) < 2 or s[-1] <= 0:
+                continue
+            n = max(2, int(math.ceil(s[-1] / step)) + 1)
+            ss = np.unique(np.concatenate([np.linspace(0.0, s[-1], n), s]))
+            X.append(np.interp(ss, s, pts[:, 0]))
+            Y.append(np.interp(ss, s, pts[:, 1]))
+            t = np.interp(ss, s, o["inv"])
+            T.append(t)
+            D.append(np.interp(ss, s, o["z"]) - t)
+        tile = np.full(g.shape, np.nan)
+        depth = np.full(g.shape, np.nan)
+        code = np.zeros(g.shape, dtype=np.int8)
+        if not X:
+            return {"tile": tile, "depth": depth, "code": code, "cells": 0,
+                    "shallow": 0, "deep": 0}
+        X, Y, T, D = (np.concatenate(a) for a in (X, Y, T, D))
+        i = np.floor((g.y0 - Y) / g.cell).astype(int)
+        j = np.floor((X - g.x0) / g.cell).astype(int)
+        ok = (i >= 0) & (i < g.nrows) & (j >= 0) & (j < g.ncols) & np.isfinite(D)
+        i, j, T, D = i[ok], j[ok], T[ok], D[ok]
+        cell = i * g.ncols + j
+        order = np.lexsort((D, cell))           # by cell, then depth ascending
+        cell, T, D = cell[order], T[order], D[order]
+        first = np.r_[True, cell[1:] != cell[:-1]]
+        last = np.r_[cell[1:] != cell[:-1], True]
+        c_id = cell[first]
+        dmin, tmin = D[first], T[first]
+        dmax, tmax = D[last], T[last]
+        shallow = dmin < p.min_cover - tol
+        deep = (dmax > p.max_depth + tol) & ~shallow
+        cc = np.where(shallow, self.DEPTH_SHALLOW, np.where(deep, self.DEPTH_DEEP,
+                                                             self.DEPTH_OK))
+        ii, jj = np.divmod(c_id, g.ncols)
+        tile[ii, jj] = np.where(deep, tmax, tmin)
+        depth[ii, jj] = np.where(deep, dmax, dmin)
+        code[ii, jj] = cc
+        return {"tile": tile, "depth": depth, "code": code, "cells": int(len(c_id)),
+                "shallow": int(shallow.sum()), "deep": int(deep.sum())}
 
     # ------------------------------------------------------------ results
     def _pipe_attrs(self, z, s, inv):

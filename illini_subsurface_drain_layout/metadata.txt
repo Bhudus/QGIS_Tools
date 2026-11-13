@@ -2,8 +2,8 @@
 name=Illini Subsurface Drain Layout
 qgisMinimumVersion=3.34
 description=Automated subsurface (tile) drainage layout, tile burying and pipe sizing from a DEM, field boundary, outlet and lateral spacing.
-about=Lays out mains, submains and evenly spaced laterals running near parallel or near perpendicular to the field contours, in parallel/gridiron or herringbone patterns, around an automatically routed main or one you supply, with straight or contour-following laterals, as one connected network. Buries the tile with the scheme of Routine J (Tile Burying System) of the Illini Drainage Tools: from the outlet upstream, toward a target depth band, within minimum and maximum slopes and absolute depth limits, with optional constant slope, outlet offset and outlet lowering for low ground. Sizes the pipes with Routine K (Network Pipe Sizing), using the Strahler tile order of Routine G. Writes the Routine J fields (ElevDepth1/2, BuryDepth1/2, InSlope, OutSlope, BURY_CHECK), the Routine K fields (TILE_ORDER, D_COEFF, D_AREA, CUM_SEG_FLOW, ACTUAL_SIZE, NOMINAL) and a line-ID layer (Surface Layout) for the Illini Drainage Tools. Uses only QGIS, GDAL and numpy. The burying and sizing schemes are ported from the Illini Drainage Tools by Anamelechi Falasy and Richard Cooke, University of Illinois Urbana-Champaign (GPL v3).
-version=0.13.0
+about=Lays out mains, submains and evenly spaced laterals running near parallel or near perpendicular to the field contours, in parallel/gridiron or herringbone patterns, around an automatically routed main or one you supply, with straight or contour-following laterals, as one connected network. Buries the tile with the scheme of Routine J (Tile Burying System) of the Illini Drainage Tools: from the outlet upstream, toward a target depth band, within minimum and maximum slopes and absolute depth limits, with optional constant slope, outlet offset and outlet lowering for low ground. Sizes the pipes with Routine K (Network Pipe Sizing), using the Strahler tile order of Routine G. Writes the Routine J fields (ElevDepth1/2, BuryDepth1/2, InSlope, OutSlope, BURY_CHECK), the Routine K fields (TILE_ORDER, D_COEFF, D_AREA, CUM_SEG_FLOW, ACTUAL_SIZE, NOMINAL) and a line-ID layer (Surface Layout) for the Illini Drainage Tools, and optionally a raster of tile elevation and depth that highlights where the tile is outside the depth limits. Uses only QGIS, GDAL and numpy. The burying and sizing schemes are ported from the Illini Drainage Tools by Anamelechi Falasy and Richard Cooke, University of Illinois Urbana-Champaign (GPL v3).
+version=0.14.0
 author=Richard Cooke and Anamelechi Falasy
 email=raccooke@gmail.com
 
@@ -11,7 +11,8 @@ tracker=https://github.com/Bhudus/QGIS_Tools/issues
 repository=https://github.com/Bhudus/QGIS_Tools
 homepage=https://bhudus.github.io/QGIS_Tools/
 
-changelog=0.13.0 - The Drainage network layer now stores the tile elevation (Z) and ground elevation (M) at every vertex, with every Routine J grade break kept as a vertex, for the Tile Profile plugin.
+changelog=0.14.0 - Default target grade for contour-following laterals 0.1%. Optional Tile elevation raster (made by default; skip it in the outputs): tile elevation, tile depth and a depth check on the analysis grid, loaded with a Tile depth check layer that highlights where the tile is shallower than the minimum cover or deeper than the maximum depth.
+    0.13.0 - The Drainage network layer now stores the tile elevation (Z) and ground elevation (M) at every vertex, with every Routine J grade break kept as a vertex, for the Tile Profile plugin.
     0.12.0 - Also listed under Raster → Tile Drainage with the other drainage tools (existing menu entry kept).
     0.11.1 - New icon: a field with its parallel laterals and main.
     0.11.0 - Straight laterals can also run northwest-southeast or northeast-southwest. A fixed-bearing header now gets out of a narrow corner at the outlet.
