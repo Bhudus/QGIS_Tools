@@ -128,6 +128,12 @@ if __name__ == "__main__":
                  add_submains=True)
         case("plane", "rect", (0, 0), "perpendicular", "contour", tag="_subs",
              add_submains=True)
+    if which in ("shape", "all"):
+        for terr, fld, out, o in (("swale", "rect", (255, 0), "perpendicular"),
+                                  ("rolling", "irregular", (230, 0), "parallel")):
+            for shp in ("located", "smoothed", "sections"):
+                case(terr, fld, out, o, "contour", tag="_" + shp, main_shape=shp,
+                     add_submains=True)
     if which in ("rolling", "all"):
         for o in ("parallel", "perpendicular"):
             case("rolling", "irregular", (230, 0), o, "contour")

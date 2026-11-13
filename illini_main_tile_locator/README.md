@@ -37,6 +37,9 @@ The plugin is also listed under **Raster → Tile Drainage**, a menu shared by t
 | Field boundary | Polygon layer. All features are merged; holes (waterways, buildings) are excluded. |
 | Laterals to be installed | *Parallel to the contour lines* (across the slope, default) or *Perpendicular to the contour lines* (down the slope). |
 | Lateral shape | *Bend with the terrain* (follow the contours, or the fall line; default) or *Straight* (on the field's dominant contour or fall bearing). |
+| Shape of the chosen main, if it is curved | *As located* (default), *Smoothed* or *Straight sections of a minimum length*. Applies only when the chosen main follows the low ground, the fall line or the contours; straight mains are left alone. |
+| Smoothing distance | Default 200 ft. Width of the Gaussian used to smooth the main along its length; larger is smoother. |
+| Minimum section length | Default 300 ft. Each straight section is at least this long; the sections chosen are those that follow the curve most closely. |
 | Add submains to cover the field | Off by default. When on, submains are added to the chosen main until no further submain is worth adding (see below). |
 | Main alignment | *Best of all candidates* (default), *Bend with the terrain only*, or *Straight lines only*. |
 | Design units | Feet (default) or metres, for every length, depth and output. |
@@ -89,7 +92,13 @@ radius and analysis cell size, and the most submains to add (20).
    length that cannot be buried within the depth and slope limits.
 5. **Trimming.** The upper end of each arm of the best main is shortened while
    that raises the score.
-6. **Submains** (optional). The tool finds the largest patches (up to five at a
+6. **Shaping** (optional). A curved chosen main can be smoothed (Gaussian
+   along its length, end points and their directions kept) or replaced by the
+   straight sections that follow it most closely with none shorter than the
+   minimum section length (dynamic programming over breakpoints spaced a
+   quarter of that length apart). The reshaped main is scored and buried
+   again, and the log reports any change in the area its laterals reach.
+7. **Submains** (optional). The tool finds the largest patches (up to five at a
    time) whose laterals still cannot drain to the network: they converge in a
    draw, fall short of the maximum lateral length, or would run uphill. For
    each patch it tries submains from several points in it: down the low ground
@@ -99,7 +108,7 @@ radius and analysis cell size, and the most submains to add (20).
    submains) the same way as the main; the best is trimmed at its upper end
    and added if it drains at least one spacing-square more area than it costs.
    This repeats until no submain is worth adding or the limit is reached.
-7. **Burying.** The chosen main is buried with the scheme of Routine J (Tile
+8. **Burying.** The chosen main is buried with the scheme of Routine J (Tile
    Burying System) of the Illini Drainage Tools, from the outlet upstream,
    exactly as in the Illini Subsurface Drain Layout plugin; the four runners-up
    are buried the same way. With submains, the main is buried together with

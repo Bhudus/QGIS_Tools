@@ -6,7 +6,10 @@ from .locator import (  # noqa: F401
     LAT_PARALLEL,
     MANNING_N,
     LAT_PERPENDICULAR,
+    SHAPE_AS_LOCATED,
     SHAPE_CONTOUR,
+    SHAPE_SECTIONS,
+    SHAPE_SMOOTHED,
     SHAPE_STRAIGHT,
     STATUS_LABELS,
     LocatorCancelled,
@@ -14,5 +17,7 @@ from .locator import (  # noqa: F401
     LocatorParams,
     MainLocator,
     lateral_capacity_length,
+    smooth_polyline,
+    straight_sections,
     run_locator,
 )

@@ -41,7 +41,10 @@ from .core import (
     ALIGN_TERRAIN,
     LAT_PARALLEL,
     LAT_PERPENDICULAR,
+    SHAPE_AS_LOCATED,
     SHAPE_CONTOUR,
+    SHAPE_SECTIONS,
+    SHAPE_SMOOTHED,
     SHAPE_STRAIGHT,
     STATUS_LABELS,
     Grid,
@@ -58,6 +61,7 @@ PLUGIN_DIR = os.path.dirname(__file__)
 ORIENTS = [LAT_PARALLEL, LAT_PERPENDICULAR]
 SHAPES = [SHAPE_CONTOUR, SHAPE_STRAIGHT]
 ALIGNS = [ALIGN_BEST, ALIGN_TERRAIN, ALIGN_STRAIGHT]
+MAIN_SHAPES = [SHAPE_AS_LOCATED, SHAPE_SMOOTHED, SHAPE_SECTIONS]
 Z_FACTORS = [1.0, 0.3048, 1200.0 / 3937.0]
 UNIT_FACTORS = [1.0, 0.3048]
 # keep post-processors alive until QGIS has used them
@@ -166,6 +170,9 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
     ORIENTATION = "ORIENTATION"
     LATERAL_SHAPE = "LATERAL_SHAPE"
     ALIGNMENT = "ALIGNMENT"
+    MAIN_SHAPE = "MAIN_SHAPE"
+    SMOOTH_DIST = "SMOOTH_DIST"
+    MIN_SECTION = "MIN_SECTION"
     UNITS = "UNITS"
     SPACING = "SPACING"
     MAX_LAT_MODE = "MAX_LAT_MODE"
@@ -261,6 +268,14 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
             "the main, and records the share of the field it adds (<i>gain_pct</i>). Ground "
             "below the outlet or beyond the maximum lateral length may still be left "
             "uncovered; the log reports how much.</p>"
+            "<p><b>Shape of the chosen main.</b> If the chosen main is curved (it follows "
+            "the low ground, the fall line or the contours), it can be <i>smoothed</i>, "
+            "with a Gaussian along its length whose width is the smoothing distance, or "
+            "turned into <i>straight sections</i>: the sections that follow the curve most "
+            "closely with none shorter than the minimum section length. Both keep the outlet "
+            "and the upper end where they are. The reshaped main is scored and buried again "
+            "before any submains are added; mains made of straight lines are left as they "
+            "are.</p>"
             "<p><b>Maximum lateral length.</b> By default it is the capacity of the lateral "
             "tile, from the maxLength routine (Table 6): the length a tile of the given inside "
             "diameter, slope and Manning's n can drain flowing full, for a strip one lateral "
@@ -299,6 +314,18 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
                      self.tr("Bend with the terrain only"),
                      self.tr("Straight lines only")],
             defaultValue=0))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.MAIN_SHAPE, self.tr("Shape of the chosen main, if it is curved"),
+            options=[self.tr("As located"),
+                     self.tr("Smoothed"),
+                     self.tr("Straight sections of a minimum length")],
+            defaultValue=0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.SMOOTH_DIST, self.tr("Smoothing distance (when smoothed)"), D,
+            defaultValue=200.0, minValue=1.0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.MIN_SECTION, self.tr("Minimum section length (when straight sections)"), D,
+            defaultValue=300.0, minValue=1.0))
         self.addParameter(QgsProcessingParameterBoolean(
             self.ADD_SUBMAINS,
             self.tr("Add submains to cover the field (to the chosen main)"),
@@ -594,6 +621,9 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
             bearing_step=num(self.BEARING_STEP),
             main_weight=num(self.MAIN_WEIGHT),
             main_stop_frac=num(self.MAIN_STOP) / 100.0,
+            main_shape=MAIN_SHAPES[self.parameterAsEnum(parameters, self.MAIN_SHAPE, context)],
+            smooth_length=num(self.SMOOTH_DIST) * uf,
+            min_section=num(self.MIN_SECTION) * uf,
             add_submains=self.parameterAsBool(parameters, self.ADD_SUBMAINS, context),
             max_submains=int(self.parameterAsInt(parameters, self.MAX_SUBMAINS, context)),
             units=u_lbl,

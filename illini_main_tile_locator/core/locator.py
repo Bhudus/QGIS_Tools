@@ -51,6 +51,9 @@ SHAPE_STRAIGHT = "straight"          # laterals on one bearing
 ALIGN_BEST = "best"                  # consider every candidate
 ALIGN_TERRAIN = "terrain"            # mains that bend with the terrain only
 ALIGN_STRAIGHT = "straight"          # straight (or two-leg straight) mains only
+SHAPE_AS_LOCATED = "located"         # chosen main as traced
+SHAPE_SMOOTHED = "smoothed"          # chosen main smoothed along its length
+SHAPE_SECTIONS = "sections"          # chosen main as straight sections of a minimum length
 
 # coverage raster codes
 ST_SETBACK = 0
@@ -131,9 +134,101 @@ class LocatorParams:
     problem_weight: float = 2.0          # score cost per metre that cannot be buried, in spacings
     converge_ratio: float = 0.33         # laterals closer than this share of the spacing merge
     main_stop_frac: float = 0.02         # thalweg main ends below this share of the field
+    main_shape: str = SHAPE_AS_LOCATED   # shape of a curved chosen main
+    smooth_length: float = 200 * 0.3048  # smoothing distance for SHAPE_SMOOTHED
+    min_section: float = 300 * 0.3048    # shortest straight section for SHAPE_SECTIONS
     add_submains: bool = False           # add submains until the field is covered
     max_submains: int = 20
     units: str = "m"
+
+
+# ====================================================================== main shaping
+
+def smooth_polyline(pts, distance, step):
+    """Gaussian smoothing along a polyline, keeping both ends and their directions.
+
+    The line is resampled every ``step`` and smoothed with a Gaussian whose
+    full width (about four standard deviations) is ``distance``. Ends are padded
+    by point reflection, so the end points stay put and the line leaves them in
+    the same direction.
+    """
+    pts = np.asarray(pts, dtype=float)
+    if len(pts) < 3 or distance <= 0:
+        return pts
+    r = resample(pts, step)
+    n = len(r)
+    sigma = max(distance / 4.0 / step, 0.5)
+    half = int(min(math.ceil(3 * sigma), n - 1))
+    if half < 1:
+        return r
+    k = np.arange(-half, half + 1)
+    w = np.exp(-0.5 * (k / sigma) ** 2)
+    w /= w.sum()
+    head = 2 * r[0] - r[half:0:-1]
+    tail = 2 * r[-1] - r[-2:-half - 2:-1]
+    ext = np.vstack([head, r, tail])
+    out = np.column_stack([np.convolve(ext[:, 0], w, mode="valid"),
+                           np.convolve(ext[:, 1], w, mode="valid")])
+    out[0], out[-1] = r[0], r[-1]
+    return out
+
+
+def straight_sections(pts, min_len, step=None):
+    """Replace a curve by the straight sections that follow it most closely,
+    none shorter than ``min_len``.
+
+    Breakpoints are chosen among points spaced along the curve (about a quarter
+    of ``min_len`` apart, at most 300 of them) by dynamic programming, to
+    minimise the summed squared offset of the curve from the sections, subject
+    to every section being at least ``min_len`` long. Both ends are kept. A
+    line shorter than ``min_len`` becomes one straight section.
+    """
+    pts = np.asarray(pts, dtype=float)
+    if len(pts) < 3:
+        return pts
+    dense = resample(pts, step) if step else pts
+    L = polyline_length(dense)
+    if L <= min_len or min_len <= 0:
+        return np.array([dense[0], dense[-1]]) if min_len > 0 else dense
+    sd = cumulative_length(dense)
+    d = max(min_len / 4.0, L / 300.0)
+    m = max(1, int(round(L / d)))
+    cs = np.linspace(0.0, L, m + 1)
+    ci = np.searchsorted(sd, cs).clip(0, len(dense) - 1)
+    ci[0], ci[-1] = 0, len(dense) - 1
+    C = dense[ci]
+
+    def cost(i, j):
+        a, b = C[i], C[j]
+        q = dense[ci[i]:ci[j] + 1]
+        ab = b - a
+        n2 = float(ab @ ab)
+        if n2 < 1e-12:
+            return float(((q - a) ** 2).sum())
+        t = np.clip(((q - a) @ ab) / n2, 0.0, 1.0)
+        e = q - (a + t[:, None] * ab)
+        return float((e ** 2).sum())
+
+    best = np.full(m + 1, np.inf)
+    prev = np.full(m + 1, -1, dtype=int)
+    best[0] = 0.0
+    for j in range(1, m + 1):
+        for i in range(j - 1, -1, -1):
+            if not np.isfinite(best[i]):
+                continue
+            if cs[j] - cs[i] < min_len:          # arc too short; chord is shorter still
+                continue
+            if math.hypot(*(C[j] - C[i])) < min_len:
+                continue
+            c = best[i] + cost(i, j)
+            if c < best[j]:
+                best[j], prev[j] = c, i
+    if not np.isfinite(best[m]):
+        return np.array([dense[0], dense[-1]])
+    path = [m]
+    while path[-1] != 0:
+        path.append(prev[path[-1]])
+    return C[path[::-1]]
 
 
 # ====================================================================== helpers
@@ -262,6 +357,10 @@ class MainLocator:
         best = self._trim(scored[0])
         if best is not scored[0]:
             scored.insert(0, best)
+        shaped = self._shape_main(best)
+        if shaped is not best:
+            scored.insert(0, shaped)
+            best = shaped
         net = None
         if self.p.add_submains:
             net = self._add_submains(best)
@@ -899,6 +998,42 @@ class MainLocator:
                 "served_pct": 100.0 * served / max(self.inner_area, 1e-9),
                 "length": L, "problem": problem, "score": score, "pipes": pipes,
                 "seg_rows": seg_rows, "outlet_depth": od, "start_depth": sd}
+
+    def _shape_main(self, ev):
+        """Smooth a curved chosen main, or turn it into straight sections."""
+        p = self.p
+        if p.main_shape == SHAPE_AS_LOCATED:
+            return ev
+        if not ev["cand"]["curved"]:
+            self._warn("The chosen main is already made of straight lines, so it was left "
+                       "as located.")
+            return ev
+        if p.main_shape == SHAPE_SMOOTHED:
+            arms = [smooth_polyline(a, p.smooth_length, self.hc) for a in ev["arms_in"]]
+            tag = "smoothed over {}".format(self._fmt(p.smooth_length))
+        else:
+            arms = [straight_sections(a, p.min_section, self.hc) for a in ev["arms_in"]]
+            tag = "{} straight sections of at least {}".format(
+                sum(len(a) - 1 for a in arms), self._fmt(p.min_section))
+        out = self._evaluate(ev["cand"], arms)
+        if out is None:
+            self._warn("The chosen main could not be reshaped, so it was left as located.")
+            return ev
+        outside = 0
+        for a in arms:
+            q = resample(a, self.g.cell)
+            outside += sum(1 for x, y in q if not self.g.lookup(self.field, x, y, False))
+        if outside:
+            self._warn("The reshaped main leaves the field in places; check it against the "
+                       "boundary.")
+        c = dict(ev["cand"])
+        c["name"] = "{} ({})".format(c["name"], tag)
+        out["cand"] = c
+        d = out["served_pct"] - ev["served_pct"]
+        if abs(d) >= 0.05:
+            self._warn("Reshaping the main changed the area its laterals reach by {:+.1f} "
+                       "percentage points.".format(d))
+        return out
 
     def _trim(self, ev):
         """Shorten the upstream end of each arm while that raises the score."""
