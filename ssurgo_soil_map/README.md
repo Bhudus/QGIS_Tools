@@ -1,4 +1,4 @@
-# SSURGO Soil Map (QGIS plugin)
+# SSURGO drainage soil map (QGIS plugin)
 
 Turns a field boundary into a labeled soil map. It uses USDA-NRCS Soil Data Access, the database behind Web Soil Survey.
 
@@ -11,15 +11,15 @@ Turns a field boundary into a labeled soil map. It uses USDA-NRCS Soil Data Acce
 
 Requires QGIS 3.22 or newer and an internet connection.
 
-The plugin is also listed under **Vector → Tile Drainage**, a menu shared by the drainage tools in this repository, as well as under **Vector → SSURGO Soil Map**.
+The plugin is also listed under **Vector → Tile Drainage**, a menu shared by the drainage tools in this repository, as well as under **Vector → SSURGO drainage soil map**.
 
 ## Use with a shapefile
 
 1. Load your field boundary shapefile, or any polygon layer. The layer needs a CRS, which for a shapefile means a `.prj` file.
 2. Open the tool in either of these ways:
-   - **Vector → SSURGO Soil Map → Get Soil Map for Polygons…**
+   - **Vector → SSURGO drainage soil map → Get Soil Map for Polygons…**
    - The soil-layers toolbar button.
-   - In the Processing Toolbox, **SSURGO Soil Map → Soils → Get soil map for polygons (SSURGO)**.
+   - In the Processing Toolbox, **SSURGO drainage soil map → Soils → Get soil map for polygons (SSURGO)**.
 3. Pick the input layer and choose what to label the soils with: the soil name, the map unit symbol, both, the series name only (e.g. Drummer), the drain spacing, soil name and drain spacing, the subirrigation spacing, or soil name and subirrigation spacing. Enter the drain depth and drainage coefficient (see [Drain spacing](#drain-spacing)).
 4. Under **Soil map**, click **…**, choose **Save to File**, and pick a `.shp` file name.
 5. Click **Run**.
@@ -29,7 +29,7 @@ The output loads with a different color for each soil and a label on each polygo
 ## Trace a field on the map
 
 1. Zoom to the field. Aerial imagery helps; add it with the QuickMapServices or XYZ Tiles browser entries.
-2. Click **Trace Field and Get Soil Map** on the toolbar, or open it from **Vector → SSURGO Soil Map**.
+2. Click **Trace Field and Get Soil Map** on the toolbar, or open it from **Vector → SSURGO drainage soil map**.
 3. Click each corner of the field. Right-click or press Enter to finish.
    - Backspace removes the last corner.
    - Esc starts over.

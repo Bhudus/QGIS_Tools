@@ -13,7 +13,7 @@ from .trace_tool import FieldTraceTool
 
 TILE_DRAINAGE_MENU = "&Tile Drainage"  # submenu shared by the QGIS_Tools drainage plugins
 
-MENU = "&SSURGO Soil Map"
+MENU = "&SSURGO drainage soil map"
 ALG_ID = "ssurgosoilmap:soilmap"
 
 

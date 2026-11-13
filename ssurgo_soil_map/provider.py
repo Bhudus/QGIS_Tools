@@ -14,7 +14,7 @@ class SsurgoProvider(QgsProcessingProvider):
         return "ssurgosoilmap"
 
     def name(self):
-        return "SSURGO Soil Map"
+        return "SSURGO drainage soil map"
 
     def icon(self):
         return QIcon(os.path.join(os.path.dirname(__file__), "icon.png"))
