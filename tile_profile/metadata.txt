@@ -1,0 +1,21 @@
+[general]
+name=Tile Profile
+qgisMinimumVersion=3.34
+description=Profile of a tile lateral or main: ground surface, the four tile-depth lines and the tile, shown as soon as you select a pipe.
+about=Select a line in a drainage network made by Illini Subsurface Drain Layout (or Subsurface Drainage Layout) and a docked panel draws the profile of the whole lateral, submain or main it belongs to: the ground surface, the target depth band (upper and lower tile depth), the absolute upper and lower depths, and the tile with its grade breaks, junctions and pipe sizes. Stretches where the tile is outside the absolute depths are shown in red. Hover for station, ground, tile, depth and the slope of each tile section; save the profile as an image or a table. The ground can come from the network layer or from a DEM. Uses only QGIS.
+version=0.2.0
+author=Richard Cooke and Anamelechi Falasy
+email=raccooke@gmail.com
+
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+
+changelog=0.2.0 - Also listed under Vector → Tile Drainage with the other drainage tools. Hovering shows the tile slope of the section under the cursor and highlights the section.
+    0.1.0 - First release.
+tags=drainage,tile,subsurface,profile,illini,agriculture
+category=Vector
+experimental=True
+deprecated=False
+icon=icon.png
+license=GPL-3.0-or-later
