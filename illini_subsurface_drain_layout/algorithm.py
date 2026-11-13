@@ -570,6 +570,9 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
 
     # ------------------------------------------------------------ run
     def processAlgorithm(self, parameters, context, feedback):
+        # Ask for the raster path once only: for a temporary output every call
+        # returns a new file name, and QGIS loads the first one it handed out.
+        raster_path = self.parameterAsOutputLayer(parameters, self.TILE_RASTER, context)
         dem_layer = self.parameterAsRasterLayer(parameters, self.DEM, context)
         if dem_layer is None:
             raise QgsProcessingException(self.tr("Could not load the DEM."))
@@ -731,8 +734,7 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             smooth_radius=smooth_m,
             main_stop_frac=num(self.MAIN_STOP) / 100.0,
             submain_frac=num(self.SUBMAIN) / 100.0,
-            tile_raster=bool(self.parameterAsOutputLayer(parameters, self.TILE_RASTER,
-                                                         context)),
+            tile_raster=bool(raster_path),
         )
 
         def progress(pct, msg):
@@ -851,7 +853,6 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
         for w in res["warnings"]:
             feedback.pushWarning(w)
 
-        raster_path = self.parameterAsOutputLayer(parameters, self.TILE_RASTER, context)
         raster_counts = None
         if raster_path and res.get("tile_raster") is not None:
             raster_counts = self._write_tile_raster(
