@@ -3,8 +3,9 @@ name=SSURGO drainage soil map
 qgisMinimumVersion=3.22
 supportsQt6=True
 description=Clips USDA SSURGO soil map units to your polygons and saves them as a labeled soil map layer.
-version=1.9.0
-changelog=1.9.0 - Renamed to SSURGO drainage soil map (menu, Processing Toolbox and plugin list). Existing installs upgrade in place.
+version=1.9.1
+changelog=1.9.1 - Drain and subirrigation spacings reported to the nearest 5 ft.
+    1.9.0 - Renamed to SSURGO drainage soil map (menu, Processing Toolbox and plugin list). Existing installs upgrade in place.
     1.8.1 - Fixed "No parameter definition for the sink 'OUTPUT'" error in 1.8.0.
     1.8.0 - Subirrigation drain spacing from the inverse Hooghoudt equation (new fields ka_sub, subirr_ft and label options), for an irrigation coefficient, water level at the drains and mid-drain water table you enter.
     1.7.0 - Drain spacing from the Hooghoudt equation (water table at the surface) using SSURGO Ksat, for a drain depth and drainage coefficient you enter. New fields ka_ftday, kb_ftday, barrier_ft, spacing_ft and drain spacing label options.

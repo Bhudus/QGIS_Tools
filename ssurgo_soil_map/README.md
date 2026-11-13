@@ -56,9 +56,9 @@ The traced field is a temporary layer. To keep it, save the **Field boundary out
 | ka_ftday | Ksat above the drains (ft/day), thickness-weighted from the surface to drain depth |
 | kb_ftday | Ksat below the drains (ft/day), thickness-weighted from drain depth to the impermeable layer |
 | barrier_ft | Depth to the impermeable layer (ft) |
-| spacing_ft | Drain spacing (ft) from the Hooghoudt equation |
+| spacing_ft | Drain spacing (ft) from the Hooghoudt equation, to the nearest 5 ft |
 | ka_sub | Ksat (ft/day) of the saturated zone above the drains during subirrigation |
-| subirr_ft | Subirrigation drain spacing (ft) from the inverse Hooghoudt equation |
+| subirr_ft | Subirrigation drain spacing (ft) from the inverse Hooghoudt equation, to the nearest 5 ft |
 
 ## Drain spacing
 

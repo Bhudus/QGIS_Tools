@@ -1,3 +1,4 @@
+import math
 import os
 
 from qgis.core import (
@@ -93,9 +94,9 @@ OUTPUT_FIELDS = [
     ("ka_ftday", "dbl", 12, 3),    # Ksat above drain depth
     ("kb_ftday", "dbl", 12, 3),    # Ksat from drain depth to the barrier
     ("barrier_ft", "dbl", 12, 2),  # depth to impermeable layer
-    ("spacing_ft", "dbl", 12, 1),  # Hooghoudt drain spacing
+    ("spacing_ft", "int", 6, 0),   # Hooghoudt drain spacing, nearest 5 ft
     ("ka_sub", "dbl", 12, 3),      # Ksat of the saturated zone above drains, subirrigation
-    ("subirr_ft", "dbl", 12, 1),   # inverse Hooghoudt subirrigation spacing
+    ("subirr_ft", "int", 6, 0),    # inverse Hooghoudt subirrigation spacing, nearest 5 ft
 ]
 
 
@@ -123,6 +124,13 @@ def _to_int(v):
 
 def _round(v, n):
     return round(v, n) if v is not None else None
+
+
+def _round_to(v, step):
+    """Round to the nearest multiple of step (5 ft for spacings), never below one step."""
+    if v is None:
+        return None
+    return int(max(step, step * math.floor(v / step + 0.5)))
 
 
 def _polygon_only(geom):
@@ -462,9 +470,9 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
                 _round(sp.get("ka_ftday"), 3),
                 _round(sp.get("kb_ftday"), 3),
                 _round(sp.get("barrier_ft"), 2),
-                _round(sp.get("spacing_ft"), 1),
+                _round_to(sp.get("spacing_ft"), 5),
                 _round(sp.get("ka_sub"), 3),
-                _round(sp.get("subirr_ft"), 1),
+                _round_to(sp.get("subirr_ft"), 5),
             ])
             sink.addFeature(feat, FAST_INSERT)
             written += 1
