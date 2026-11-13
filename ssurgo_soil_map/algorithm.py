@@ -333,6 +333,12 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
             self.SUB_HM, self.tr("Subirrigation mid-drain water table, height above drain (ft)"),
             NUMBER_DOUBLE, defaultValue=1.5, minValue=0.0, maxValue=15.0))
 
+        self.addParameter(QgsProcessingParameterFeatureSink(
+            self.OUTPUT, self.tr("Soil map"), SOURCE_POLYGON))
+        self.addParameter(QgsProcessingParameterFeatureSink(
+            self.BOUNDARY, self.tr("Field boundary outline"), SOURCE_POLYGON,
+            optional=True, createByDefault=True))
+
     def checkParameterValues(self, parameters, context):
         depth = self.parameterAsDouble(parameters, self.DRAIN_DEPTH, context)
         hw = self.parameterAsDouble(parameters, self.SUB_HW, context)
@@ -346,11 +352,6 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
                 "The subirrigation water level at the drains can't be above the soil surface "
                 "(higher than the drain depth).")
         return super().checkParameterValues(parameters, context)
-        self.addParameter(QgsProcessingParameterFeatureSink(
-            self.OUTPUT, self.tr("Soil map"), SOURCE_POLYGON))
-        self.addParameter(QgsProcessingParameterFeatureSink(
-            self.BOUNDARY, self.tr("Field boundary outline"), SOURCE_POLYGON,
-            optional=True, createByDefault=True))
 
     def processAlgorithm(self, parameters, context, feedback):
         source = self.parameterAsSource(parameters, self.INPUT, context)
