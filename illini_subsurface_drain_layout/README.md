@@ -186,6 +186,12 @@ each junction, so each link runs node to node in the direction of flow.
 | `D_COEFF`, `D_AREA`, `CUM_SEG_FLOW`, `ACTUAL_SIZE`, `NOMINAL` | Routine K fields: drainage coefficient (inch/day), drained area (acres), flow (cfs), required inside diameter and nominal pipe size (inches). Always in Routine K's US units. |
 | `flag` | Anything else to check (below), with lengths in the design units. Flagged links are drawn orange. |
 
+The Drainage network lines are 3-D: each vertex carries the tile elevation
+as its Z value and the ground elevation as its M value, in design units, and
+every Routine J grade break is a vertex, so the tile runs straight between
+vertices. The Tile Profile plugin draws profiles from them. The Surface
+Layout layer stays flat (2-D).
+
 Flags:
 
 - `deeper than …` / `cover under … between grade breaks` — the ground between

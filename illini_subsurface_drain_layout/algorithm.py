@@ -12,7 +12,9 @@ from qgis.core import (
     QgsField,
     QgsFields,
     QgsGeometry,
+    QgsLineString,
     QgsLineSymbol,
+    QgsPoint,
     QgsPointXY,
     QgsProcessing,
     QgsProcessingAlgorithm,
@@ -699,8 +701,10 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
         rename = {"length_m": "length", "max_depth_m": "max_depth", "min_depth_m": "min_depth",
                   "depth_ds_m": "depth_ds"}
 
+        # the network carries the tile elevation (Z) and ground elevation (M), in
+        # design units, at every vertex, including every Routine J grade break
         sink, net_id = self.parameterAsSink(parameters, self.NETWORK, context,
-                                            net_fields, QgsWkbTypes.LineString, crs)
+                                            net_fields, QgsWkbTypes.LineStringZM, crs)
         id_fields = fields([("id", I)])
         id_sink, ids_id = self.parameterAsSink(parameters, self.SURFACE_LAYOUT, context,
                                                id_fields, QgsWkbTypes.LineString, crs)
@@ -722,12 +726,14 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             a["OutSlope"] = it["attrs"]["out_slope"]
             a["BURY_CHECK"] = it["attrs"]["bury_check"]
             f = QgsFeature(net_fields)
-            f.setGeometry(QgsGeometry.fromPolylineXY(
-                [QgsPointXY(x / xf, y / xf) for x, y in it["coords"]]))
+            f.setGeometry(QgsGeometry(QgsLineString([
+                QgsPoint(x / xf, y / xf, float(zt) / uf, float(gm) / uf)
+                for (x, y), zt, gm in zip(it["coords"], it["tile_z"], it["ground_m"])])))
             f.setAttributes([a.get(net_fields.at(i).name()) for i in range(net_fields.count())])
             sink.addFeature(f, QgsFeatureSink.FastInsert)
-            g = QgsFeature(id_fields)          # same line, id only
-            g.setGeometry(f.geometry())
+            g = QgsFeature(id_fields)          # same line, flat, id only
+            g.setGeometry(QgsGeometry.fromPolylineXY(
+                [QgsPointXY(x / xf, y / xf) for x, y in it["coords"]]))
             g.setAttributes([a["id"]])
             id_sink.addFeature(g, QgsFeatureSink.FastInsert)
 

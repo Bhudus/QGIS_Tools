@@ -1091,6 +1091,7 @@ class DrainageLayout:
             o = pp["obj"]
             o["z"], o["s"] = z, s
             o["inv"] = np.interp(s, s[B], tB)
+            o["B"] = list(B)                       # grade-break vertices
             o["bury_steps"] = pp["steps"]
 
         nlat = [0] * nc
@@ -1277,7 +1278,7 @@ class DrainageLayout:
             end = ("outlet",) if c["to"] is None else ("c", c["to"][0], c["to"][1])
             pipes.append((c["kind"], names[k], c["pts"], c["z"], c["s"], c["inv"],
                           col_fixed[k], ("c", k), end, col_flags[k], False, n,
-                          c.get("bury_steps", []), p_min_main))
+                          c.get("bury_steps", []), p_min_main, c.get("B", [])))
         for lid, L in enumerate(self.lats):
             n = len(L["pts"])
             if L["conn"] is None:
@@ -1288,7 +1289,8 @@ class DrainageLayout:
                 end = ("l", L["conn"][1], L["conn"][2])
             pipes.append(("lateral", "lateral {}".format(lid + 1), np.asarray(L["pts"]),
                           L["z"], L["s"], L["inv"], lat_fixed[lid], ("l", lid), end,
-                          lat_flags[lid], True, n, L.get("bury_steps", []), p_min_lat))
+                          lat_flags[lid], True, n, L.get("bury_steps", []), p_min_lat,
+                          L.get("B", [])))
 
         for p in pipes:   # a pipe's last vertex is the node it discharges into
             pkey, end, n = p[7], p[8], p[11]
@@ -1297,7 +1299,7 @@ class DrainageLayout:
 
         links = []
         for pid, (kind, name, pts, z, s, inv, fixed, pkey, end, flag, is_lat, n, steps,
-                  gmin) in enumerate(pipes, start=1):
+                  gmin, gbreaks) in enumerate(pipes, start=1):
             cuts = sorted({0, n - 1} | {int(v) for v in fixed if 0 < int(v) < n - 1})
             for a, b in zip(cuts[:-1], cuts[1:]):
                 if s[b] - s[a] < 1e-6:
@@ -1325,8 +1327,12 @@ class DrainageLayout:
                               # flattest Routine J segment in the line governs sizing
                               "seg_in_slope": min(seg_in) if seg_in else None,
                               "seg_out_slope": min(seg_out) if seg_out else None})
-                links.append({"coords": simplify(pts[a:b + 1], tol), "attrs": attrs,
-                              "lateral": is_lat})
+                # keep every grade break, so the tile between vertices is straight
+                keep = [int(i) - a for i in gbreaks if a < int(i) < b]
+                coords, idx = simplify(pts[a:b + 1], tol, keep, return_index=True)
+                links.append({"coords": coords, "attrs": attrs, "lateral": is_lat,
+                              "tile_z": np.asarray(inv[a:b + 1])[idx],
+                              "ground_m": np.asarray(z[a:b + 1])[idx]})
 
         # downstream link and accumulated upstream quantities
         out_of = {}
@@ -1352,7 +1358,8 @@ class DrainageLayout:
                       "ds_link": j + 1 if j is not None else 0,
                       "upstream_m": round(tot_len[i], 1),
                       "drained_ha": round(tot_lat[i] * self.S / 1e4, 3)})
-            net.append({"coords": L["coords"], "attrs": a})
+            net.append({"coords": L["coords"], "attrs": a,
+                        "tile_z": L["tile_z"], "ground_m": L["ground_m"]})
         # flag every link whose flow path never reaches the outlet
         outlet = node(("outlet",))
         reaches = {}

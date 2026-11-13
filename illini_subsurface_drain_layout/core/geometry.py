@@ -262,12 +262,15 @@ def moving_average(pts, window):
     return (cs[i + ki + 1] - cs[i - ki]) / (2 * ki + 1)[:, None]
 
 
-def simplify(pts, tol, fixed=()):
-    """Douglas-Peucker simplification; vertices listed in `fixed` are always kept."""
+def simplify(pts, tol, fixed=(), return_index=False):
+    """Douglas-Peucker simplification; vertices listed in `fixed` are always kept.
+
+    With return_index, also returns the indices of the kept vertices.
+    """
     p = np.asarray(pts, dtype=float)
     n = len(p)
     if n < 3:
-        return p.copy()
+        return (p.copy(), np.arange(n)) if return_index else p.copy()
     keep = np.zeros(n, dtype=bool)
     keep[0] = keep[-1] = True
     anchors = sorted({0, n - 1} | {int(i) for i in fixed if 0 <= int(i) < n})
@@ -294,6 +297,8 @@ def simplify(pts, tol, fixed=()):
             keep[m] = True
             stack.append((a, m))
             stack.append((m, b))
+    if return_index:
+        return p[keep], np.flatnonzero(keep)
     return p[keep]
 
 
