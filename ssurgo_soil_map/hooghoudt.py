@@ -1,14 +1,23 @@
 """Drain spacing from the Hooghoudt equation, using SSURGO horizon data.
 
-Steady state, with the water table midway between drains at the soil surface:
+General steady-state form, with heights measured above the drains:
 
-    q L^2 = 8 Kb d h + 4 Ka h^2
+    q L^2 = 8 Kb d |Hm - Hw| + 4 Ka |Hm^2 - Hw^2|
 
-    q   drainage coefficient (intensity), length/day
+    Hw  water level at the drains (height above the drain)
+    Hm  water table midway between drains (height above the drain)
+
+Drainage: Hw = 0 and, with the water table at the surface, Hm = drain depth,
+giving the usual q L^2 = 8 Kb d h + 4 Ka h^2.
+Subirrigation (inverse Hooghoudt): water is held at Hw in the drains and flows
+out to the midplane, Hw > Hm, and q is the upward flux (ET) to be supplied.
+
+    q   drainage coefficient, or subirrigation rate, length/day
     L   drain spacing
-    h   head midway between drains = drain depth (water table at the surface)
     Ka  hydraulic conductivity above drain level
     Kb  hydraulic conductivity below drain level
+    (Ka is averaged over the saturated zone above the drains, Kb from the
+    drains down to the impermeable layer.)
     D   depth of the impermeable layer below drain level
     d   Hooghoudt equivalent depth, a function of L, D and the drain radius r
 
@@ -55,19 +64,23 @@ def equivalent_depth(L, D, r):
     return min(D, math.pi * L / (8.0 * denom))
 
 
-def drain_spacing(q, h, ka, kb, D, r):
-    """Solve q L^2 = 8 Kb d(L) h + 4 Ka h^2 for L.
+def drain_spacing(q, h, ka, kb, D, r, hw=0.0):
+    """Solve q L^2 = 8 Kb d(L) |h - hw| + 4 Ka |h^2 - hw^2| for L.
 
-    All lengths in metres, q, ka and kb in metres per day. Returns L in metres,
-    or None when there is no solution (no flow or no conductivity).
+    h is the midplane water table and hw the water level at the drains, both
+    as heights above the drain (hw = 0 for drainage). All lengths in metres,
+    q, ka and kb in metres per day. Returns L in metres, or None when there
+    is no solution (no flow, no head difference or no conductivity).
     """
-    if q <= 0 or h <= 0 or ka is None or ka < 0:
+    dh = abs(h - hw)
+    dh2 = abs(h * h - hw * hw)
+    if q <= 0 or dh <= 0 or ka is None or ka < 0:
         return None
     kb = kb or 0.0
     D = max(D or 0.0, 0.0)
 
     def residual(L):
-        return q * L * L - 8.0 * kb * equivalent_depth(L, D, r) * h - 4.0 * ka * h * h
+        return q * L * L - 8.0 * kb * equivalent_depth(L, D, r) * dh - 4.0 * ka * dh2
 
     lo = max(4.0 * r, 0.01)  # the formula needs L well above the drain size
     if residual(lo) >= 0:
@@ -108,8 +121,15 @@ def layer_average_ksat(horizons, top_cm, bottom_cm):
     return total / thick if thick > 0 else None
 
 
-def spacing_for_component(horizons, barrier_cm, drain_depth_ft, coef_in_day, drain_diam_in):
+def spacing_for_component(horizons, barrier_cm, drain_depth_ft, coef_in_day, drain_diam_in,
+                          mid_ft=None, drain_level_ft=0.0):
     """Drain spacing for one soil component, in US units.
+
+    mid_ft: midplane water table height above the drain (default: at the
+        surface, i.e. the drain depth). drain_level_ft: water level held at
+        the drains, height above the drain (0 for drainage). For
+        subirrigation pass both, with drain_level_ft > mid_ft, and the
+        subirrigation rate as coef_in_day.
 
     horizons: list of (top_cm, bottom_cm, ksat_um_s) from SSURGO chorizon.
     barrier_cm: depth to the impermeable layer (restrictive layer, or the bottom
@@ -125,7 +145,10 @@ def spacing_for_component(horizons, barrier_cm, drain_depth_ft, coef_in_day, dra
     if barrier_cm is not None:
         out["barrier_ft"] = barrier_cm / CM_PER_FT
 
-    ka = layer_average_ksat(horizons, 0.0, drain_cm)
+    if mid_ft is None:
+        mid_ft = drain_depth_ft
+    top_ft = max(drain_depth_ft - max(mid_ft, drain_level_ft), 0.0)  # top of saturated zone
+    ka = layer_average_ksat(horizons, top_ft * CM_PER_FT, drain_cm)
     kb = None
     if barrier_cm is not None and barrier_cm > drain_cm:
         kb = layer_average_ksat(horizons, drain_cm, barrier_cm)
@@ -139,7 +162,8 @@ def spacing_for_component(horizons, barrier_cm, drain_depth_ft, coef_in_day, dra
     D_m = max((barrier_cm or 0.0) - drain_cm, 0.0) / 100.0 if kb_md is not None else 0.0
     L = drain_spacing(
         q=coef_in_day * M_PER_IN,
-        h=drain_depth_ft * M_PER_FT,
+        h=mid_ft * M_PER_FT,
+        hw=drain_level_ft * M_PER_FT,
         ka=ka_md,
         kb=kb_md or 0.0,
         D=D_m,

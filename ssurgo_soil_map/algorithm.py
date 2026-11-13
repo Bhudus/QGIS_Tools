@@ -63,6 +63,8 @@ LABEL_CHOICES = [
     ("Series name only (first word, e.g. Drummer)", '"series"'),
     ("Drain spacing (ft)", "format_number(\"spacing_ft\", 0) || ' ft'"),
     ("Soil name and drain spacing", "\"muname\" || '\\n' || format_number(\"spacing_ft\", 0) || ' ft'"),
+    ("Subirrigation spacing (ft)", "format_number(\"subirr_ft\", 0) || ' ft'"),
+    ("Soil name and subirrigation spacing", "\"muname\" || '\\n' || format_number(\"subirr_ft\", 0) || ' ft'"),
 ]
 
 # Series names that are two words, so "Du Page silt loam" gives "Du Page", not "Du".
@@ -92,6 +94,8 @@ OUTPUT_FIELDS = [
     ("kb_ftday", "dbl", 12, 3),    # Ksat from drain depth to the barrier
     ("barrier_ft", "dbl", 12, 2),  # depth to impermeable layer
     ("spacing_ft", "dbl", 12, 1),  # Hooghoudt drain spacing
+    ("ka_sub", "dbl", 12, 3),      # Ksat of the saturated zone above drains, subirrigation
+    ("subirr_ft", "dbl", 12, 1),   # inverse Hooghoudt subirrigation spacing
 ]
 
 
@@ -246,6 +250,9 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
     DRAIN_DEPTH = "DRAIN_DEPTH"
     DRAIN_COEF = "DRAIN_COEF"
     DRAIN_DIAM = "DRAIN_DIAM"
+    SUB_RATE = "SUB_RATE"
+    SUB_HW = "SUB_HW"
+    SUB_HM = "SUB_HM"
     OUTPUT = "OUTPUT"
     BOUNDARY = "BOUNDARY"
 
@@ -281,6 +288,11 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
             "to the drains; Kb (kb_ftday) is the same from the drains down to the impermeable layer "
             "(barrier_ft), taken as the shallowest restrictive layer or, if there is none, the bottom of "
             "the soil description. Ksat and depths are for the dominant component.\n\n"
+            "Subirrigation spacing (subirr_ft) uses the inverse Hooghoudt equation: "
+            "q L² = 8 Kb d (Hw − Hm) + 4 Ka (Hw² − Hm²), where q is the irrigation coefficient (design upward flux, e.g. peak ET), "
+            "Hw the water level held at the drains and Hm the water table midway between drains, both "
+            "in feet above the drains. Hw must be higher than Hm and no higher than the drain depth. "
+            "Ka here (ka_sub) is averaged over the saturated zone above the drains, Hw deep.\n\n"
             "Save the output as a .shp file to get a shapefile. A .qml style file with the same name is "
             "written next to it so the colors and labels come back whenever the shapefile is opened.\n\n"
             "Check \"Outline the field boundary on the soil map\" to add the field boundary as a bold "
@@ -311,6 +323,29 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
             defaultValue=4.0, minValue=1.0, maxValue=36.0)
         diam.setFlags(diam.flags() | FLAG_ADVANCED)
         self.addParameter(diam)
+        self.addParameter(QgsProcessingParameterNumber(
+            self.SUB_RATE, self.tr("Irrigation coefficient for subirrigation (in/day)"), NUMBER_DOUBLE,
+            defaultValue=0.25, minValue=0.01, maxValue=2.0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.SUB_HW, self.tr("Subirrigation water level at the drains, height above drain (ft)"),
+            NUMBER_DOUBLE, defaultValue=2.0, minValue=0.0, maxValue=15.0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.SUB_HM, self.tr("Subirrigation mid-drain water table, height above drain (ft)"),
+            NUMBER_DOUBLE, defaultValue=1.5, minValue=0.0, maxValue=15.0))
+
+    def checkParameterValues(self, parameters, context):
+        depth = self.parameterAsDouble(parameters, self.DRAIN_DEPTH, context)
+        hw = self.parameterAsDouble(parameters, self.SUB_HW, context)
+        hm = self.parameterAsDouble(parameters, self.SUB_HM, context)
+        if hw <= hm:
+            return False, self.tr(
+                "For subirrigation the water level at the drains must be higher than the "
+                "mid-drain water table.")
+        if hw > depth:
+            return False, self.tr(
+                "The subirrigation water level at the drains can't be above the soil surface "
+                "(higher than the drain depth).")
+        return super().checkParameterValues(parameters, context)
         self.addParameter(QgsProcessingParameterFeatureSink(
             self.OUTPUT, self.tr("Soil map"), SOURCE_POLYGON))
         self.addParameter(QgsProcessingParameterFeatureSink(
@@ -332,6 +367,14 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
         feedback.pushInfo(self.tr(
             f"Drain spacing: drains {drain[0]:g} ft deep, drainage coefficient {drain[1]:g} in/day, "
             f"{drain[2]:g} in drains, water table at the surface midway between drains."))
+        subirr = (
+            self.parameterAsDouble(parameters, self.SUB_RATE, context),
+            self.parameterAsDouble(parameters, self.SUB_HW, context),
+            self.parameterAsDouble(parameters, self.SUB_HM, context),
+        )
+        feedback.pushInfo(self.tr(
+            f"Subirrigation spacing: irrigation coefficient {subirr[0]:g} in/day, water held {subirr[1]:g} ft above the drains, "
+            f"mid-drain water table {subirr[2]:g} ft above the drains."))
 
         src_crs = source.sourceCrs()
         if not src_crs.isValid():
@@ -392,7 +435,7 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
             all_rows.extend(rows)
             feedback.setProgress(90.0 * (n + 1) / len(parts))
 
-        spacing = self._drain_spacing(all_rows, drain, feedback)
+        spacing = self._drain_spacing(all_rows, drain, subirr, feedback)
 
         written = 0
         for r in all_rows:
@@ -419,6 +462,8 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
                 _round(sp.get("kb_ftday"), 3),
                 _round(sp.get("barrier_ft"), 2),
                 _round(sp.get("spacing_ft"), 1),
+                _round(sp.get("ka_sub"), 3),
+                _round(sp.get("subirr_ft"), 1),
             ])
             sink.addFeature(feat, FAST_INSERT)
             written += 1
@@ -434,7 +479,7 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
             results.update(self._write_boundary(parameters, context, parts, src_crs, from_wgs, area_calc))
         return results
 
-    def _drain_spacing(self, rows, drain, feedback):
+    def _drain_spacing(self, rows, drain, subirr, feedback):
         """Hooghoudt drain spacing for each dominant component, keyed by cokey.
 
         A failed lookup only warns, so the soil map is still written.
@@ -460,6 +505,11 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
         result = {}
         for k in cokeys:
             sp = spacing_for_component(horizons.get(k, []), barriers.get(k), drain_depth_ft, coef_in_day, diam_in)
+            rate, hw, hm = subirr
+            sub = spacing_for_component(horizons.get(k, []), barriers.get(k), drain_depth_ft, rate, diam_in,
+                                        mid_ft=hm, drain_level_ft=hw)
+            sp["ka_sub"] = sub.get("ka_ftday")
+            sp["subirr_ft"] = sub.get("spacing_ft")
             result[k] = sp
             b = sp.get("barrier_ft")
             if sp.get("spacing_ft") is not None and b is not None and b <= drain_depth_ft:

@@ -20,7 +20,7 @@ The plugin is also listed under **Vector → Tile Drainage**, a menu shared by t
    - **Vector → SSURGO Soil Map → Get Soil Map for Polygons…**
    - The soil-layers toolbar button.
    - In the Processing Toolbox, **SSURGO Soil Map → Soils → Get soil map for polygons (SSURGO)**.
-3. Pick the input layer and choose what to label the soils with: the soil name, the map unit symbol, both, the series name only (e.g. Drummer), the drain spacing, or soil name and drain spacing. Enter the drain depth and drainage coefficient (see [Drain spacing](#drain-spacing)).
+3. Pick the input layer and choose what to label the soils with: the soil name, the map unit symbol, both, the series name only (e.g. Drummer), the drain spacing, soil name and drain spacing, the subirrigation spacing, or soil name and subirrigation spacing. Enter the drain depth and drainage coefficient (see [Drain spacing](#drain-spacing)).
 4. Under **Soil map**, click **…**, choose **Save to File**, and pick a `.shp` file name.
 5. Click **Run**.
 
@@ -57,6 +57,8 @@ The traced field is a temporary layer. To keep it, save the **Field boundary out
 | kb_ftday | Ksat below the drains (ft/day), thickness-weighted from drain depth to the impermeable layer |
 | barrier_ft | Depth to the impermeable layer (ft) |
 | spacing_ft | Drain spacing (ft) from the Hooghoudt equation |
+| ka_sub | Ksat (ft/day) of the saturated zone above the drains during subirrigation |
+| subirr_ft | Subirrigation drain spacing (ft) from the inverse Hooghoudt equation |
 
 ## Drain spacing
 
@@ -73,7 +75,19 @@ q L² = 8 Kb d h + 4 Ka h²
 - If the impermeable layer is at or above drain depth, D is 0. Spacing then uses only flow above the drains, and the log shows a warning.
 - Soils with no Ksat data, such as water, pits or urban land, get no spacing.
 
-Treat the result as a design starting point. SSURGO Ksat values are estimates for a soil series, not field measurements.
+## Subirrigation spacing
+
+Set **Irrigation coefficient for subirrigation (in/day)** (default 0.25, typically the design peak ET), **Subirrigation water level at the drains** (default 2.0 ft) and **Subirrigation mid-drain water table** (default 1.5 ft). Both water levels are heights above the drains. The level at the drains must be higher than the mid-drain water table and no higher than the drain depth.
+
+The spacing uses the inverse Hooghoudt equation. Water held at Hw in the drains flows out to the midplane, where the water table is Hm:
+
+q L² = 8 Kb d (Hw − Hm) + 4 Ka (Hw² − Hm²)
+
+- q is the irrigation coefficient.
+- Kb, d and the impermeable layer are the same as for drainage.
+- Ka (`ka_sub`) is averaged over the saturated zone above the drains, from Hw down to the drains, rather than from the surface.
+
+Treat the results as a design starting point. SSURGO Ksat values are estimates for a soil series, not field measurements.
 
 ## Notes
 
