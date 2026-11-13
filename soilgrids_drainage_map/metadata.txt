@@ -1,0 +1,19 @@
+[general]
+name=SoilGrids drainage soil map
+qgisMinimumVersion=3.22
+supportsQt6=True
+description=Soil zones with drain and subirrigation spacings for fields anywhere in the world, from ISRIC SoilGrids 2.0 (metric).
+version=0.1.0
+changelog=0.1.0 - First release: SoilGrids 2.0 texture zones above and below the drains, Rosetta 3 Ksat, Hooghoudt drain spacing and inverse Hooghoudt subirrigation spacing in metres.
+author=Richard Cooke
+email=raccooke@gmail.com
+about=The worldwide, metric companion to SSURGO drainage soil map. Give it a field boundary, or trace one on the map. It downloads ISRIC SoilGrids 2.0 (250 m) sand, clay and bulk density at six depths to 2 m, groups the cells into soil zones by USDA texture above and below the drains, estimates Ksat with Rosetta 3, and gives each zone a Hooghoudt drain spacing and an inverse Hooghoudt subirrigation spacing, to the nearest metre. SoilGrids values are 250 m predictions, not mapped soils, so treat the results as a first estimate. Requires an internet connection.
+tags=soil,soilgrids,isric,drainage,drain spacing,subirrigation,hooghoudt,rosetta,metric,agriculture,field
+category=Vector
+icon=icon.png
+experimental=True
+deprecated=False
+hasProcessingProvider=yes
+homepage=https://bhudus.github.io/QGIS_Tools/
+repository=https://github.com/Bhudus/QGIS_Tools
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
