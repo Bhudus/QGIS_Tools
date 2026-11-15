@@ -10,11 +10,12 @@ Instructions:
   ("rect", x, y, w, h, fill, outline)
   ("dot", x, y, r, color)
   ("tri", x, y, size, color)                            triangle pointing down
+  ("ring", x, y, r, color, width)                       circle outline
   ("text", x, y, string, color, size, align, bold)     align: l, c, r (+ v: t, m, b)
 """
 import math
 
-from .profile_core import depth_lines, depth_problems, interp
+from .profile_core import FLAT_SLOPE, adverse_sections, depth_lines, depth_problems, interp
 
 COLORS = {
     "ground": (120, 82, 45),
@@ -30,6 +31,10 @@ COLORS = {
     "junction": (100, 100, 100),
     "bg": (255, 255, 255),
     "highlight": (255, 196, 0, 110),
+    "adverse": (219, 39, 119),
+    "adverse_band": (219, 39, 119, 95),
+    "moved": (234, 88, 12),
+    "selected": (20, 20, 20),
 }
 FONT = 11
 SOURCES = {"vertices": "tile at its grade breaks",
@@ -78,6 +83,9 @@ class ChartModel:
         self.lines = depth_lines(profile, {k: depths[k] for k in
                                            ("upper", "lower", "abs_upper", "abs_lower")})
         self.bad = set(depth_problems(profile, depths["abs_upper"], depths["abs_lower"]))
+        self.adverse = adverse_sections(profile)
+        self.moved = profile.get("node_offset") or [0.0] * len(profile["tile"])
+        self.selected = None              # index of the selected tile point
         ys = [v for _, v in profile["tile"]] + [v for _, v in profile["ground"]]
         ys += [v for pts in self.lines.values() for _, v in pts]
         lo, hi = min(ys), max(ys)
@@ -89,7 +97,8 @@ class ChartModel:
     def layout(self, w, h):
         self.w, self.h = w, h
         self.ml, self.mr = 64, 18
-        self.mt, self.mb = 62, 50
+        self.legend_rows = self._legend_rows(w)
+        self.mt, self.mb = 62 + 16 * (len(self.legend_rows) - 1), 50
         self.pw = max(w - self.ml - self.mr, 10)
         self.ph = max(h - self.mt - self.mb, 10)
 
@@ -169,6 +178,12 @@ class ChartModel:
         for s, _ in p["tributaries"]:
             out.append(("tri", self.X(s), self.Y(interp(p["tile"], s)) - 9, 7, C["junction"]))
 
+        # flat or reverse sections: a band under the tile
+        for s1, s2, _ in self.adverse:
+            out.append(("poly", [(self.X(s1), self.Y(interp(p["tile"], s1))),
+                                 (self.X(s2), self.Y(interp(p["tile"], s2)))],
+                        C["adverse_band"], 10, None))
+
         # ground and tile
         out.append(("poly", [(self.X(s), self.Y(v)) for s, v in p["ground"]], C["ground"], 2.2,
                     None))
@@ -180,11 +195,46 @@ class ChartModel:
                                 C["tile_bad"], 3.0, None))
         for s, v in p["tile"]:
             out.append(("dot", self.X(s), self.Y(v), 2.6, C["tile"]))
+        for (s, v), d in zip(p["tile"], self.moved):
+            if d:
+                out.append(("ring", self.X(s), self.Y(v), 5.5, C["moved"], 2.0))
+                out.append(("text", self.X(s), self.Y(v) - 9, "{:+.2f}".format(-d), C["moved"],
+                            FONT - 1, "cb", True))
+        if self.selected is not None and 0 <= self.selected < len(p["tile"]):
+            s, v = p["tile"][self.selected]
+            out.append(("ring", self.X(s), self.Y(v), 7.5, C["selected"], 1.8))
 
         out += self._legend()
         return out
 
+    def _legend_rows(self, w):
+        """Legend items wrapped into rows that fit the chart width."""
+        rows, x = [[]], self.ml
+        for item in self._legend_items():
+            wd = 23 + text_width(item[0], FONT - 1) + 16
+            if rows[-1] and x + wd > w - self.mr:
+                rows.append([])
+                x = self.ml
+            rows[-1].append(item)
+            x += wd
+        return rows
+
     def _legend(self):
+        out = []
+        for r, row in enumerate(self.legend_rows):
+            x, y = self.ml, 46 + 16 * r
+            for label, color, dash, width in row:
+                if dash == "tri":
+                    out.append(("tri", x + 9, y + 1, 7, color))
+                elif dash == "ring":
+                    out.append(("ring", x + 9, y, 5, color, 2.0))
+                else:
+                    out.append(("poly", [(x, y), (x + 18, y)], color, width, dash))
+                out.append(("text", x + 23, y, label, COLORS["text"], FONT - 1, "lm", False))
+                x += 23 + text_width(label, FONT - 1) + 16
+        return out
+
+    def _legend_items(self):
         C, u, d = COLORS, self.u, self.d
         items = [("Ground", C["ground"], None, 2.2),
                  ("Tile", C["tile"], None, 2.6),
@@ -194,17 +244,13 @@ class ChartModel:
                   C["abs"], (2, 3), 1.4)]
         if self.bad:
             items.append(("Outside absolute limits", C["tile_bad"], None, 3.0))
+        if self.adverse:
+            items.append(("Flat or reverse slope", C["adverse_band"], None, 7))
+        if any(self.moved):
+            items.append(("Point moved", C["moved"], "ring", 0))
         if self.p["tributaries"]:
             items.append(("Junction", C["junction"], "tri", 0))
-        out, x, y = [], self.ml, 46
-        for label, color, dash, width in items:
-            if dash == "tri":
-                out.append(("tri", x + 9, y + 1, 7, color))
-            else:
-                out.append(("poly", [(x, y), (x + 18, y)], color, width, dash))
-            out.append(("text", x + 23, y, label, COLORS["text"], FONT - 1, "lm", False))
-            x += 23 + text_width(label, FONT - 1) + 16
-        return out
+        return items
 
     def section_at(self, s):
         """The tile section (between two tile points) containing station s:
@@ -214,6 +260,15 @@ class ChartModel:
             if s1 <= s <= s2 and s2 > s1:
                 return s1, s2, (t2 - t1) / (s2 - s1)
         return None
+
+    def tile_point_at(self, px, py, radius=9.0):
+        """Index of the tile point drawn nearest (px, py), within radius pixels."""
+        best, bd = None, radius
+        for i, (s, v) in enumerate(self.p["tile"]):
+            d = math.hypot(self.X(s) - px, self.Y(v) - py)
+            if d <= bd:
+                best, bd = i, d
+        return best
 
     def hover(self, px):
         """Crosshair, section highlight and readout for the mouse at pixel x."""
@@ -229,8 +284,8 @@ class ChartModel:
         if sec is not None:
             s1, s2, slope = sec
             label = "Tile slope {:.2f}%".format(slope * 100)
-            if slope <= 0:
-                label += " (reverse)" if slope < 0 else " (flat)"
+            if slope < FLAT_SLOPE:
+                label += " (flat)" if slope > -FLAT_SLOPE else " (reverse)"
             lines.append(label)
             lines.append("  section {:,.0f}\u2013{:,.0f} {}".format(s1, s2, u))
             t1, t2 = interp(self.p["tile"], s1), interp(self.p["tile"], s2)

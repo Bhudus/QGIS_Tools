@@ -95,7 +95,7 @@ def build_profile(lines, all_lines=None, ground_sampler=None, sample_step=None, 
         raise ProfileError("The selected line has no geometry.")
 
     # walk the pipe upstream -> downstream
-    tile_pts, ground_pts, verts, joins = [], [], [], []
+    tile_pts, ground_pts, verts, joins, tile_xy = [], [], [], [], []
     path = []                     # (s, x, y) along the pipe, for DEM sampling
     tile_source = ground_source = None
     s0 = 0.0
@@ -114,6 +114,7 @@ def build_profile(lines, all_lines=None, ground_sampler=None, sample_step=None, 
         if z is not None and len(z) == len(xy) and all(v is not None and v == v for v in z):
             tile_source = tile_source or "vertices"
             pts = [(s0 + seg[i], float(z[i])) for i in range(len(xy))]
+            pxy = list(xy)
         else:
             ends = None
             for f1, f2 in TILE_END_FIELDS:
@@ -126,7 +127,9 @@ def build_profile(lines, all_lines=None, ground_sampler=None, sample_step=None, 
                                    "ElevDepth1/ElevDepth2 (or invert_us/invert_ds) fields.")
             tile_source = tile_source or "line ends"
             pts = [(s0, ends[0]), (s0 + L, ends[1])]
+            pxy = [xy[0], xy[-1]]
         tile_pts += pts if not tile_pts else pts[1:]
+        tile_xy += pxy if not tile_xy else pxy[1:]
         verts += [p[0] for p in pts]
 
         m = l.get("m")
@@ -192,6 +195,10 @@ def build_profile(lines, all_lines=None, ground_sampler=None, sample_step=None, 
         "kind": str(_get(first, "kind") or ""),
         "length": total * k_,
         "tile": flip(tile_pts),
+        # map position of each tile point, in the order of "tile"
+        "tile_xy": [xy for _, xy in sorted((((total - s) * k_, xy)
+                                            for (s, _), xy in zip(tile_pts, tile_xy)),
+                                           key=lambda q: q[0])],
         "ground": flip(ground_pts),
         "grade_breaks": sorted({round((total - s) * k_, 6) for s in verts}),
         "junctions": sorted({round((total - s) * k_, 6) for s, _ in joins}),
@@ -265,14 +272,42 @@ TILE_ELEV_FIELDS = ("invert_us", "invert_ds", "ElevDepth1", "ElevDepth2")
 DEPTH_FIELDS = ("min_depth", "max_depth", "depth_ds", "BuryDepth1", "BuryDepth2")
 
 
-def offset_profile(profile, offset):
-    """The profile with every tile elevation lowered by offset (negative raises)."""
-    if not offset:
+def node_key(x, y):
+    """Key of a tile point by its map position (shared by the lines that meet there)."""
+    return (round(float(x), 3), round(float(y), 3))
+
+
+def offset_profile(profile, offset, node_offsets=None):
+    """The profile with every tile elevation lowered by offset (negative raises),
+    and each tile point in node_offsets {node_key: amount} lowered by its amount too."""
+    node_offsets = node_offsets or {}
+    pts = profile["tile"]
+    xy = profile.get("tile_xy") or [None] * len(pts)
+    each = [node_offsets.get(node_key(*q), 0.0) if q is not None else 0.0 for q in xy]
+    if not offset and not any(each):
         return profile
     p = dict(profile)
-    p["tile"] = [(s, v - offset) for s, v in profile["tile"]]
+    p["tile"] = [(s, v - offset - e) for (s, v), e in zip(pts, each)]
     p["offset"] = offset
+    p["node_offset"] = each
     return p
+
+
+FLAT_SLOPE = 0.00005      # |slope| below this (0.005%) is flat
+
+
+def adverse_sections(profile, flat=FLAT_SLOPE):
+    """Tile sections that are flat or slope the wrong way (rising toward the outlet):
+    [(start station, end station, slope)], slope positive when falling to station 0."""
+    out = []
+    pts = profile["tile"]
+    for (s1, t1), (s2, t2) in zip(pts[:-1], pts[1:]):
+        if s2 - s1 <= 1e-9:
+            continue
+        slope = (t2 - t1) / (s2 - s1)
+        if slope < flat:
+            out.append((s1, s2, slope))
+    return out
 
 
 def offset_changes(attrs, offset, ndigits=4):
@@ -355,8 +390,11 @@ def check_pipe(profile, abs_upper, abs_lower, step, tol=0.005):
         e = max(abs_upper - d, d - abs_lower)
         if e > excess + 1e-12 and e > tol:
             worst, excess = (s, d), e
+    adv = adverse_sections(profile)
     return {"samples": samples, "shallow": shallow, "deep": deep,
-            "min_depth": min(depths), "max_depth": max(depths), "worst": worst}
+            "min_depth": min(depths), "max_depth": max(depths), "worst": worst,
+            "adverse": len(adv), "adverse_length": sum(b - a for a, b, _ in adv),
+            "worst_slope": min((sl for _, _, sl in adv), default=None)}
 
 
 def rasterize_samples(samples, x0, y0, cell, ncols, nrows, cell_y=None):
@@ -395,3 +433,112 @@ def rasterize_samples(samples, x0, y0, cell, ncols, nrows, cell_y=None):
     code[ii, jj] = a[first, 4].astype(np.int8)
     return tile, depth, code, (int(first.sum()), int((code == DEPTH_SHALLOW).sum()),
                                int((code == DEPTH_DEEP).sum()))
+
+
+
+def line_changes(attrs, xy, z, m, offset, node_offsets, length=None, ndigits=4):
+    """New tile elevations for one network line, with the network lowered by
+    offset and each point in node_offsets {node_key: amount} lowered by its amount.
+
+    xy, z, m: the line's vertices (z, m may be None). Returns (attribute changes
+    {field: value}, new z list or None). The end fields follow the new end
+    elevations: invert_us/ElevDepth1 (first vertex), invert_ds/ElevDepth2 (last),
+    BuryDepth1/2 and depth_ds from the ground at the ends; min_depth/max_depth
+    from the vertices when they carry ground (M) values; design_grade_pct and
+    InSlope from the end-to-end fall over `length` (the line's length field).
+    Without Z, only the two ends can move."""
+    node_offsets = node_offsets or {}
+    low = {str(k).lower(): k for k in attrs}
+
+    def key(name):
+        return low.get(name.lower())
+
+    def num(name):
+        k = key(name)
+        return None if k is None else _num(attrs, k)
+
+    each = [offset + node_offsets.get(node_key(*q), 0.0) for q in xy]
+    if not any(each):
+        return {}, None
+    out = {}
+    new_z = None
+    if z is not None and len(z) == len(xy) and all(v is not None for v in z):
+        new_z = [float(v) - d for v, d in zip(z, each)]
+        t_us, t_ds = new_z[0], new_z[-1]
+    else:
+        e1 = num("ElevDepth1") if num("ElevDepth1") is not None else num("invert_us")
+        e2 = num("ElevDepth2") if num("ElevDepth2") is not None else num("invert_ds")
+        if e1 is None or e2 is None:
+            return offset_changes(attrs, offset, ndigits), None
+        t_us, t_ds = e1 - each[0], e2 - each[-1]
+    for names, val in ((("invert_us", "ElevDepth1"), t_us), (("invert_ds", "ElevDepth2"), t_ds)):
+        for n in names:
+            if key(n) is not None and num(n) is not None:
+                out[key(n)] = round(val, ndigits)
+    g_us = num("ground_us")
+    g_ds = num("ground_ds")
+    if m is not None and len(m) == len(xy) and all(v is not None for v in m):
+        g_us = float(m[0]) if g_us is None else g_us
+        g_ds = float(m[-1]) if g_ds is None else g_ds
+        if new_z is not None and max(each) != min(each):
+            # points moved by different amounts: the envelope of the shifted stored
+            # range and the depths at the vertices
+            dep = [float(gv) - tv for gv, tv in zip(m, new_z)]
+            for n, v, pick, d in (("min_depth", min(dep), min, min(each)),
+                                  ("max_depth", max(dep), max, max(each))):
+                old = num(n)
+                if key(n) is not None:
+                    out[key(n)] = round(v if old is None else pick(v, old + d), ndigits)
+    if g_us is not None:
+        for n in ("BuryDepth1",):
+            if key(n) is not None:
+                out[key(n)] = round(g_us - t_us, ndigits)
+    if g_ds is not None:
+        for n in ("BuryDepth2", "depth_ds"):
+            if key(n) is not None:
+                out[key(n)] = round(g_ds - t_ds, ndigits)
+    if key("min_depth") not in out and key("max_depth") not in out:
+        # the whole line moved by one amount, or no vertex ground: shift the range
+        for n, d in (("min_depth", min(each)), ("max_depth", max(each))):
+            v = num(n)
+            if v is not None:
+                out[key(n)] = round(v + d, ndigits)
+    L = length if length is not None else num("length")
+    if L:
+        if key("design_grade_pct") is not None:
+            out[key("design_grade_pct")] = round((t_us - t_ds) / L * 100.0, ndigits)
+        if key("InSlope") is not None and num("InSlope") is not None:
+            out[key("InSlope")] = round((t_us - t_ds) / L, 6)
+    return out, new_z
+
+
+def slope_offsets(profile, index, slope, rest=False):
+    """Point offsets that give the section above tile point `index` the slope
+    `slope` (a fraction, positive falling toward the outlet), keeping that point
+    where it is.
+
+    profile: the profile as shown (with any offsets already applied).
+    rest=False moves only the next point upstream; rest=True moves every point
+    further up the pipe by the same amount, keeping the other sections' slopes.
+    Returns {node_key: amount to lower}, to add to the existing point offsets.
+    """
+    pts, xy = profile["tile"], profile.get("tile_xy")
+    if xy is None or not 0 <= index < len(pts) - 1:
+        return {}
+    (s1, t1), (s2, t2) = pts[index], pts[index + 1]
+    delta = t2 - (t1 + slope * (s2 - s1))           # how far the next point goes down
+    if abs(delta) < 1e-12:
+        return {}
+    upper = range(index + 1, len(pts)) if rest else (index + 1,)
+    out = {}
+    for k in upper:
+        out[node_key(*xy[k])] = delta
+    return out
+
+
+def section_slope(profile, index):
+    """Slope of the section above tile point `index` (fraction), or None at the top."""
+    pts = profile["tile"]
+    if not 0 <= index < len(pts) - 1 or pts[index + 1][0] - pts[index][0] <= 1e-9:
+        return None
+    return (pts[index + 1][1] - pts[index][1]) / (pts[index + 1][0] - pts[index][0])

@@ -43,13 +43,34 @@ Requires QGIS 3.34 LTR or newer. Uses only QGIS.
    `BURY_CHECK` fields are not checked again. The change is one edit, and
    the layer is left in edit mode: save the edits to keep them, undo them,
    or roll them back.
-6. **Check network** finds the profiles to check. It goes through every
+6. **Moving single points.** Click a tile point (a dot) on the chart to
+   select it; the line under the chart says where it is. **Lower point by**
+   moves that point alone (a negative value raises it), and the sections on
+   either side take the new slopes. A point at a junction or at the end of a
+   pipe is shared with the pipes that meet there, so they move with it and the
+   network stays joined. **Slope above** shows the slope of the section
+   running upstream from the selected point; type a new slope and the
+   selected point stays where it is while the point(s) above move to suit.
+   With **next point only**, just the next point up moves, so the section
+   after it changes slope too; with **rest of pipe**, every point further up
+   the pipe moves by the same amount, so the other sections keep their
+   slopes (a pipe joining further up has its end moved with it). Moved points carry an orange ring and the amount;
+   you can select and move as many as you like, on any pipe, and **Clear
+   moved points** forgets them all. Like the network offset, they are a
+   preview until **Apply to layer…**, which writes both: the Z of the vertices
+   concerned, the end elevations and depths of the lines that change, their
+   `design_grade_pct` and `InSlope`. OutSlope, pipe sizes, `flag` and
+   `BURY_CHECK` are not worked out again.
+7. **Check network** finds the profiles to check. It goes through every
    pipe of the network, sampling the tile every third of a cell against the
-   absolute upper and lower depths (and any offset you are previewing), and:
+   absolute upper and lower depths, and looks for flat or reverse sections
+   (with any offset and moved points you are previewing), and:
    - lists the pipes where the tile is shallower than the absolute upper
-     depth or deeper than the absolute lower depth, worst first, with the
-     length of tile outside each limit and the pipe's shallowest and deepest
-     tile. Click a pipe in the list to open its profile and pan the map to it.
+     depth or deeper than the absolute lower depth, or has flat or reverse
+     sections, worst first, with the length of tile outside each limit, the
+     number of flat or reverse sections and the worst slope, and the pipe's
+     shallowest and deepest tile. Click a pipe in the list to open its
+     profile and pan the map to it.
    - adds two raster layers in a **Tile Profile check** group: **Tile
      elevation** (the tile coloured from low to high) and **Tile depth
      check** above it, which shows only the cells outside the limits, red
@@ -72,6 +93,8 @@ Requires QGIS 3.34 LTR or newer. Uses only QGIS.
 | Target band (green, dashed, shaded) | Ground minus the upper and lower tile depth. |
 | Absolute limits (orange, dotted) | Ground minus the absolute upper and lower depth. |
 | Tile (blue) | The tile invert, with a dot at every grade break. Red where it is shallower than the absolute upper depth or deeper than the absolute lower depth. |
+| Flat or reverse slope (pink band) | A tile section that is level (slope under 0.005%) or rises toward the outlet. The hover readout says (flat) or (reverse). |
+| Point moved (orange ring) | A tile point you have moved, with the amount (+ up, − down). |
 | Junctions (dotted verticals, triangles) | Where other pipes join this one. |
 
 Stations run from the pipe's downstream end (0 at the junction or outlet) up

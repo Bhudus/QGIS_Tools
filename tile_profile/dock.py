@@ -41,9 +41,12 @@ from .profile_core import (
     build_profile,
     check_pipe,
     group_pipes,
-    offset_changes,
+    line_changes,
+    node_key,
     offset_profile,
     rasterize_samples,
+    section_slope,
+    slope_offsets,
     table_rows,
 )
 
@@ -110,14 +113,14 @@ def _record(feature):
     return {"attrs": attrs, "xy": xy, "z": z, "m": m, "geometry": geom}
 
 
-def _shift_z(part, dz):
-    """Add dz to the Z of every vertex of an abstract geometry (in place)."""
+def _set_z(part, values):
+    """Set the Z of every vertex of an abstract geometry, in vertex order (in place)."""
     if hasattr(part, "numGeometries"):
         for i in range(part.numGeometries()):
-            _shift_z(part.geometryN(i), dz)
+            _set_z(part.geometryN(i), values)
         return
     for i in range(part.numPoints()):
-        part.setZAt(i, part.zAt(i) + dz)
+        part.setZAt(i, next(values))
 
 
 class TileProfileDock(QDockWidget):
@@ -130,6 +133,8 @@ class TileProfileDock(QDockWidget):
         self.fid = None
         self.profile = None
         self.shown = None                   # the profile as drawn (with any offset)
+        self.node_offsets = {}              # node_key -> amount a single tile point is lowered
+        self.sel_key = None                 # node_key of the selected tile point
         self.tool = None
         self.band = QgsRubberBand(self.canvas, LINE_GEOMETRY)
         self.band.setColor(QColor(255, 196, 0, 170))
@@ -208,26 +213,65 @@ class TileProfileDock(QDockWidget):
         v.addLayout(row2)
 
         row3 = QHBoxLayout()
+        self.point_label = QLabel("Click a tile point on the chart to move it on its own.")
+        self.point_label.setStyleSheet("color: #444;")
+        self.point_off = QDoubleSpinBox()
+        self.point_off.setDecimals(2)
+        self.point_off.setRange(-50.0, 50.0)
+        self.point_off.setSingleStep(0.1)
+        self.point_off.setEnabled(False)
+        self.point_off.setToolTip("Lower the selected tile point by this amount (negative "
+                                  "raises it); the sections on either side change slope. A "
+                                  "junction moves the pipes that join there with it.")
+        self.slope_box = QDoubleSpinBox()
+        self.slope_box.setDecimals(3)
+        self.slope_box.setRange(-10.0, 20.0)
+        self.slope_box.setSingleStep(0.05)
+        self.slope_box.setSuffix(" %")
+        self.slope_box.setEnabled(False)
+        self.slope_box.setToolTip("Slope of the section above the selected point (falling "
+                                  "toward the outlet). Changing it keeps the selected point "
+                                  "and moves the point(s) upstream.")
+        self.slope_mode = QComboBox()
+        self.slope_mode.addItems(["next point only", "rest of pipe"])
+        self.slope_mode.setToolTip("Next point only: only the next point up moves, so the "
+                                   "section after it changes slope too. Rest of pipe: every "
+                                   "point further up this pipe moves by the same amount, so "
+                                   "the other slopes stay as they are.")
+        self.slope_mode.setEnabled(False)
+        self.clear_pts_btn = QPushButton("Clear moved points")
+        self.clear_pts_btn.setEnabled(False)
+        row3.addWidget(self.point_label, 1)
+        row3.addWidget(QLabel("Lower point by"))
+        row3.addWidget(self.point_off)
+        row3.addWidget(QLabel("Slope above"))
+        row3.addWidget(self.slope_box)
+        row3.addWidget(self.slope_mode)
+        row3.addWidget(self.clear_pts_btn)
+        v.addLayout(row3)
+
+        row4 = QHBoxLayout()
         self.check_btn = QPushButton("Check network")
         self.check_btn.setToolTip(
             "Check every pipe against the absolute depths: adds Tile elevation and Tile "
             "depth check layers to the map and lists the pipes to check")
         self.check_label = QLabel("")
         self.check_label.setStyleSheet("color: #444;")
-        row3.addWidget(self.check_btn)
-        row3.addWidget(self.check_label, 1)
-        v.addLayout(row3)
+        row4.addWidget(self.check_btn)
+        row4.addWidget(self.check_label, 1)
+        v.addLayout(row4)
 
         self.chart = ProfileChart()
-        self.table = QTableWidget(0, 6)
+        self.chart.on_point_clicked = self._point_clicked
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(["Pipe", "Kind", "Too shallow", "Too deep",
-                                              "Min depth", "Max depth"])
+                                              "Flat/reverse", "Min depth", "Max depth"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
-        self.table.setToolTip("Pipes with tile outside the absolute depths, worst first. "
-                              "Click one to see its profile.")
+        self.table.setToolTip("Pipes with tile outside the absolute depths, or with flat or "
+                              "reverse sections, worst first. Click one to see its profile.")
         self.table.hide()
         self.check_rows = []
         split = QSplitter(Qt.Horizontal)
@@ -245,6 +289,9 @@ class TileProfileDock(QDockWidget):
         self.png_btn.clicked.connect(self._save_png)
         self.csv_btn.clicked.connect(self._save_csv)
         self.offset.valueChanged.connect(self._offset_changed)
+        self.point_off.valueChanged.connect(self._point_offset_changed)
+        self.slope_box.valueChanged.connect(self._slope_changed)
+        self.clear_pts_btn.clicked.connect(self._clear_points)
         self.check_btn.clicked.connect(self._check_network)
         self.table.cellClicked.connect(self._check_row_clicked)
         self.apply_btn.clicked.connect(self._apply_offset)
@@ -281,8 +328,92 @@ class TileProfileDock(QDockWidget):
     def _unit(self):
         return UNITS[self.units.currentIndex()][0]
 
+    def _pending(self):
+        return bool(self.offset.value()) or bool(self.node_offsets)
+
     def _offset_changed(self, *args):
-        self.apply_btn.setEnabled(bool(self.offset.value()) and self.layer is not None)
+        self.apply_btn.setEnabled(self._pending() and self.layer is not None)
+        self._redraw()
+
+    # ------------------------------------------------------------ single points
+    def _sel_index(self):
+        if self.sel_key is None or self.profile is None:
+            return None
+        for i, q in enumerate(self.profile.get("tile_xy") or []):
+            if node_key(*q) == self.sel_key:
+                return i
+        return None
+
+    def _point_clicked(self, index, *args):
+        p = self.profile
+        if p is None or index is None or not p.get("tile_xy"):
+            self.sel_key = None
+        else:
+            self.sel_key = node_key(*p["tile_xy"][index])
+        self._update_point_controls()
+        self._redraw()
+
+    def _update_point_controls(self):
+        i = self._sel_index()
+        self.point_off.blockSignals(True)
+        self.slope_box.blockSignals(True)
+        sl = None
+        if i is not None:
+            sl = section_slope(offset_profile(self.profile, 0.0, self.node_offsets), i)
+        self.slope_box.setEnabled(sl is not None)
+        self.slope_mode.setEnabled(sl is not None)
+        self.slope_box.setValue(round(sl * 100.0, 3) if sl is not None else 0.0)
+        self.slope_box.blockSignals(False)
+        if i is None:
+            self.sel_key = None
+            self.point_off.setValue(0.0)
+            self.point_off.setEnabled(False)
+            self.point_label.setText("Click a tile point on the chart to move it on its own.")
+        else:
+            s, t = self.profile["tile"][i]
+            junction = any(abs(s - j) < 1e-6 for j in self.profile["junctions"]) or i in (
+                0, len(self.profile["tile"]) - 1)
+            self.point_off.setValue(self.node_offsets.get(self.sel_key, 0.0))
+            self.point_off.setEnabled(True)
+            self.point_label.setText("Point at station {:,.1f} {}: tile {:,.2f}{}".format(
+                s, self._unit(), t, " (junction or pipe end: the joining pipes move with it)"
+                if junction else ""))
+        self.point_off.blockSignals(False)
+        self.clear_pts_btn.setEnabled(bool(self.node_offsets))
+
+    def _point_offset_changed(self, *args):
+        if self.sel_key is None:
+            return
+        v = self.point_off.value()
+        if v:
+            self.node_offsets[self.sel_key] = v
+        else:
+            self.node_offsets.pop(self.sel_key, None)
+        self.clear_pts_btn.setEnabled(bool(self.node_offsets))
+        self.apply_btn.setEnabled(self._pending() and self.layer is not None)
+        self._redraw()
+
+    def _slope_changed(self, *args):
+        """Give the section above the selected point the slope in the box."""
+        i = self._sel_index()
+        if i is None:
+            return
+        shown = offset_profile(self.profile, 0.0, self.node_offsets)
+        rest = self.slope_mode.currentIndex() == 1
+        for k, d in slope_offsets(shown, i, self.slope_box.value() / 100.0, rest).items():
+            v = self.node_offsets.get(k, 0.0) + d
+            if abs(v) < 1e-9:
+                self.node_offsets.pop(k, None)
+            else:
+                self.node_offsets[k] = v
+        self.clear_pts_btn.setEnabled(bool(self.node_offsets))
+        self.apply_btn.setEnabled(self._pending() and self.layer is not None)
+        self._redraw()
+
+    def _clear_points(self, *args):
+        self.node_offsets.clear()
+        self._update_point_controls()
+        self.apply_btn.setEnabled(self._pending() and self.layer is not None)
         self._redraw()
 
     def _units_changed(self, *args):
@@ -319,8 +450,11 @@ class TileProfileDock(QDockWidget):
                 self.layer.selectionChanged.disconnect(self._selection_changed)
             except (TypeError, RuntimeError):
                 pass
+        if layer is not self.layer:
+            self.node_offsets.clear()          # moved points belong to one layer
+            self.sel_key = None
         self.layer = layer if isinstance(layer, QgsVectorLayer) else None
-        self.apply_btn.setEnabled(bool(self.offset.value()) and self.layer is not None)
+        self.apply_btn.setEnabled(self._pending() and self.layer is not None)
         if self.tool is not None and self.layer is not None:
             self.tool.setLayer(self.layer)
         if self.layer is not None:
@@ -360,7 +494,9 @@ class TileProfileDock(QDockWidget):
         except ProfileError as e:
             self.chart.set_message(str(e))
             self.status.setText("")
+            self._update_point_controls()
             return
+        self._update_point_controls()
         self._redraw()
 
     def _build_profile(self):
@@ -419,15 +555,24 @@ class TileProfileDock(QDockWidget):
         if self.profile is None:
             return
         off = self.offset.value()
-        p = self.shown = offset_profile(self.profile, off)
+        p = self.shown = offset_profile(self.profile, off, self.node_offsets)
         model = ChartModel(p, self._depths(), self._unit())
+        model.selected = self._sel_index()
+        hover = self.chart.hover_x
         self.chart.set_model(model)
+        self.chart.hover_x = hover
         msg = "{} line(s) · {} tile point(s)".format(len(p["line_ids"]), len(p["tile"]))
         if model.bad:
             msg += " · tile outside the absolute depths in places (red)"
+        if model.adverse:
+            msg += " · {} flat or reverse section(s) (pink)".format(len(model.adverse))
         if off:
-            msg += " · previewing the network {} {:g} {} (not applied)".format(
+            msg += " · previewing the network {} {:g} {}".format(
                 "lowered" if off > 0 else "raised", abs(off), self._unit())
+        if self.node_offsets:
+            msg += " · {} point(s) moved".format(len(self.node_offsets))
+        if off or self.node_offsets:
+            msg += " (not applied)"
         self.status.setText(msg)
 
     # ------------------------------------------------------------ pick tool
@@ -575,15 +720,17 @@ class TileProfileDock(QDockWidget):
             except ProfileError:
                 skipped += 1
                 continue
-            prof = offset_profile(prof, off)
+            prof = offset_profile(prof, off, self.node_offsets)
             res = check_pipe(prof, d["abs_upper"], d["abs_lower"], step * xy_scale)
             samples += [to_grid(x, y) + (t, dd, c) for x, y, t, dd, c in res["samples"]]
-            if res["shallow"] > 0 or res["deep"] > 0:
+            if res["shallow"] > 0 or res["deep"] > 0 or res["adverse"]:
                 rows.append({"name": prof["name"], "kind": prof["kind"],
                              "fid": lines[0]["fid"], "shallow": res["shallow"],
-                             "deep": res["deep"], "min_depth": res["min_depth"],
-                             "max_depth": res["max_depth"]})
-        rows.sort(key=lambda r: -(r["shallow"] + r["deep"]))
+                             "deep": res["deep"], "adverse": res["adverse"],
+                             "worst_slope": res["worst_slope"],
+                             "adverse_length": res["adverse_length"],
+                             "min_depth": res["min_depth"], "max_depth": res["max_depth"]})
+        rows.sort(key=lambda r: -(r["shallow"] + r["deep"] + r["adverse_length"]))
         x0, y0, cx = out_grid[0], out_grid[1], out_grid[2]
         tile, depth, code, counts = rasterize_samples(samples, x0, y0, cx, shape[1], shape[0],
                                                       cell_y=out_grid[3])
@@ -595,19 +742,25 @@ class TileProfileDock(QDockWidget):
                    "Shallower than {:g} {}".format(d["abs_upper"], u),
                    "Deeper than {:g} {}".format(d["abs_lower"], u))
         return {"rows": rows, "pipes": len(pipes) - skipped, "skipped": skipped,
-                "cells": counts, "offset": off, "dem": dem is not None}
+                "cells": counts, "offset": off, "points": len(self.node_offsets),
+                "dem": dem is not None}
 
     def _show_check(self, result):
         u, d = self._unit(), self._depths()
         rows = self.check_rows = result["rows"]
-        txt = "{} of {} pipes to check: tile shallower than {:g} or deeper than {:g} {}".format(
-            len(rows), result["pipes"], d["abs_upper"], d["abs_lower"], u)
+        n_depth = sum(1 for r in rows if r["shallow"] or r["deep"])
+        n_adv = sum(1 for r in rows if r["adverse"])
+        txt = ("{} of {} pipes to check: {} with tile shallower than {:g} or deeper than "
+               "{:g} {}, {} with flat or reverse sections").format(
+            len(rows), result["pipes"], n_depth, d["abs_upper"], d["abs_lower"], u, n_adv)
         if not rows:
-            txt = "All {} pipes are within the absolute depths ({:g}–{:g} {})".format(
-                result["pipes"], d["abs_upper"], d["abs_lower"], u)
+            txt = ("All {} pipes are within the absolute depths ({:g}–{:g} {}) and fall "
+                   "toward the outlet").format(result["pipes"], d["abs_upper"], d["abs_lower"], u)
         if result["offset"]:
             txt += ", with the network {} {:g} {} (preview)".format(
                 "lowered" if result["offset"] > 0 else "raised", abs(result["offset"]), u)
+        if result["points"]:
+            txt += ", with {} point(s) moved (preview)".format(result["points"])
         if not result["dem"]:
             txt += ". No DEM chosen: ground is straight between vertices"
         if result["skipped"]:
@@ -618,6 +771,8 @@ class TileProfileDock(QDockWidget):
             vals = [r["name"], r["kind"],
                     "{:,.0f} {}".format(r["shallow"], u) if r["shallow"] else "",
                     "{:,.0f} {}".format(r["deep"], u) if r["deep"] else "",
+                    "{} ({:.2f}%)".format(r["adverse"], r["worst_slope"] * 100)
+                    if r["adverse"] else "",
                     "{:.2f}".format(r["min_depth"]), "{:.2f}".format(r["max_depth"])]
             for j, val in enumerate(vals):
                 self.table.setItem(i, j, QTableWidgetItem(val))
@@ -637,42 +792,53 @@ class TileProfileDock(QDockWidget):
 
     # ------------------------------------------------------------ offset
     def _apply_offset(self, *args):
-        """Lower every line of the network layer by the offset, as one undoable edit."""
+        """Write the network offset and the moved points into the layer, as one
+        undoable edit."""
         layer, d, u = self.layer, self.offset.value(), self._unit()
-        if layer is None or not d:
+        pts = dict(self.node_offsets)
+        if layer is None or not (d or pts):
             return
-        word = "Lower" if d > 0 else "Raise"
+        what = []
+        if d:
+            what.append("{} every tile by {:g} {}".format("lower" if d > 0 else "raise",
+                                                          abs(d), u))
+        if pts:
+            what.append("move {} single point(s) by their own amounts".format(len(pts)))
         n = layer.featureCount()
         answer = QMessageBox.question(
-            self, "Apply network offset",
-            "{} every tile in “{}” by {:g} {}?\n\n"
-            "This changes all {} lines: the tile elevations (Z values, invert_us/invert_ds, "
-            "ElevDepth1/ElevDepth2) and the depths (min_depth, max_depth, depth_ds, "
-            "BuryDepth1/BuryDepth2). Ground elevations and slopes do not change, and the "
-            "flag and BURY_CHECK fields are not checked again.\n\n"
+            self, "Apply to layer",
+            "In “{}”, {}?\n\n"
+            "This changes the tile elevations of the lines concerned (Z values, invert_us/"
+            "invert_ds, ElevDepth1/ElevDepth2) and their depths (min_depth, max_depth, "
+            "depth_ds, BuryDepth1/BuryDepth2), design_grade_pct and InSlope. Ground "
+            "elevations do not change; OutSlope, the pipe sizes, flag and BURY_CHECK are "
+            "not worked out again.\n\n"
             "The layer is left in edit mode: save the edits to keep them, or roll them "
-            "back.".format(word, layer.name(), abs(d), u, n),
+            "back.".format(layer.name(), " and ".join(what)),
             QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
         if answer != QMessageBox.Yes:
             return
         if not layer.isEditable() and not layer.startEditing():
-            QMessageBox.warning(self, "Apply network offset",
+            QMessageBox.warning(self, "Apply to layer",
                                 "“{}” cannot be edited.".format(layer.name()))
             return
         fields = layer.fields()
-        has_z = QgsWkbTypes.hasZ(layer.wkbType())
-        layer.beginEditCommand("Tile Profile: {} network by {:g} {}".format(
-            word.lower(), abs(d), u))
+        layer.beginEditCommand("Tile Profile: {}".format(" and ".join(what)))
         changed = 0
         try:
             for f in layer.getFeatures():
-                attrs = {name: _value(f[name]) for name in fields.names()}
-                for name, value in offset_changes(attrs, d).items():
+                rec = _record(f)
+                attrs, g = rec["attrs"], rec.get("geometry")
+                if not rec["xy"]:
+                    continue
+                ch, new_z = line_changes(attrs, rec["xy"], rec["z"], rec["m"], d, pts)
+                if not ch and new_z is None:
+                    continue
+                for name, value in ch.items():
                     layer.changeAttributeValue(f.id(), fields.indexOf(name), value)
-                g = f.geometry()
-                if has_z and g is not None and not g.isEmpty():
+                if new_z is not None and g is not None and not g.isEmpty():
                     part = g.constGet().clone()
-                    _shift_z(part, -d)
+                    _set_z(part, iter(new_z))
                     layer.changeGeometry(f.id(), QgsGeometry(part))
                 changed += 1
         except Exception:
@@ -681,13 +847,12 @@ class TileProfileDock(QDockWidget):
         layer.endEditCommand()
         layer.triggerRepaint()
         self.iface.messageBar().pushMessage(
-            "Tile Profile",
-            "{} {} lines of “{}” by {:g} {}. Save the layer's edits to keep the change."
-            .format("Lowered" if d > 0 else "Raised", changed, layer.name(), abs(d), u),
-            level=Qgis.Info, duration=8)
+            "Tile Profile", "Changed {} of {} lines of “{}”. Save the layer's edits to keep "
+            "the change.".format(changed, n, layer.name()), level=Qgis.Info, duration=8)
         self.offset.blockSignals(True)
         self.offset.setValue(0.0)
         self.offset.blockSignals(False)
+        self.node_offsets.clear()
         self.apply_btn.setEnabled(False)
         self.refresh()
 

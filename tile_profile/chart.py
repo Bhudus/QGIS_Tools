@@ -14,6 +14,7 @@ class ProfileChart(QWidget):
         self.model = None
         self.message = "Select a lateral or main in the network layer to see its profile."
         self.hover_x = None
+        self.on_point_clicked = None      # callback(index or None) for a click on the chart
         self.setMouseTracking(True)
         self.setMinimumHeight(220)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -88,6 +89,13 @@ class ProfileChart(QWidget):
             p.setBrush(QBrush(_color(color)))
             p.drawPolygon(QPolygonF([QPointF(x - s / 2, y - s / 2), QPointF(x + s / 2, y - s / 2),
                                      QPointF(x, y + s / 2)]))
+        elif kind == "ring":
+            _, x, y, r, color, width = ins
+            pen = QPen(_color(color))
+            pen.setWidthF(width)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(QPointF(x, y), r, r)
         elif kind == "text":
             _, x, y, text, color, size, align, bold = ins
             font = self._font(size, bold)
@@ -128,6 +136,16 @@ class ProfileChart(QWidget):
         if new != self.hover_x:
             self.hover_x = new
             self.update()
+
+    def mousePressEvent(self, event):
+        if self.model is None or self.on_point_clicked is None:
+            return
+        try:
+            pos = event.position()          # Qt 6
+        except AttributeError:
+            pos = event.pos()
+        self.model.layout(self.width(), self.height())
+        self.on_point_clicked(self.model.tile_point_at(pos.x(), pos.y()))
 
     def leaveEvent(self, event):
         if self.hover_x is not None:
