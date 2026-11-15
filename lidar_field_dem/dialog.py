@@ -40,6 +40,8 @@ from qgis.core import (
 from qgis.gui import QgsFileWidget, QgsMapLayerComboBox
 
 from .algorithms.collections import field_to_wgs, list_collections
+from .algorithms.field_dem import FT_US, metres_per_unit
+from .dem_style import color_dem, hillshade_z_factor
 from .trace_tool import TraceFieldTool
 
 SQ_M_PER_ACRE = 4046.8564224
@@ -457,13 +459,22 @@ class CollectionsDialog(QDialog):
                             Qgis.Critical, 0)
             return
         added = []
-        for key, title in (("OUTPUT", "Bare-earth DEM"), ("FILLED", "Filled DEM (Wang & Liu)")):
+        lo = (results or {}).get("ELEV_LOW")
+        hi = (results or {}).get("ELEV_HIGH")
+        for key, title, shade in (("FILLED", "Filled DEM (Wang & Liu)", False),
+                                  ("OUTPUT", "Bare-earth DEM", True)):
             path = (results or {}).get(key)
             if path and os.path.exists(path):
                 rl = QgsRasterLayer(path, "%s - %s" % (title, name))
                 if rl.isValid():
                     QgsProject.instance().addMapLayer(rl)
-                    added.append(title)
+                    added.insert(0, title)
+                    try:
+                        zf = hillshade_z_factor(FT_US, metres_per_unit(rl.crs()))
+                        color_dem(rl, 0, lo, hi, hillshade=shade, z_factor=zf)
+                    except Exception as e:          # cosmetic; never fail
+                        QgsMessageLog.logMessage("Could not color %s: %s" % (title, e),
+                                                 LOG_TAG, Qgis.Warning)
         bar.pushMessage(LOG_TAG, "DEM for %s is done: %s added to the map."
                         % (name, " and ".join(added) or "no layer"), Qgis.Success, 10)
 

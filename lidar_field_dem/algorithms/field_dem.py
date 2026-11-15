@@ -57,6 +57,7 @@ from qgis.core import (
     QgsProcessingParameterNumber,
     QgsProcessingParameterRasterDestination,
     QgsProcessingParameterString,
+    QgsProcessingOutputNumber,
     QgsProject,
     QgsRectangle,
     QgsUnitTypes,
@@ -66,6 +67,9 @@ from qgis.core import (
 )
 from qgis.PyQt.QtCore import QVariant
 import processing
+
+from ..dem_style import (NO_COLOR, SCHEMES, DemStyler, attach_styler,
+                         hillshade_z_factor)
 
 
 ISGS_COLLECTIONS_URL = ("https://maps.isgs.illinois.edu/arcgis/rest/services/"
@@ -409,8 +413,61 @@ def run_pdal(pdal_exe, pipeline, work_dir, feedback):
             proc.kill()
             raise QgsProcessingException("Canceled.")
     if proc.returncode != 0:
-        raise QgsProcessingException(
-            "PDAL failed (exit %s):\n%s" % (proc.returncode, "\n".join(out_lines[-30:])))
+        raise QgsProcessingException(pdal_failure(proc.returncode, out_lines))
+
+
+# Windows crash / out-of-memory exit codes (unsigned and signed forms) and POSIX kills
+_CRASH_CODES = {3221226505, -1073740791,      # 0xC0000409 fast-fail abort
+                3221225477, -1073741819,      # 0xC0000005 access violation
+                3221225495, -1073741801,      # 0xC0000017 no memory
+                -9, -6, 134, 137}
+
+
+def pdal_failure(code, out_lines):
+    tail = "\n".join(out_lines[-30:])
+    if code in _CRASH_CODES or "bad_alloc" in tail:
+        return ("PDAL crashed (exit %s), almost certainly out of memory: the area holds too "
+                "many LiDAR points to grid in one piece. Set 'Gridding method' to "
+                "'Average of ground points per cell (tile by tile)', or leave it on "
+                "Automatic.%s" % (code, ("\n" + tail) if tail else ""))
+    return "PDAL failed (exit %s):\n%s" % (code, tail)
+
+
+def las_header(path):
+    """(minx, maxx, miny, maxy, point count) from a LAS/LAZ header, or None."""
+    import struct
+    try:
+        with open(path, "rb") as f:
+            h = f.read(375)
+        if h[:4] != b"LASF":
+            return None
+        minor = h[25]
+        maxx, minx, maxy, miny = struct.unpack("<4d", h[179:211])
+        n = struct.unpack("<I", h[107:111])[0]
+        if minor >= 4 and len(h) >= 255:
+            n = struct.unpack("<Q", h[247:255])[0] or n
+        return minx, maxx, miny, maxy, n
+    except Exception:
+        return None
+
+
+def run_pdal_unit(pdal_exe, pipeline, path, is_canceled):
+    """Run one small pipeline quietly; returns (exit code, output lines)."""
+    with open(path, "w") as f:
+        json.dump(pipeline, f)
+    kw = {}
+    if os.name == "nt":
+        kw["creationflags"] = 0x08000000      # CREATE_NO_WINDOW
+    proc = subprocess.Popen([pdal_exe, "pipeline", path], stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, universal_newlines=True, **kw)
+    while proc.poll() is None:
+        if is_canceled():
+            proc.kill()
+            proc.wait()
+            return -1, ["canceled"]
+        time.sleep(0.2)
+    out = proc.stdout.read().splitlines() if proc.stdout else []
+    return proc.returncode, out
 
 
 # --------------------------------------------------------------------------
@@ -422,6 +479,7 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
     SOURCE = "SOURCE"
     YEAR = "YEAR"
     RESOLUTION = "RESOLUTION"
+    GRID_METHOD = "GRID_METHOD"
     BUFFER = "BUFFER"
     EXTEND = "EXTEND"
     CLASSES = "CLASSES"
@@ -431,6 +489,10 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
     FILL = "FILL"
     MINSLOPE = "MINSLOPE"
     FILLED = "FILLED"
+    COLOR_DEM = "COLOR_DEM"
+    HILLSHADE = "HILLSHADE"
+    ELEV_LOW = "ELEV_LOW"
+    ELEV_HIGH = "ELEV_HIGH"
     PDAL = "PDAL"
     OUTPUT = "OUTPUT"
 
@@ -439,6 +501,12 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
                "USGS 3DEP - AWS point clouds (any U.S. state)"]
     SRC_AUTO, SRC_ISGS, SRC_USGS = 0, 1, 2
     ZUNITS = ["Feet (US survey)", "Meters"]
+    GRID_METHODS = ["Automatic (TIN for small areas, tile by tile for large ones)",
+                    "Triangulated surface (TIN)",
+                    "Average of ground points per cell (tile by tile)"]
+    TIN_POINT_LIMIT = 40e6          # more LiDAR points than this -> tile by tile
+    EPT_CHUNK_M = 600.0             # 3DEP is read in squares this size when tile by tile
+    PARALLEL_UNITS = 4
 
     def tr(self, s):
         return QCoreApplication.translate("LidarFieldDEM", s)
@@ -472,9 +540,22 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
             "cell size: the ISGS DTM cell size for that collection (2 ft for Champaign 2020, so "
             "20 ft), or 1 m for USGS 3DEP (so 32.8 ft). If ISGS doesn't publish one, the native "
             "size is estimated from the LiDAR point spacing.\n"
+            "Gridding method: Automatic builds a triangulated surface (TIN) through the "
+            "ground points for areas up to about 40 million LiDAR points (a few hundred "
+            "acres), and above that averages the ground points in each cell one tile at a "
+            "time, which keeps memory low for watersheds and large farms. Cells with no "
+            "ground points (buildings, water) are then filled from their neighbours.\n"
             "Fill sinks (Wang & Liu): also writes a DEM in which every depression is filled so "
             "that each cell drains to the DEM's edge. Minimum slope (degrees) keeps a slight "
             "gradient across filled areas; 0 gives flat fills.\n"
+            "DEM color scheme: the DEM is colored when it is added to the map. Hypsometric "
+            "(default) runs green on low ground through yellow and tan to brown on high "
+            "ground. The colors are stretched over the field's elevations (2nd to 98th "
+            "percentile), so the margin and odd edge cells don't wash out the field. "
+            "Hillshade (on by default) adds a shaded-relief layer just above the DEM, "
+            "multiplied at 45% with 3x vertical exaggeration, to show micro-relief such as "
+            "swales and old furrows. The filled DEM gets the same colors, without a "
+            "hillshade.\n"
             "Extend DEM beyond field (ft, default 100): the DEM covers the field plus this "
             "distance, so tile outlets and waterways can be placed outside the field.\n"
             "Interpolation buffer (ft): extra LiDAR data read beyond that extent so the DEM "
@@ -494,6 +575,9 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterNumber(
             self.RESOLUTION, self.tr("DEM cell size (feet, blank = 10 x the LiDAR's native cell size)"),
             QgsProcessingParameterNumber.Double, defaultValue=None, optional=True, minValue=0.1))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.GRID_METHOD, self.tr("Gridding method"), options=self.GRID_METHODS,
+            defaultValue=0))
         self.addParameter(QgsProcessingParameterNumber(
             self.EXTEND, self.tr("Extend DEM beyond field boundary (feet)"),
             QgsProcessingParameterNumber.Double, defaultValue=100.0, minValue=0.0))
@@ -517,6 +601,11 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterNumber(
             self.MINSLOPE, self.tr("Minimum slope across filled sinks (degrees, 0 = flat)"),
             QgsProcessingParameterNumber.Double, defaultValue=0.06, minValue=0.0, maxValue=5.0))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.COLOR_DEM, self.tr("DEM color scheme"), options=SCHEMES, defaultValue=0))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.HILLSHADE, self.tr("Add a hillshade over the DEM colors"),
+            defaultValue=True))
         self.addParameter(QgsProcessingParameterString(
             self.PDAL, self.tr("PDAL executable (blank = auto-detect)"),
             defaultValue="", optional=True))
@@ -525,6 +614,10 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterRasterDestination(
             self.FILLED, self.tr("Filled DEM (Wang & Liu) [blank = next to the DEM]"),
             optional=True, createByDefault=False))
+        self.addOutput(QgsProcessingOutputNumber(
+            self.ELEV_LOW, self.tr("Field elevation, 2nd percentile")))
+        self.addOutput(QgsProcessingOutputNumber(
+            self.ELEV_HIGH, self.tr("Field elevation, 98th percentile")))
 
     # ------------------------------------------------------------------
     def processAlgorithm(self, parameters, context, feedback):
@@ -547,7 +640,10 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
         z_target_m = FT_US if self.parameterAsEnum(parameters, self.Z_UNITS, context) == 0 else 1.0
         keep_laz = self.parameterAsBoolean(parameters, self.KEEP_LAZ, context)
         do_fill = self.parameterAsBoolean(parameters, self.FILL, context)
+        grid_method = self.parameterAsEnum(parameters, self.GRID_METHOD, context)
         min_slope = self.parameterAsDouble(parameters, self.MINSLOPE, context)
+        scheme = self.parameterAsEnum(parameters, self.COLOR_DEM, context)
+        hillshade = self.parameterAsBoolean(parameters, self.HILLSHADE, context)
         pdal_exe = find_pdal(self.parameterAsString(parameters, self.PDAL, context).strip())
         out_path = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
         feedback.pushInfo("PDAL: %s" % pdal_exe)
@@ -563,6 +659,7 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
         c = field_wgs.centroid().asPoint()
         feedback.pushInfo("Field centroid: %.5f, %.5f" % (c.y(), c.x()))
 
+        field_only = QgsGeometry(field)             # before the margin: sets the colors
         # ---- DEM extent = field + EXTEND (buffered in a metric UTM CRS) ----
         if ext_m > 0:
             utm_tmp = utm_crs_for(c.x(), c.y())
@@ -624,37 +721,6 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
         res = res_m / upm
         buf = field_out.buffer(buf_m / upm, 8)
 
-        # ---- PDAL pipeline ----
-        stages = list(pts["readers"])
-        if len(pts["readers"]) > 1:
-            stages.append({"type": "filters.merge",
-                           "inputs": [r["tag"] for r in pts["readers"]]})
-        stages.append({"type": "filters.range",
-                       "limits": ",".join("Classification[%d:%d]" % (k, k) for k in classes)})
-        if pts["src_crs"].authid() != out_crs.authid() or not out_crs.authid():
-            out_s = srs_string(out_crs)
-            if not out_s:
-                raise QgsProcessingException(
-                    "Could not describe the output CRS for PDAL; "
-                    "set 'Output CRS' to an EPSG code (e.g. EPSG:3435).")
-            # no in_srs: PDAL uses the CRS stored with the points (or default_srs)
-            stages.append({"type": "filters.reprojection", "out_srs": out_s})
-        stages.append({"type": "filters.crop", "polygon": buf.asWkt(3)})
-        zf = pts["z_unit_m"] / z_target_m
-        if abs(zf - 1.0) > 1e-9:
-            stages.append({"type": "filters.assign", "value": "Z = Z * %.12f" % zf})
-        stages[-1]["tag"] = "ground"
-
-        if keep_laz:
-            laz_path = os.path.splitext(out_path)[0] + "_ground.laz"
-            wl = {"type": "writers.las", "inputs": ["ground"],
-                  "filename": laz_path, "compression": "true",
-                  "minor_version": 4, "forward": "all"}
-            if srs_string(out_crs):
-                wl["a_srs"] = srs_string(out_crs)
-            stages.append(wl)
-            feedback.pushInfo("Ground points will be saved to %s" % laz_path)
-
         bb = buf.boundingBox()
         ox = math.floor(bb.xMinimum() / res) * res
         oy = math.floor(bb.yMinimum() / res) * res
@@ -664,17 +730,23 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
             raise QgsProcessingException(
                 "DEM would be %d x %d cells; use a coarser cell size." % (w, h))
         raw_dem = os.path.join(work, "dem_buffered.tif")
-        stages += [
-            {"type": "filters.delaunay", "inputs": ["ground"]},
-            {"type": "filters.faceraster", "resolution": res, "nodata": -9999,
-             "origin_x": ox, "origin_y": oy, "width": w, "height": h},
-            {"type": "writers.raster", "filename": raw_dem, "data_type": "float32",
-             "nodata": -9999, "gdalopts": "COMPRESS=DEFLATE,TILED=YES"},
-        ]
-        feedback.pushInfo("Gridding %d x %d cells at %.3f %s ..."
-                          % (w, h, res, QgsUnitTypes.toString(out_crs.mapUnits())))
-        feedback.setProgressText("Running PDAL")
-        run_pdal(pdal_exe, {"pipeline": stages}, work, feedback)
+
+        # ---- gridding method ----
+        est = self._estimate_points(pts, buf, upm)
+        if grid_method == 0:
+            binned = est is not None and est > self.TIN_POINT_LIMIT
+        else:
+            binned = grid_method == 2
+        feedback.pushInfo("LiDAR points in the area: about %s; gridding by %s"
+                          % ("{:,.0f}".format(est) if est else "unknown",
+                             "averaging ground points per cell, tile by tile" if binned
+                             else "triangulated surface (TIN)"))
+        if binned:
+            self._grid_binned(pdal_exe, pts, classes, out_crs, buf, res, ox, oy, w, h,
+                              z_target_m, keep_laz, out_path, raw_dem, work, feedback)
+        else:
+            self._grid_tin(pdal_exe, pts, classes, out_crs, buf, res, ox, oy, w, h,
+                           z_target_m, keep_laz, out_path, raw_dem, work, feedback)
         if not os.path.exists(raw_dem):
             raise QgsProcessingException(
                 "PDAL produced no DEM. Possibly no ground points (class %s) fell inside "
@@ -685,6 +757,19 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
         mask = self._write_mask(field_out, out_crs, work, context)
         self._clip(raw_dem, mask, out_crs, out_path, context, feedback)
         results = {self.OUTPUT: out_path}
+
+        # ---- colors: stretch over the field itself (2nd - 98th percentile) ----
+        field_only_out = QgsGeometry(field_only)
+        field_only_out.transform(QgsCoordinateTransform(field_crs, out_crs,
+                                                        context.transformContext()))
+        lo, hi = self._field_percentiles(raw_dem, field_only_out)
+        results[self.ELEV_LOW], results[self.ELEV_HIGH] = lo, hi
+        z_factor = hillshade_z_factor(z_target_m, upm)
+        if lo is not None:
+            feedback.pushInfo("Field elevations (2nd - 98th percentile): %.2f to %.2f %s"
+                              % (lo, hi, "ft" if z_target_m != 1.0 else "m"))
+        if scheme != NO_COLOR:
+            attach_styler(context, out_path, DemStyler(scheme, lo, hi, hillshade, z_factor))
 
         # ---- optional: sinks filled (Wang & Liu) ----
         if do_fill:
@@ -704,10 +789,258 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
                 details = QgsProcessingContext.LayerDetails(
                     "Filled DEM (Wang & Liu)", context.project(), self.FILLED)
                 context.addLayerToLoadOnCompletion(filled_path, details)
+            if scheme != NO_COLOR:
+                attach_styler(context, filled_path, DemStyler(scheme, lo, hi, False, z_factor))
             feedback.pushInfo("Filled DEM: %s" % filled_path)
 
         feedback.pushInfo("Done. Source: %s" % pts["label"])
         return results
+
+
+    @staticmethod
+    def _estimate_points(pts, buf, upm):
+        """Rough count of LiDAR points (all classes) the run will read."""
+        files = [r.get("filename") for r in pts["readers"] if r.get("type") == "readers.las"]
+        if files:
+            total = 0
+            for f in files:
+                hd = las_header(f)
+                if hd:
+                    total += hd[4]
+            return total or None
+        if pts.get("ept_rect") is not None:              # 3DEP: area x typical density
+            return buf.area() * upm * upm * 8.0 * len(pts.get("ept_urls") or [1])
+        return None
+
+    def _units(self, pts, out_crs, context):
+        """Work units for tile-by-tile gridding: (name, reader stage, extent in out CRS)."""
+        units = []
+        src = pts["src_crs"]
+        las = [r for r in pts["readers"] if r.get("type") == "readers.las"]
+        for r in las:
+            rd = {k: v for k, v in r.items() if k != "tag"}
+            hd = las_header(r["filename"])
+            ext = None
+            if hd:
+                ext = QgsRectangle(hd[0], hd[2], hd[1], hd[3])
+                if src.isValid() and src.authid() != out_crs.authid():
+                    ext = QgsCoordinateTransform(src, out_crs, context.transformContext()) \
+                        .transformBoundingBox(ext)
+            units.append((os.path.splitext(os.path.basename(r["filename"]))[0], rd, ext))
+        rect = pts.get("ept_rect")
+        if rect is not None:
+            step = self.EPT_CHUNK_M
+            xt = QgsCoordinateTransform(WEB_MERCATOR, out_crs, context.transformContext())
+            nx = max(1, int(math.ceil(rect.width() / step)))
+            ny = max(1, int(math.ceil(rect.height() / step)))
+            for k, url in enumerate(pts.get("ept_urls") or []):
+                for i in range(nx):
+                    for j in range(ny):
+                        x0 = rect.xMinimum() + i * step
+                        y0 = rect.yMinimum() + j * step
+                        x1 = min(rect.xMaximum(), x0 + step)
+                        y1 = min(rect.yMaximum(), y0 + step)
+                        rd = {"type": "readers.ept", "filename": url,
+                              "bounds": "([%.2f, %.2f], [%.2f, %.2f])" % (x0, x1, y0, y1)}
+                        ext = xt.transformBoundingBox(QgsRectangle(x0, y0, x1, y1))
+                        units.append(("ept%d_%d_%d" % (k, i, j), rd, ext))
+        return units
+
+    def _grid_binned(self, pdal_exe, pts, classes, out_crs, buf, res, ox, oy, w, h,
+                     z_target_m, keep_laz, out_path, raw_dem, work, feedback):
+        """Average the ground points in each cell, one tile (or 3DEP square) at a time,
+        so memory stays at one tile's worth however large the area. Cells with no
+        ground points are then filled from their neighbours."""
+        import numpy as np
+        from concurrent.futures import ThreadPoolExecutor
+        from osgeo import gdal
+
+        units = self._units(pts, out_crs, QgsProject.instance())
+        common = self._common_stages(pts, classes, out_crs, buf, z_target_m)
+        laz_dir = None
+        if keep_laz:
+            laz_dir = os.path.splitext(out_path)[0] + "_ground"
+            os.makedirs(laz_dir, exist_ok=True)
+            feedback.pushInfo("Ground points will be saved, one file per tile, in %s" % laz_dir)
+        a_srs = srs_string(out_crs)
+        jobs = []
+        bbox = buf.boundingBox()
+        for k, (name, reader, ext) in enumerate(units):
+            if ext is None:
+                ext = bbox
+            if not ext.intersects(bbox):
+                continue
+            # cell window covering this unit, plus 2 cells for writers.gdal's search radius
+            i0 = max(0, int(math.floor((ext.xMinimum() - ox) / res)) - 2)
+            i1 = min(w, int(math.ceil((ext.xMaximum() - ox) / res)) + 2)
+            j0 = max(0, int(math.floor((ext.yMinimum() - oy) / res)) - 2)
+            j1 = min(h, int(math.ceil((ext.yMaximum() - oy) / res)) + 2)
+            if i1 <= i0 or j1 <= j0:
+                continue
+            tif = os.path.join(work, "unit_%04d.tif" % k)
+            stages = [reader] + [dict(st) for st in common]
+            if laz_dir:
+                wl = {"type": "writers.las", "filename": os.path.join(laz_dir, name + ".laz"),
+                      "compression": "true", "minor_version": 4, "forward": "all"}
+                if a_srs:
+                    wl["a_srs"] = a_srs
+                stages.append(wl)
+            stages.append({"type": "writers.gdal", "filename": tif, "resolution": res,
+                           "origin_x": ox + i0 * res, "origin_y": oy + j0 * res,
+                           "width": i1 - i0, "height": j1 - j0,
+                           "output_type": "mean,count", "data_type": "float32",
+                           "nodata": -9999, "gdaldriver": "GTiff"})
+            jobs.append((name, stages, tif, i0, i1, j0, j1,
+                         os.path.join(work, "unit_%04d.json" % k)))
+        if not jobs:
+            raise QgsProcessingException("No LiDAR tiles overlap the area.")
+
+        feedback.pushInfo("Gridding %d x %d cells at %.3f %s, %d tile(s), %d at a time ..."
+                          % (w, h, res, QgsUnitTypes.toString(out_crs.mapUnits()),
+                             len(jobs), self.PARALLEL_UNITS))
+        feedback.setProgressText("Gridding tile by tile")
+        total = np.zeros((h, w), dtype=np.float64)
+        count = np.zeros((h, w), dtype=np.float64)
+
+        def run(job):
+            return job, run_pdal_unit(pdal_exe, {"pipeline": job[1]}, job[7],
+                                      feedback.isCanceled)
+
+        done = 0
+        with ThreadPoolExecutor(max_workers=self.PARALLEL_UNITS) as pool:
+            for job, (code, out) in pool.map(run, jobs):
+                if feedback.isCanceled():
+                    raise QgsProcessingException("Canceled.")
+                name, _, tif, i0, i1, j0, j1, _ = job
+                if code != 0:
+                    raise QgsProcessingException(
+                        "Tile %s: %s" % (name, pdal_failure(code, out)))
+                done += 1
+                feedback.setProgress(80 + int(10 * done / len(jobs)))
+                if not os.path.exists(tif):
+                    continue                          # no ground points in this tile
+                ds = gdal.Open(tif)
+                bands = {}
+                for b in range(1, ds.RasterCount + 1):
+                    bands[(ds.GetRasterBand(b).GetDescription() or "").lower()] = b
+                bm = bands.get("mean", 1)
+                bc = bands.get("count", 2 if ds.RasterCount >= 2 else None)
+                mean = ds.GetRasterBand(bm).ReadAsArray().astype(np.float64)
+                cnt = (ds.GetRasterBand(bc).ReadAsArray().astype(np.float64)
+                       if bc else np.ones_like(mean))
+                ds = None
+                ok = np.isfinite(mean) & (mean != -9999) & np.isfinite(cnt) & (cnt > 0)
+                r0, r1 = h - j1, h - j0                # raster rows run top-down
+                total[r0:r1, i0:i1] += np.where(ok, mean * cnt, 0.0)
+                count[r0:r1, i0:i1] += np.where(ok, cnt, 0.0)
+                try:
+                    os.remove(tif)
+                except OSError:
+                    pass
+        feedback.pushInfo("  %d tile(s) gridded" % done)
+
+        dem = np.full((h, w), -9999.0, dtype=np.float32)
+        has = count > 0
+        if not has.any():
+            return                                     # caller reports "no DEM"
+        dem[has] = (total[has] / count[has]).astype(np.float32)
+        drv = gdal.GetDriverByName("GTiff")
+        out = drv.Create(raw_dem, w, h, 1, gdal.GDT_Float32,
+                         ["COMPRESS=DEFLATE", "TILED=YES"])
+        out.SetGeoTransform((ox, res, 0.0, oy + h * res, 0.0, -res))
+        out.SetProjection(out_crs.toWkt())
+        band = out.GetRasterBand(1)
+        band.SetNoDataValue(-9999.0)
+        band.WriteArray(dem)
+        empty = int((~has).sum())
+        # fill cells with no ground points (roofs, water) from their neighbours
+        max_cells = max(4, int(math.ceil(100.0 / (res * metres_per_unit(out_crs)))))
+        gdal.FillNodata(band, None, max_cells, 0)
+        band.FlushCache()
+        after = int((band.ReadAsArray() == -9999.0).sum())
+        out = None
+        feedback.pushInfo("  %d empty cell(s) filled from their neighbours (up to %d cells "
+                          "away)" % (max(0, empty - after), max_cells))
+
+    def _common_stages(self, pts, classes, out_crs, buf, z_target_m):
+        """Filter stages shared by both gridding methods (after the reader)."""
+        stages = [{"type": "filters.range",
+                   "limits": ",".join("Classification[%d:%d]" % (k, k) for k in classes)}]
+        if pts["src_crs"].authid() != out_crs.authid() or not out_crs.authid():
+            out_s = srs_string(out_crs)
+            if not out_s:
+                raise QgsProcessingException(
+                    "Could not describe the output CRS for PDAL; "
+                    "set 'Output CRS' to an EPSG code (e.g. EPSG:3435).")
+            # no in_srs: PDAL uses the CRS stored with the points (or default_srs)
+            stages.append({"type": "filters.reprojection", "out_srs": out_s})
+        stages.append({"type": "filters.crop", "polygon": buf.asWkt(3)})
+        zf = pts["z_unit_m"] / z_target_m
+        if abs(zf - 1.0) > 1e-9:
+            stages.append({"type": "filters.assign", "value": "Z = Z * %.12f" % zf})
+        return stages
+
+    def _grid_tin(self, pdal_exe, pts, classes, out_crs, buf, res, ox, oy, w, h,
+                  z_target_m, keep_laz, out_path, raw_dem, work, feedback):
+        stages = list(pts["readers"])
+        if len(pts["readers"]) > 1:
+            stages.append({"type": "filters.merge",
+                           "inputs": [r["tag"] for r in pts["readers"]]})
+        stages += self._common_stages(pts, classes, out_crs, buf, z_target_m)
+        stages[-1]["tag"] = "ground"
+        if keep_laz:
+            laz_path = os.path.splitext(out_path)[0] + "_ground.laz"
+            wl = {"type": "writers.las", "inputs": ["ground"],
+                  "filename": laz_path, "compression": "true",
+                  "minor_version": 4, "forward": "all"}
+            if srs_string(out_crs):
+                wl["a_srs"] = srs_string(out_crs)
+            stages.append(wl)
+            feedback.pushInfo("Ground points will be saved to %s" % laz_path)
+        stages += [
+            {"type": "filters.delaunay", "inputs": ["ground"]},
+            {"type": "filters.faceraster", "resolution": res, "nodata": -9999,
+             "origin_x": ox, "origin_y": oy, "width": w, "height": h},
+            {"type": "writers.raster", "filename": raw_dem, "data_type": "float32",
+             "nodata": -9999, "gdalopts": "COMPRESS=DEFLATE,TILED=YES"},
+        ]
+        feedback.pushInfo("Gridding %d x %d cells at %.3f %s ..."
+                          % (w, h, res, QgsUnitTypes.toString(out_crs.mapUnits())))
+        feedback.setProgressText("Running PDAL")
+        run_pdal(pdal_exe, {"pipeline": stages}, work, feedback)
+
+    @staticmethod
+    def _field_percentiles(dem_path, geom):
+        """2nd and 98th percentile of the DEM inside ``geom`` (same CRS as the DEM)."""
+        try:
+            import numpy as np
+            from osgeo import gdal, ogr
+            ds = gdal.Open(dem_path)
+            band = ds.GetRasterBand(1)
+            z = band.ReadAsArray().astype(np.float64)
+            nd = band.GetNoDataValue()
+            valid = np.isfinite(z)
+            if nd is not None:
+                valid &= (z != nd)
+            mem = gdal.GetDriverByName("MEM").Create("", ds.RasterXSize, ds.RasterYSize, 1,
+                                                     gdal.GDT_Byte)
+            mem.SetGeoTransform(ds.GetGeoTransform())
+            mem.SetProjection(ds.GetProjection())
+            odrv = ogr.GetDriverByName("Memory") or ogr.GetDriverByName("MEM")
+            vds = odrv.CreateDataSource("field")
+            lyr = vds.CreateLayer("field", geom_type=ogr.wkbMultiPolygon)
+            f = ogr.Feature(lyr.GetLayerDefn())
+            f.SetGeometry(ogr.CreateGeometryFromWkt(geom.asWkt()))
+            lyr.CreateFeature(f)
+            gdal.RasterizeLayer(mem, [1], lyr, burn_values=[1])
+            inside = mem.GetRasterBand(1).ReadAsArray().astype(bool) & valid
+            vals = z[inside] if inside.any() else z[valid]
+            if not vals.size:
+                return None, None
+            lo, hi = np.percentile(vals, [2.0, 98.0])
+            return float(lo), float(hi)
+        except Exception:
+            return None, None              # colors then stretch over the whole DEM
 
     @staticmethod
     def _clip(src, mask, crs, dest, context, feedback):
@@ -1143,6 +1476,7 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
         else:
             default_out = utm
         return {"readers": readers, "src_crs": WEB_MERCATOR, "default_out_crs": default_out,
+                "ept_rect": r, "ept_urls": [h["url"] for h in use],
                 "z_unit_m": 1.0, "native_res_m": USGS_3DEP_NATIVE_M,
                 "native_res_note": "USGS 3DEP standard 1 m DEM resolution",
                 "label": "USGS 3DEP " + "; ".join(h["name"] for h in use)}
