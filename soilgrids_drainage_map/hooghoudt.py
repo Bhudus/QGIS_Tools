@@ -162,17 +162,57 @@ def spacing_for_layers(layers, barrier_m, drain_depth_m, coef_mm_day, drain_diam
 
 
 def format_profile(layers):
-    """Layer-by-layer Ksat as text, e.g. "0-30:0.778;30-203:0.346".
+    """Layer-by-layer Ksat as text, e.g. "0-30:0.778/0.259/2.59;30-203:0.346/0.1/1.2".
 
-    layers: (top_cm, bottom_cm, ksat_m_day). Depths in cm, Ksat in m/day,
-    whatever units the rest of the layer uses, so the Drain spacing
-    recalculator can read output from either soil plugin. Layers with no
-    Ksat are left out. Fits a 254-character shapefile text field.
+    layers: (top_cm, bottom_cm, ksat_m_day) or (top_cm, bottom_cm, ksat_m_day,
+    low, high). Depths in cm, Ksat in m/day, whatever units the rest of the
+    layer uses, so the Drain spacing recalculator can read output from either
+    soil plugin. Low and high Ksat are written only when every layer has
+    them. Layers with no Ksat are left out. Fits a 254-character shapefile
+    text field: if the ranges don't fit, they are dropped.
     """
-    parts = []
-    for top, bot, k in sorted(layers, key=lambda L: (L[0] is None, L[0])):
+    rows = []
+    for L in sorted(layers, key=lambda L: (L[0] is None, L[0])):
+        top, bot, k = L[0], L[1], L[2]
         if top is None or bot is None or k is None or bot <= top:
             continue
-        parts.append(f"{top:g}-{bot:g}:{k:.4g}")
-    text = ";".join(parts)
-    return text if len(text) <= 254 else None
+        lo, hi = (L[3], L[4]) if len(L) >= 5 else (None, None)
+        rows.append((top, bot, k, lo, hi))
+    with_range = bool(rows) and all(lo is not None and hi is not None for *_, lo, hi in rows)
+    for use_range in ((True, False) if with_range else (False,)):
+        text = ";".join(
+            f"{top:g}-{bot:g}:{k:.4g}" + (f"/{lo:.4g}/{hi:.4g}" if use_range else "")
+            for top, bot, k, lo, hi in rows)
+        if len(text) <= 254:
+            return text
+    return None
+
+
+def parse_profile(text):
+    """Read a ksat_prof field into three profiles: representative, low and high.
+
+    Each is [(top_cm, bottom_cm, ksat_m_day), ...]. Low and high are [] unless
+    every layer has them. Everything is [] if the text can't be read.
+    """
+    rep, low, high = [], [], []
+    if not text or not isinstance(text, str):
+        return rep, low, high
+    ranged = True
+    for part in text.split(";"):
+        try:
+            depths, ks = part.split(":")
+            top, bot = (float(v) for v in depths.split("-"))
+            vals = [float(v) for v in ks.split("/")]
+        except ValueError:
+            return [], [], []
+        if bot <= top or any(v < 0 for v in vals):
+            continue
+        rep.append((top, bot, vals[0]))
+        if len(vals) == 3:
+            low.append((top, bot, vals[1]))
+            high.append((top, bot, vals[2]))
+        else:
+            ranged = False
+    if not ranged:
+        low, high = [], []
+    return rep, low, high

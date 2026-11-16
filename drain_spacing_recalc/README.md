@@ -1,6 +1,11 @@
 # Drain spacing recalculator (QGIS plugin)
 
-Companion to [SSURGO drainage soil map](../ssurgo_soil_map) and [SoilGrids drainage soil map](../soilgrids_drainage_map). Pick a soil map made by either plugin, enter a new design scenario, and get a copy of the soil map with recalculated drain and subirrigation spacings. It works offline, from the Ksat values stored on each soil polygon.
+Companion to [SSURGO drainage soil map](../ssurgo_soil_map) and [SoilGrids drainage soil map](../soilgrids_drainage_map). Pick a soil map made by either plugin, enter a new design scenario, and get:
+
+- a copy of the soil map with recalculated drain and subirrigation spacings, their range from low and high Ksat, and the drain footage and cost for each soil;
+- a field summary table with each soil's area, spacing, footage and cost, and two design spacings for the whole field.
+
+It works offline, from the Ksat values stored on each soil polygon.
 
 ## Install
 
@@ -13,10 +18,10 @@ Requires QGIS 3.22 or newer. The plugin is listed under **Vector → Tile Draina
 
 ## Use
 
-1. Make a soil map with SSURGO drainage soil map (1.10.0 or later) or SoilGrids drainage soil map (0.2.0 or later).
+1. Make a soil map with SSURGO drainage soil map (1.11.0 or later) or SoilGrids drainage soil map (0.3.0 or later). Older versions work, without spacing ranges.
 2. Select that layer in the Layers panel and click **Recalculate Drain Spacing…**. The selected soil layer is filled in for you.
 3. Choose the units, enter the scenario, and click **Run**.
-4. To keep the result, under **Recalculated spacings** click **…**, choose **Save to File**, and pick a `.shp` file name. A `.qml` style file with the same name is saved next to it.
+4. To keep the result, under **Recalculated spacings** click **…**, choose **Save to File**, and pick a `.shp` file name. A `.qml` style file with the same name is saved next to it. The **Field summary** can be saved the same way, for example as a `.csv` or `.xlsx` file. The summary is also written to the Processing log.
 
 Each run adds a new layer named after its scenario, for example `Spacing 4 ft, 0.5 in/day`, so you can compare scenarios side by side. Tick **Selected features only** to recalculate just some soils. The output can be used as the input of another run.
 
@@ -34,6 +39,8 @@ All lengths, coefficients and the drain diameter are in the units you choose: **
 | Subirrigation water level at the drains, height above drain | 2.0 | Must be higher than the mid-drain water table and no higher than the drain depth. |
 | Subirrigation mid-drain water table, height above drain | 1.5 | |
 | Drain diameter | blank | Advanced. Blank uses 4 in or 100 mm. Only affects the equivalent depth. |
+| Installed drain cost per ft or per m | blank | Blank leaves the cost fields empty. Any currency. |
+| Narrowest-soil design: only soils covering at least this share of the field (%) | 10 | See [Field summary](#field-summary). |
 
 The defaults are US customary. When you switch to metric, enter metric values too. The tool won't run with a metric drain depth over 5 m, in case feet were entered by mistake.
 
@@ -52,6 +59,30 @@ q L² = 8 Kb d (Hw − Hm) + 4 Ka (Hw² − Hm²)
 - d is the equivalent depth, from van der Molen and Wesseling (1991). Because d depends on L, the equation is solved numerically.
 
 Spacings are rounded to the nearest 5 ft or 1 m.
+
+## Spacing range
+
+Each soil also gets a spacing for its low and high Ksat (`spc_lo`, `spc_hi`, `sub_lo` and `sub_hi`). Lower Ksat gives the narrower spacing.
+
+- **SSURGO:** the low and high Ksat SSURGO gives for each horizon.
+- **SoilGrids:** Rosetta's log10 Ksat estimate minus and plus one standard deviation of its bootstrap. That reflects the uncertainty in Rosetta itself, not in the SoilGrids texture, so this range is usually narrower than SSURGO's.
+
+Soil maps made before the ranges were added, and SoilGrids maps made when the Rosetta service was unavailable, have no range.
+
+## Drain footage and cost
+
+Each soil polygon gets its area (`area_ac` or `area_ha`, measured on the ellipsoid), the drain length needed to drain it at its rounded spacing (area ÷ spacing; `len_ft`, `sublen_ft`), and, if you entered a cost per foot or metre, the cost (`cost`, `sub_cost`).
+
+## Field summary
+
+The **Field summary** table has, for each field:
+
+- one row per soil, with its area, share of the field, spacing and range, drain length and cost (polygons of the same soil and spacing are added together);
+- **All soils, each at its own spacing:** the total drain length and cost if every soil gets its own spacing;
+- **Design: equal drain length:** the single spacing that needs the same total drain length, L = total area ÷ Σ(soil area ÷ soil spacing). Drain length per acre is inversely proportional to spacing, so this is the area-weighted harmonic mean;
+- **Design: narrowest soil:** the narrowest spacing among soils that cover at least the share of the field you set (default 10%), so small inclusions don't control the design. If no soil reaches that share, the largest soil is used.
+
+The design rows give the drain length and cost for the whole field at that spacing, and the spacing range when every soil has one. SoilGrids soil maps are summarized per field (`field_id`). SSURGO soil maps are summarized as one field, so run them one field at a time or tick **Selected features only**.
 
 ## Where Ksat comes from
 
@@ -76,4 +107,11 @@ The output keeps the soil fields of the input (map unit, soil name, area and so 
 | hw_ft | hw_m | Subirrigation water level at the drains, height above drain |
 | hm_ft | hm_m | Subirrigation mid-drain water table, height above drain |
 | ka_sub | ka_sub | Ksat of the saturated zone above the drains, subirrigation (ft/day or m/day) |
+| spc_lo_ft, spc_hi_ft | spc_lo_m, spc_hi_m | Drain spacing at low and high Ksat |
 | subirr_ft | subirr_m | Subirrigation spacing |
+| sub_lo_ft, sub_hi_ft | sub_lo_m, sub_hi_m | Subirrigation spacing at low and high Ksat |
+| area_ac | area_ha | Area of the soil polygon |
+| len_ft | len_m | Drain length at the drain spacing |
+| sublen_ft | sublen_m | Drain length at the subirrigation spacing |
+| cost | cost | Drain cost at the drain spacing |
+| sub_cost | sub_cost | Drain cost at the subirrigation spacing |

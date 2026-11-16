@@ -122,7 +122,7 @@ def layer_average_ksat(horizons, top_cm, bottom_cm):
 
 
 def spacing_for_component(horizons, barrier_cm, drain_depth_ft, coef_in_day, drain_diam_in,
-                          mid_ft=None, drain_level_ft=0.0):
+                          mid_ft=None, drain_level_ft=0.0, ranges=None):
     """Drain spacing for one soil component, in US units.
 
     mid_ft: midplane water table height above the drain (default: at the
@@ -132,6 +132,8 @@ def spacing_for_component(horizons, barrier_cm, drain_depth_ft, coef_in_day, dra
         subirrigation rate as coef_in_day.
 
     horizons: list of (top_cm, bottom_cm, ksat_um_s) from SSURGO chorizon.
+    ranges: optional list of (ksat_l, ksat_h) in um/s, one per horizon, saved
+        in ksat_prof for the Drain spacing recalculator's spacing range.
     barrier_cm: depth to the impermeable layer (restrictive layer, or the bottom
         of the soil profile when there is none).
     Returns a dict: ka_ftday, kb_ftday, barrier_ft, spacing_ft (any may be None).
@@ -140,8 +142,10 @@ def spacing_for_component(horizons, barrier_cm, drain_depth_ft, coef_in_day, dra
            "ksat_prof": None}
     if not horizons:
         return out
+    ranges = ranges if ranges and len(ranges) == len(horizons) else [(None, None)] * len(horizons)
+    conv = lambda v: v * M_PER_DAY_PER_UM_PER_S if v is not None else None  # noqa: E731
     out["ksat_prof"] = format_profile(
-        [(t, b, k * M_PER_DAY_PER_UM_PER_S if k is not None else None) for t, b, k in horizons])
+        [(t, b, conv(k), conv(lo), conv(hi)) for (t, b, k), (lo, hi) in zip(horizons, ranges)])
     drain_cm = drain_depth_ft * CM_PER_FT
     if barrier_cm is None:
         barrier_cm = max((b for _, b, _ in horizons if b is not None), default=None)
@@ -178,17 +182,57 @@ def spacing_for_component(horizons, barrier_cm, drain_depth_ft, coef_in_day, dra
 
 
 def format_profile(layers):
-    """Layer-by-layer Ksat as text, e.g. "0-30:0.778;30-203:0.346".
+    """Layer-by-layer Ksat as text, e.g. "0-30:0.778/0.259/2.59;30-203:0.346/0.1/1.2".
 
-    layers: (top_cm, bottom_cm, ksat_m_day). Depths in cm, Ksat in m/day,
-    whatever units the rest of the layer uses, so the Drain spacing
-    recalculator can read output from either soil plugin. Layers with no
-    Ksat are left out. Fits a 254-character shapefile text field.
+    layers: (top_cm, bottom_cm, ksat_m_day) or (top_cm, bottom_cm, ksat_m_day,
+    low, high). Depths in cm, Ksat in m/day, whatever units the rest of the
+    layer uses, so the Drain spacing recalculator can read output from either
+    soil plugin. Low and high Ksat are written only when every layer has
+    them. Layers with no Ksat are left out. Fits a 254-character shapefile
+    text field: if the ranges don't fit, they are dropped.
     """
-    parts = []
-    for top, bot, k in sorted(layers, key=lambda L: (L[0] is None, L[0])):
+    rows = []
+    for L in sorted(layers, key=lambda L: (L[0] is None, L[0])):
+        top, bot, k = L[0], L[1], L[2]
         if top is None or bot is None or k is None or bot <= top:
             continue
-        parts.append(f"{top:g}-{bot:g}:{k:.4g}")
-    text = ";".join(parts)
-    return text if len(text) <= 254 else None
+        lo, hi = (L[3], L[4]) if len(L) >= 5 else (None, None)
+        rows.append((top, bot, k, lo, hi))
+    with_range = bool(rows) and all(lo is not None and hi is not None for *_, lo, hi in rows)
+    for use_range in ((True, False) if with_range else (False,)):
+        text = ";".join(
+            f"{top:g}-{bot:g}:{k:.4g}" + (f"/{lo:.4g}/{hi:.4g}" if use_range else "")
+            for top, bot, k, lo, hi in rows)
+        if len(text) <= 254:
+            return text
+    return None
+
+
+def parse_profile(text):
+    """Read a ksat_prof field into three profiles: representative, low and high.
+
+    Each is [(top_cm, bottom_cm, ksat_m_day), ...]. Low and high are [] unless
+    every layer has them. Everything is [] if the text can't be read.
+    """
+    rep, low, high = [], [], []
+    if not text or not isinstance(text, str):
+        return rep, low, high
+    ranged = True
+    for part in text.split(";"):
+        try:
+            depths, ks = part.split(":")
+            top, bot = (float(v) for v in depths.split("-"))
+            vals = [float(v) for v in ks.split("/")]
+        except ValueError:
+            return [], [], []
+        if bot <= top or any(v < 0 for v in vals):
+            continue
+        rep.append((top, bot, vals[0]))
+        if len(vals) == 3:
+            low.append((top, bot, vals[1]))
+            high.append((top, bot, vals[2]))
+        else:
+            ranged = False
+    if not ranged:
+        low, high = [], []
+    return rep, low, high

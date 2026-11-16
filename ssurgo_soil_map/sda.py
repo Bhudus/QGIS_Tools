@@ -76,10 +76,10 @@ _NOT_BARRIERS = ("Abrupt textural change", "Strongly contrasting textural strati
 
 
 def horizons_sql(cokeys):
-    """Horizon depths (cm) and saturated hydraulic conductivity (um/s) for components."""
+    """Horizon depths (cm) and saturated hydraulic conductivity (um/s: representative, low, high)."""
     keys = ",".join(str(int(k)) for k in cokeys)
     return f"""
-select cokey, hzdept_r, hzdepb_r, ksat_r
+select cokey, hzdept_r, hzdepb_r, ksat_r, ksat_l, ksat_h
 from chorizon
 where cokey in ({keys})
 order by cokey, hzdept_r

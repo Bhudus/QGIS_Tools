@@ -75,7 +75,7 @@ Spacings are rounded to the nearest metre.
 | ka_sub | Ksat of the saturated zone above the drains during subirrigation (m/day) |
 | subirr_m | Subirrigation spacing (m), inverse Hooghoudt |
 | ksat_src | Rosetta 3, or Rosetta class averages if the service was unavailable |
-| ksat_prof | Ksat of each SoilGrids layer, as `top-bottom:Ksat` with depths in cm and Ksat in m/day, separated by `;`. Read by the [Drain spacing recalculator](../drain_spacing_recalc) to work out spacings for other drain depths. |
+| ksat_prof | Ksat of each SoilGrids layer, as `top-bottom:Ksat/low/high` with depths in cm and Ksat in m/day, separated by `;`. Low and high are Rosetta's log10 Ksat estimate minus and plus one standard deviation of its bootstrap; they are left out when the Rosetta service isn't available. Read by the [Drain spacing recalculator](../drain_spacing_recalc) to work out spacings and spacing ranges for other drain depths. |
 
 ## Data sources
 

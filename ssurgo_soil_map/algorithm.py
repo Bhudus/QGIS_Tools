@@ -499,14 +499,16 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
         cokeys = sorted({k for k in (_to_int(r.get("cokey")) for r in rows) if k is not None})
         if not cokeys:
             return {}
-        horizons, barriers = {}, {}
+        horizons, ranges, barriers = {}, {}, {}
         feedback.pushInfo(self.tr(f"Getting horizon Ksat and restrictive layers for {len(cokeys)} soils…"))
         try:
             for i in range(0, len(cokeys), 200):
                 chunk = cokeys[i:i + 200]
                 for h in run_query(horizons_sql(chunk), feedback):
-                    horizons.setdefault(_to_int(h.get("cokey")), []).append(
+                    ck = _to_int(h.get("cokey"))
+                    horizons.setdefault(ck, []).append(
                         (_to_float(h.get("hzdept_r")), _to_float(h.get("hzdepb_r")), _to_float(h.get("ksat_r"))))
+                    ranges.setdefault(ck, []).append((_to_float(h.get("ksat_l")), _to_float(h.get("ksat_h"))))
                 for b in run_query(restrictions_sql(chunk), feedback):
                     barriers[_to_int(b.get("cokey"))] = _to_float(b.get("resdept_r"))
         except SdaError as e:
@@ -515,13 +517,13 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
 
         result = {}
         for k in cokeys:
-            sp = spacing_for_component(horizons.get(k, []), barriers.get(k), drain_depth_ft, coef_in_day, diam_in)
+            sp = spacing_for_component(horizons.get(k, []), barriers.get(k), drain_depth_ft, coef_in_day, diam_in,
+                                       ranges=ranges.get(k))
             rate, hw, hm = subirr
             sub = spacing_for_component(horizons.get(k, []), barriers.get(k), drain_depth_ft, rate, diam_in,
                                         mid_ft=hm, drain_level_ft=hw)
             sp["ka_sub"] = sub.get("ka_ftday")
             sp["subirr_ft"] = sub.get("spacing_ft")
-            sp["ksat_prof"] = sub.get("ksat_prof")
             result[k] = sp
             b = sp.get("barrier_ft")
             if sp.get("spacing_ft") is not None and b is not None and b <= drain_depth_ft:

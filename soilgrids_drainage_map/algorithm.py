@@ -433,7 +433,7 @@ class SoilGridsDrainageAlgorithm(QgsProcessingAlgorithm):
             zones[k]["mean"] = mean_profile(zones[k]["profiles"], zones[k]["areas"])
             rows.extend((s, si, c, bd) for _, _, s, si, c, bd in zones[k]["mean"])
         feedback.pushInfo(self.tr(f"Estimating Ksat with Rosetta 3 for {len(keys)} zones…"))
-        ksat, ksat_src = ksat_for_layers(rows, post_json)
+        ksat, ksat_lo, ksat_hi, ksat_src = ksat_for_layers(rows, post_json)
         if not ksat_src.startswith("Rosetta 3"):
             feedback.pushWarning(self.tr(f"Ksat: {ksat_src}"))
 
@@ -449,8 +449,9 @@ class SoilGridsDrainageAlgorithm(QgsProcessingAlgorithm):
         for idx, k in enumerate(keys):
             fid, key = k
             z = zones[k]
-            ks = ksat[idx * 6:(idx + 1) * 6]
-            layers = [(top, bot, kv) for (top, bot, *_), kv in zip(z["mean"], ks)]
+            sl = slice(idx * 6, (idx + 1) * 6)
+            layers = [(top, bot, kv) for (top, bot, *_), kv in zip(z["mean"], ksat[sl])]
+            ranged = [(t, b, k, lo, hi) for (t, b, k), lo, hi in zip(layers, ksat_lo[sl], ksat_hi[sl])]
             dr = spacing_for_layers(layers, barrier, drain_depth, coef, diam)
             sub = spacing_for_layers(layers, barrier, drain_depth, sub_rate, diam,
                                      mid_m=sub_hm, drain_level_m=sub_hw)
@@ -476,7 +477,7 @@ class SoilGridsDrainageAlgorithm(QgsProcessingAlgorithm):
                 _round(sub["ka"], 3),
                 _round_m(sub["spacing_m"]),
                 ksat_src[:60],
-                format_profile(layers),
+                format_profile(ranged),
             ])
             sink.addFeature(feat, FAST_INSERT)
         feedback.setProgress(100.0)

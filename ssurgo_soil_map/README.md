@@ -59,7 +59,7 @@ The traced field is a temporary layer. To keep it, save the **Field boundary out
 | spacing_ft | Drain spacing (ft) from the Hooghoudt equation, to the nearest 5 ft |
 | ka_sub | Ksat (ft/day) of the saturated zone above the drains during subirrigation |
 | subirr_ft | Subirrigation drain spacing (ft) from the inverse Hooghoudt equation, to the nearest 5 ft |
-| ksat_prof | Ksat of each horizon, as `top-bottom:Ksat` with depths in cm and Ksat in m/day, separated by `;`. Read by the [Drain spacing recalculator](../drain_spacing_recalc) to work out spacings for other drain depths. |
+| ksat_prof | Ksat of each horizon, as `top-bottom:Ksat/low/high` with depths in cm and Ksat in m/day (SSURGO representative, low and high values), separated by `;`. Read by the [Drain spacing recalculator](../drain_spacing_recalc) to work out spacings and spacing ranges for other drain depths. |
 
 ## Drain spacing
 
