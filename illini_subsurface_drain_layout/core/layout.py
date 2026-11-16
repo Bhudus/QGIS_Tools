@@ -81,8 +81,7 @@ class LayoutParams:
     grade_break: float = 50 * 0.3048     # m, longest burying segment between grade breaks
     size_pipes: bool = True              # pipe sizing (Routine K)
     pipe_material: int = 0               # 0 single wall, 1 smooth wall, 2 clay or concrete
-    intensity: float = 0.375             # drainage intensity, inch/day
-    order_coeffs: Optional[list] = None  # drainage coefficient per tile order (in/day)
+    drainage_coeff: float = 0.375        # drainage coefficient, inch/day (Routine K)
     sizing_slope: str = "in"             # "in" (InSlope) or "out" (OutSlope)
     outlet_invert: Optional[float] = None
     setback: Optional[float] = None      # default: spacing / 2
@@ -1715,15 +1714,17 @@ class DrainageLayout:
                 slope = a["out_slope"]
             flow_len_ft = a["upstream_m"] / 0.3048
             try:
-                r = K.size_segment(flow_len_ft, slope, order, spacing_ft, p.pipe_material,
-                                   p.intensity, p.order_coeffs)
+                r = K.size_segment(flow_len_ft, slope, spacing_ft, p.pipe_material,
+                                   p.drainage_coeff)
             except ValueError as e:
                 raise LayoutError(str(e))
             a.update({"TILE_ORDER": order, "FLOW_LENGTH": round(flow_len_ft, 2),
                       "SIZE_SLOPE": round(slope, 6),
-                      "D_COEFF": round(r["D_COEFF"], 4), "D_AREA": round(r["D_AREA"], 4),
+                      "D_COEFF": round(r["D_COEFF"], 4), "DRAIN_SPACE": r["drain_space"],
+                      "D_AREA": round(r["D_AREA"], 4),
                       "CUM_SEG_FLOW": round(r["CUM_SEG_FLOW"], 6),
                       "ACTUAL_SIZE": round(r["ACTUAL_SIZE"], 3), "NOMINAL": r["NOMINAL"],
+                      "PIPE_TYPE": K.MATERIALS[p.pipe_material],
                       "_exact": dict(r, flow_len_ft=flow_len_ft, slope=slope)})
             if r["ACTUAL_SIZE"] >= K.AVAILABLE_NOMINAL_SIZES[-1]:
                 f = a["flag"]

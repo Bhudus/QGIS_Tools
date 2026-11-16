@@ -13,6 +13,9 @@ and coefficient in inches per day, flow in cubic feet per second, area in
 acres and pipe diameters in inches.
 
 Changes from the original Routines G and K:
+- One drainage coefficient for every line (default 0.375 inch/day), in place
+  of Routine K's intensity "by system" (x1.25 above order 1) or per-order
+  list; the Tile Size Calculator plugin sets other coefficients afterwards.
 - Single-wall pipe uses Manning's n by size, as the original roughness table
   intends: 0.015 up to 8 in, 0.017 over 8 in up to 12 in, 0.020 over 12 in.
   (The original always used 0.015, because it looked the roughness up for a
@@ -27,7 +30,7 @@ Kept from the original: pi is taken as 3.142, and the nominal size is the
 smallest listed size strictly larger than the computed diameter.
 """
 import math
-INTENSITY_OPTIONS = [0.375, 0.500, 0.750, 1.000]          # inch/day, A-D
+DEFAULT_COEFF = 0.375                                     # inch/day
 AVAILABLE_NOMINAL_SIZES = [4, 5, 6, 8, 10, 12, 15, 18, 21, 24, 30, 36, 42]
 MATERIALS = ["Single Wall", "Smooth Wall", "Clay or Concrete"]
 
@@ -63,15 +66,6 @@ def strahler_orders(sources):
                 if order[j] is None:
                     stack.append((j, False))
     return order
-
-
-def get_coeff(intensity, order):
-    """Drainage coefficient 'By System': intensity for order 1, x1.25 above."""
-    if order == 1:
-        return intensity
-    if order >= 2:
-        return intensity * 1.25
-    raise ValueError("Unexpected order value: {}".format(order))
 
 
 def get_flow(length_ft, drain_space_ft, dcoeff):
@@ -128,17 +122,10 @@ def get_nominal_size(psize):
     return AVAILABLE_NOMINAL_SIZES[-1]
 
 
-def size_segment(flow_length_ft, slope, order, spacing_ft, material, intensity,
-                 order_coeffs=None):
-    """Routine K for one segment. Returns a dict of the Routine K fields."""
+def size_segment(flow_length_ft, slope, spacing_ft, material, dcoeff):
+    """Routine K for one segment with drainage coefficient dcoeff (inch/day).
+    Returns a dict of the Routine K fields."""
     drain_space = int(math.floor(spacing_ft + 0.5))        # nearest whole foot
-    if order_coeffs:
-        if order >= len(order_coeffs) + 1:
-            raise ValueError("No drainage coefficient given for tile order {}; list one "
-                             "value per order.".format(order))
-        dcoeff = order_coeffs[order - 1]
-    else:
-        dcoeff = get_coeff(intensity, order)
     flow = get_flow(flow_length_ft, drain_space, dcoeff)
     area = get_area(flow_length_ft, drain_space)
     psize = get_pipe_size(flow, slope, material) if slope > 0 else float("inf")

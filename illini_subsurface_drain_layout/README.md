@@ -58,7 +58,7 @@ The plugin is also listed under **Raster → Tile Drainage**, a menu shared by t
 | Burying: lower the outlet for low ground | Deepens the outlet, down to the lower tile depth, when low ground upstream cannot keep the minimum slope. Off by default. |
 | Sizing: size the pipes | Routine K pipe sizing. On by default. |
 | Sizing: pipe material | Single Wall (default), Smooth Wall, or Clay or Concrete. |
-| Sizing: drainage intensity | A: 0.375 (default), B: 0.5, C: 0.75 or D: 1.0 inch/day, or tick *use assigned intensity* to use your own value (default 2.5). |
+| Sizing: drainage coefficient | inch/day, for every line (default 0.375). To use other coefficients by tile order or pipe by pipe, resize afterwards with the Tile Size Calculator plugin. |
 | Outlet invert elevation | Optional, in DEM elevation units. Flags the main if it arrives below the outlet. |
 
 Advanced: DEM elevation units (m / ft / US survey ft; default US survey ft), target grade for
@@ -67,10 +67,8 @@ herringbone angle (default 60°),
 boundary setback (default half the spacing), terrain smoothing radius (default
 the spacing), analysis cell size (automatic), where the main ends and how large
 a branch must be to get a submain, and the longest burying segment between
-grade breaks (default 50 ft); for sizing, a drainage coefficient per tile
-order (comma-separated, inch/day; by default the intensity for order 1 and
-1.25 × intensity above) and whether to size with InSlope (default) or
-OutSlope.
+grade breaks (default 50 ft); and, for sizing, whether to size with InSlope
+(default) or OutSlope.
 
 ## How the layout is built
 
@@ -162,8 +160,7 @@ OutSlope.
      included (Routine I).
    - The slope is the flattest InSlope (or OutSlope) among its Routine J
      segments, so the flattest stretch governs.
-   - The drainage coefficient is the intensity for order-1 lines and 1.25 ×
-     the intensity above (or your per-order values); flow = FLOW_LENGTH ×
+   - Every line uses the drainage coefficient you give (D_COEFF); flow = FLOW_LENGTH ×
      drain spacing (to the nearest foot) × coefficient; the inside diameter
      comes from Manning's equation for a full pipe, and the nominal size is
      the next listed size up (4–42 in).
@@ -201,7 +198,9 @@ each junction, so each link runs node to node in the direction of flow.
 | `InSlope`, `OutSlope` | Routine J fields: the line's tile slope as a fraction, and that slope held within the minimum and maximum. |
 | `BURY_CHECK` | Routine J notes for the burying segments in this line, or `OK`: held at an absolute depth, deepened for low ground, grade below minimum, reverse grade and so on. Lines with grade problems are drawn purple. |
 | `TILE_ORDER`, `FLOW_LENGTH`, `SIZE_SLOPE` | Sizing inputs: Strahler order (Routine G), tile length draining through the line in feet (Routine I), and the slope used. |
-| `D_COEFF`, `D_AREA`, `CUM_SEG_FLOW`, `ACTUAL_SIZE`, `NOMINAL` | Routine K fields: drainage coefficient (inch/day), drained area (acres), flow (cfs), required inside diameter and nominal pipe size (inches). Always in Routine K's US units. |
+| `D_COEFF`, `D_AREA`, `CUM_SEG_FLOW`, `ACTUAL_SIZE`, `NOMINAL` | Routine K fields: drainage coefficient (inch/day), drained area (acres), flow (cfs), required inside diameter and nominal pipe size (inches). Always in Routine K's US units. The Tile Size Calculator plugin changes D_COEFF and resizes. |
+| `DRAIN_SPACE` | The drain spacing Routine K used: the lateral spacing to the nearest foot. |
+| `PIPE_TYPE` | The pipe material the line is sized for: Single Wall, Smooth Wall or Clay or Concrete. The Tile Size Calculator can change it section by section. |
 | `flag` | Layout problems (below), with lengths in the design units. Flagged links are drawn orange. Depth problems are not repeated here: they are in `min_depth`/`max_depth`, the Tile elevation raster's Tile depth check layer and the log. |
 
 The Drainage network lines are 3-D: each vertex carries the tile elevation

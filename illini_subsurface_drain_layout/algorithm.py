@@ -73,7 +73,6 @@ ORIENTS = [ORIENT_ACROSS, ORIENT_ALONG]
 SHAPES = [SHAPE_STRAIGHT, SHAPE_CONTOUR]
 Z_FACTORS = [1.0, 0.3048, 1200.0 / 3937.0]
 UNIT_FACTORS = [1.0, 0.3048]
-INTENSITIES = [0.375, 0.500, 0.750, 1.000]   # inch/day, Routine K options A-D
 BEARINGS = ["terrain", "ns", "ew", "nwse", "nesw"]   # straight-lateral bearing options
 
 # keep post-processors alive until QGIS has used them
@@ -237,10 +236,7 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
     BURY_METHOD = "BURY_METHOD"
     SIZE_PIPES = "SIZE_PIPES"
     PIPE_MATERIAL = "PIPE_MATERIAL"
-    INTENSITY = "INTENSITY"
-    ASSIGNED_INTENSITY = "ASSIGNED_INTENSITY"
-    USE_ASSIGNED = "USE_ASSIGNED"
-    ORDER_COEFFS = "ORDER_COEFFS"
+    DRAINAGE_COEFF = "DRAINAGE_COEFF"
     SIZING_SLOPE = "SIZING_SLOPE"
     OUTLET_INVERT = "OUTLET_INVERT"
     SETBACK = "SETBACK"
@@ -367,14 +363,15 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             "Drainage Tools, with the Strahler tile order of Routine G. Each line is sized "
             "for the flow from all tile upstream (FLOW_LENGTH x drain spacing x drainage "
             "coefficient), at the flattest burying slope among its segments (InSlope or "
-            "OutSlope), with Manning's equation for a full pipe. The drainage coefficient "
-            "is the intensity for order-1 lines and 1.25 x intensity above, or one value per "
-            "tile order if you list them. Single-wall pipe uses n = 0.015 up to 8 in, 0.017 "
+            "OutSlope), with Manning's equation for a full pipe, using one drainage "
+            "coefficient for every line (default 0.375 inch/day); the Tile Size Calculator "
+            "plugin can then set other coefficients, by tile order or pipe by pipe, and "
+            "resize the pipes. Single-wall pipe uses n = 0.015 up to 8 in, 0.017 "
             "to 12 in and 0.020 above; the drain spacing is rounded to the nearest foot; and "
             "TILE_ORDER is the standard Strahler order. Results are in the Routine K fields D_COEFF "
             "(in/day), D_AREA (acres), CUM_SEG_FLOW (cfs), ACTUAL_SIZE and NOMINAL (inches), "
-            "with TILE_ORDER, FLOW_LENGTH (ft) and SIZE_SLOPE. The drain spacing is the "
-            "lateral spacing.</p>"
+            "with TILE_ORDER, FLOW_LENGTH (ft), SIZE_SLOPE and DRAIN_SPACE (the drain "
+            "spacing used, ft: the lateral spacing to the nearest foot).</p>"
             "<p><b>Burying method.</b> <i>Routine J</i> (the default) buries the tile "
             "as the Illini Drainage Tools do, aiming for the middle of the target depth "
             "band between the absolute depths. <i>Minimum cover</i> buries it as shallow "
@@ -505,15 +502,10 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             self.PIPE_MATERIAL, self.tr("Sizing: pipe material"),
             options=[self.tr("Single Wall"), self.tr("Smooth Wall"),
                      self.tr("Clay or Concrete")], defaultValue=0))
-        self.addParameter(QgsProcessingParameterEnum(
-            self.INTENSITY, self.tr("Sizing: drainage intensity [inch/day]"),
-            options=["A: 0.375", "B: 0.500", "C: 0.750", "D: 1.000"], defaultValue=0))
         self.addParameter(QgsProcessingParameterNumber(
-            self.ASSIGNED_INTENSITY, self.tr("Sizing: E: others = assign intensity [inch/day]"),
-            QgsProcessingParameterNumber.Double, defaultValue=2.5, minValue=0.0,
+            self.DRAINAGE_COEFF, self.tr("Sizing: drainage coefficient [inch/day]"),
+            QgsProcessingParameterNumber.Double, defaultValue=0.375, minValue=0.001,
             maxValue=100.0))
-        self.addParameter(QgsProcessingParameterBoolean(
-            self.USE_ASSIGNED, self.tr("Sizing: use assigned intensity"), defaultValue=False))
         self.addParameter(QgsProcessingParameterNumber(
             self.OUTLET_INVERT,
             self.tr("Outlet invert elevation, in DEM elevation units [optional]"),
@@ -545,11 +537,6 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(_advanced(QgsProcessingParameterNumber(
             self.GRADE_BREAK, self.tr("Burying: longest segment between grade breaks"),
             QgsProcessingParameterNumber.Double, defaultValue=50.0, minValue=0.1)))
-        self.addParameter(_advanced(QgsProcessingParameterString(
-            self.ORDER_COEFFS,
-            self.tr("Sizing: drainage coefficient per tile order, separated by ',' "
-                    "[inch/day; optional, default by system]"),
-            optional=True)))
         self.addParameter(_advanced(QgsProcessingParameterEnum(
             self.SIZING_SLOPE, self.tr("Sizing: burying slope used"),
             options=[self.tr("InSlope"), self.tr("OutSlope")], defaultValue=0)))
@@ -766,16 +753,6 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
         dem = dem * zf
         grid = Grid(xmin * xf, ymax * xf, cell_m, nrows, ncols)
 
-        order_coeffs = None
-        oc_text = (parameters.get(self.ORDER_COEFFS) or "").strip()
-        if oc_text:
-            try:
-                order_coeffs = [float(x.strip()) for x in oc_text.split(",")]
-            except ValueError:
-                raise QgsProcessingException(self.tr(
-                    "Drainage coefficients per tile order must be numbers separated by "
-                    "commas, e.g. 0.375, 0.47, 0.5."))
-
         params = LayoutParams(
             spacing=spacing,
             units="m" if uf == 1.0 else "ft",
@@ -804,11 +781,7 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
                 self.parameterAsEnum(parameters, self.BURY_METHOD, context)],
             size_pipes=self.parameterAsBool(parameters, self.SIZE_PIPES, context),
             pipe_material=self.parameterAsEnum(parameters, self.PIPE_MATERIAL, context),
-            intensity=(num(self.ASSIGNED_INTENSITY)
-                       if self.parameterAsBool(parameters, self.USE_ASSIGNED, context)
-                       else INTENSITIES[self.parameterAsEnum(parameters, self.INTENSITY,
-                                                             context)]),
-            order_coeffs=order_coeffs,
+            drainage_coeff=num(self.DRAINAGE_COEFF),
             sizing_slope="in" if self.parameterAsEnum(
                 parameters, self.SIZING_SLOPE, context) == 0 else "out",
             outlet_invert=outlet_inv * zf if outlet_inv is not None else None,
@@ -862,7 +835,9 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             ("InSlope", D), ("OutSlope", D), ("BURY_CHECK", S),
             # Routine K (Illini Drainage Tools) fields, in Routine K's US units
             ("TILE_ORDER", I), ("FLOW_LENGTH", D), ("SIZE_SLOPE", D), ("D_COEFF", D),
+            ("DRAIN_SPACE", I),
             ("D_AREA", D), ("CUM_SEG_FLOW", D), ("ACTUAL_SIZE", D), ("NOMINAL", I),
+            ("PIPE_TYPE", S),
             ("flag", S)])
         area_f = 1.0 if uf == 1.0 else 2.4710538     # ha, or acres in feet mode
         rename = {"length_m": "length", "max_depth_m": "max_depth", "min_depth_m": "min_depth",

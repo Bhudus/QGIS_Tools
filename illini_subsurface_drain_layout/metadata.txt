@@ -3,7 +3,7 @@ name=Illini Subsurface Drain Layout
 qgisMinimumVersion=3.34
 description=Automated subsurface (tile) drainage layout, tile burying and pipe sizing from a DEM, field boundary, outlet and lateral spacing.
 about=Lays out mains, submains and evenly spaced laterals running near parallel or near perpendicular to the field contours, in parallel/gridiron or herringbone patterns, around an automatically routed main or one you supply, with straight or contour-following laterals, as one connected network. Buries the tile with the scheme of Routine J (Tile Burying System) of the Illini Drainage Tools: from the outlet upstream, toward a target depth band, within minimum and maximum slopes and absolute depth limits, with optional constant slope, outlet offset and outlet lowering for low ground. Sizes the pipes with Routine K (Network Pipe Sizing), using the Strahler tile order of Routine G. Writes the Routine J fields (ElevDepth1/2, BuryDepth1/2, InSlope, OutSlope, BURY_CHECK), the Routine K fields (TILE_ORDER, D_COEFF, D_AREA, CUM_SEG_FLOW, ACTUAL_SIZE, NOMINAL) and a line-ID layer (Surface Layout) for the Illini Drainage Tools, and optionally a raster of tile elevation and depth that highlights where the tile is outside the depth limits. Uses only QGIS, GDAL and numpy. The burying and sizing schemes are ported from the Illini Drainage Tools by Anamelechi Falasy and Richard Cooke, University of Illinois Urbana-Champaign (GPL v3).
-version=0.17.0
+version=0.18.0
 author=Richard Cooke and Anamelechi Falasy
 email=raccooke@gmail.com
 
@@ -11,7 +11,8 @@ tracker=https://github.com/Bhudus/QGIS_Tools/issues
 repository=https://github.com/Bhudus/QGIS_Tools
 homepage=https://bhudus.github.io/QGIS_Tools/
 
-changelog=0.17.0 - New Burying method setting: Routine J (default) or Minimum cover, which buries the tile as shallow as the minimum cover and grade allow (the method of the retired Subsurface Drainage Layout plugin).
+changelog=0.18.0 - Sizing uses one drainage coefficient for every line (default 0.375 inch/day), in D_COEFF, in place of the intensity options and per-order list; new DRAIN_SPACE and PIPE_TYPE fields. Use the Tile Size Calculator plugin for coefficients by tile order or by pipe.
+    0.17.0 - New Burying method setting: Routine J (default) or Minimum cover, which buries the tile as shallow as the minimum cover and grade allow (the method of the retired Subsurface Drainage Layout plugin).
     0.16.0 - flag now holds layout problems only (outlet, connectors, unconnected laterals, pipe size); depth problems are in min_depth/max_depth, the Tile depth check layer and the log (which now also counts pipes with less than the minimum cover), and grade problems stay in BURY_CHECK.
     0.15.1 - Settings are saved each time the tool runs and reopen with it; Plugins → Illini Subsurface Drain Layout → Reset saved settings to defaults goes back to the plugin defaults.
     0.15.0 - New Sharpest bend setting (default 120 degrees between tile legs): sharper corners in laterals, connectors and generated mains are rounded, with junctions kept joined.
