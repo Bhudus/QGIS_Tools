@@ -163,6 +163,9 @@ class SubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
 
     def shortHelpString(self):
         return self.tr(
+            "<p><b>Superseded by Illini Subsurface Drain Layout</b>, which does all of "
+            "this and more; set its Burying method to Minimum cover for the same "
+            "burying. This plugin is no longer developed.</p>"
             "<p>Lays out a subsurface (tile) drainage network for a field from a DEM, "
             "the field boundary, an outlet location and the lateral spacing.</p>"
             "<p><b>Pattern</b><br>"

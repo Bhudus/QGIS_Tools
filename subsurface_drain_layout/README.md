@@ -1,4 +1,13 @@
-# Subsurface Drainage Layout (QGIS plugin)
+# Subsurface Drainage Layout (QGIS plugin) — superseded
+
+> **This plugin is superseded by
+> [Illini Subsurface Drain Layout](../illini_subsurface_drain_layout/)** and is
+> no longer developed. Illini Subsurface Drain Layout lays out the network the
+> same way and adds Routine J burying, pipe sizing, the Tile elevation raster,
+> the bend limit and saved settings. For this plugin's burying, as shallow as
+> the minimum cover and grade allow, set its **Burying method** to **Minimum
+> cover**. Version 0.8.0 is the last; the plugin will later be removed from
+> this repository.
 
 Automated layout of a subsurface (tile) drainage network from a DEM, a field
 boundary, an outlet location and the lateral spacing. Laterals run near

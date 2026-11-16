@@ -94,6 +94,7 @@ class LayoutParams:
     submain_frac: float = 0.10           # branches above this share become submains (0 = none)
     min_lateral_length: Optional[float] = None  # default: spacing
     max_connector: Optional[float] = None       # default: 2.5 * spacing
+    bury_method: str = "routine_j"       # "routine_j" target band, or "min_cover"
     min_bend_angle: float = 120.0        # degrees between tile legs at a bend; 0 = no limit
     tile_raster: bool = False            # also return a raster of tile elevation and depth
 
@@ -1157,6 +1158,10 @@ class DrainageLayout:
                 segs.append(seg)
                 meta.append((P, up, dn))
 
+        if p.bury_method == "min_cover":
+            self._bury_min_cover(pipes, nc)
+            return
+
         # BURY_ORDER: breadth first from the outlet, then any disconnected parts
         roots = [canon((0, len(pipes[0]["pts"]) - 1))]
         roots += [canon((P, len(pp["pts"]) - 1)) for P, pp in enumerate(pipes)
@@ -1211,6 +1216,121 @@ class DrainageLayout:
         if flagged:
             self._warn("{} burying segment(s) could not be buried within the slope limits; "
                        "see the BURY_CHECK field.".format(flagged))
+
+    def _bury_min_cover(self, pipes, nc):
+        """Bury every pipe as shallow as the minimum cover and minimum grade allow.
+
+        Each pipe is buried from its upstream end down, one burying segment
+        (junction to grade break) at a time, the tile straight along each. The
+        upstream end sits at the minimum cover; each segment's downstream end
+        is as high as it can be while the tile falls at least at the minimum
+        grade, keeps the minimum cover at every point along the segment, and
+        is no higher than any pipe that joins there. Pipes joining another are
+        buried first; afterwards, where the pipe they join lies lower, their
+        last segment is taken down to it, so the network stays joined.
+        """
+        p = self.p
+        cover = p.min_cover
+        joining = {}                                 # host pipe -> [(tributary, index)]
+        for P, pp in enumerate(pipes):
+            if pp["end"] is not None:
+                joining.setdefault(pp["end"][0], []).append((P, pp["end"][1]))
+        done, stack = set(), set()
+        order = []
+
+        def visit(P):
+            if P in done or P in stack:
+                return
+            stack.add(P)
+            for T, _ in joining.get(P, ()):
+                visit(T)
+            stack.discard(P)
+            done.add(P)
+            order.append(P)
+
+        for P in range(len(pipes)):
+            visit(P)
+
+        def drop_end(T, value, depth=0):
+            """Take pipe T's downstream end down to value, and with it any pipe
+            that ends at that same point."""
+            tp = pipes[T]
+            tp["tB"][-1] = value
+            if tp["steps"]:
+                u, d = tp["steps"][-1][0], tp["steps"][-1][1]
+                L = float(tp["s"][d] - tp["s"][u])
+                sl = (tp["tB"][-2] - value) / L if L > 0 and len(tp["tB"]) > 1 else 0.0
+                tp["steps"][-1][3] = tp["steps"][-1][4] = sl
+                if "Dropped to the pipe it joins" not in tp["steps"][-1][2]:
+                    tp["steps"][-1][2].append("Dropped to the pipe it joins")
+            last = len(tp["pts"]) - 1
+            for T2, idx2 in joining.get(T, ()):
+                t2 = pipes[T2].get("tB")
+                if idx2 == last and depth < 100 and t2 is not None and value < t2[-1] - 1e-9:
+                    drop_end(T2, value, depth + 1)
+
+        nseg = 0
+        for P in order:
+            pp = pipes[P]
+            B, s, z = pp["B"], pp["s"], pp["z"]
+            caps = {}
+            for T, idx in joining.get(P, ()):
+                t_end = pipes[T].get("tB")
+                if t_end is not None:
+                    caps[idx] = min(caps.get(idx, 1e18), float(t_end[-1]))
+            tB = [float(z[B[0]]) - cover]
+            if B[0] in caps:
+                tB[0] = min(tB[0], caps[B[0]])
+            steps = []
+            for j in range(1, len(B)):
+                u, d = B[j - 1], B[j]
+                L = float(s[d] - s[u])
+                tu = tB[-1]
+                if L <= 1e-9:
+                    tB.append(tu)
+                    continue
+                td = tu - pp["min"] * L                  # minimum grade
+                for i in range(u + 1, d + 1):            # minimum cover along the segment
+                    f = float(s[i] - s[u]) / L
+                    if f > 1e-9:
+                        td = min(td, tu + (float(z[i]) - cover - tu) / f)
+                notes = []
+                if d in caps and caps[d] < td:
+                    td = caps[d]
+                    notes.append("Lowered to a pipe joining here")
+                tB.append(td)
+                sl = (tu - td) / L
+                steps.append([u, d, notes, sl, sl])
+                nseg += 1
+            pp["tB"] = np.array(tB, dtype=float)
+            pp["steps"] = steps
+            # a tributary whose host lies lower drops its last segment to it
+            for T, idx in joining.get(P, ()):
+                tp = pipes[T]
+                if tp.get("tB") is None or not len(tp["tB"]):
+                    continue
+                host = (float(pp["tB"][B.index(idx)]) if idx in B else
+                        float(np.interp(s[idx], s[B], pp["tB"])))
+                if host < tp["tB"][-1] - 1e-9:
+                    drop_end(T, host)
+
+        for P, pp in enumerate(pipes):
+            o = pp["obj"]
+            B, s, z = pp["B"], pp["s"], pp["z"]
+            o["z"], o["s"] = z, s
+            o["inv"] = np.interp(s, s[B], pp["tB"])
+            o["B"] = list(B)
+            o["bury_steps"] = [tuple(st[:2]) + (st[2], st[3], st[4]) for st in pp["steps"]]
+        nlat = [0] * nc
+        for L_ in self.lats:
+            if L_["conn"] and L_["conn"][0] == "collector":
+                nlat[L_["conn"][1]] += 1
+        for k, c in enumerate(self.cols):
+            c["nlat"] = nlat[k]
+        root = pipes[0]
+        out_depth = float(root["z"][-1] - root["tB"][-1])
+        self.bury = {"segments": nseg, "flagged": 0, "outlet_depth": out_depth,
+                     "start_depth": out_depth}
 
     # ------------------------------------------------------------ tile raster
     DEPTH_OK, DEPTH_SHALLOW, DEPTH_DEEP = 1, 2, 3
@@ -1328,15 +1448,16 @@ class DrainageLayout:
 
         col_fixed, lat_fixed = self._junction_sets()
 
+        # flag holds layout problems only (outlet, connections, connectors, pipe size);
+        # depth problems are in min_depth/max_depth, the Tile elevation raster and
+        # the log, and grade problems in BURY_CHECK
+        n_shallow = n_deep_col = 0
         collectors = []
         for k, c in enumerate(self.cols):
             a = self._pipe_attrs(c["z"], c["s"], c["inv"])
             flags = []
-            if a["max_depth_m"] > p.max_depth + 0.01:
-                flags.append("deeper than " + self._fmt(p.max_depth, 2))
-            if a["min_depth_m"] < p.min_cover - 0.01:
-                flags.append("cover under {} between grade breaks".format(
-                    self._fmt(p.min_cover, 2)))
+            n_deep_col += a["max_depth_m"] > p.max_depth + 0.01
+            n_shallow += a["min_depth_m"] < p.min_cover - 0.01
             if c["to"] is None and p.outlet_invert is not None:
                 short = p.outlet_invert - a["invert_ds"]
                 if short > 0:
@@ -1351,12 +1472,8 @@ class DrainageLayout:
         for lid, L in enumerate(self.lats):
             a = self._pipe_attrs(L["z"], L["s"], L["inv"])
             flags = list(L["flags"])
-            if a["max_depth_m"] > p.max_depth + 0.01:
-                flags.append("deeper than " + self._fmt(p.max_depth, 2))
-                n_deep += 1
-            if a["min_depth_m"] < p.min_cover - 0.01:
-                flags.append("cover under {} between grade breaks".format(
-                    self._fmt(p.min_cover, 2)))
+            n_deep += a["max_depth_m"] > p.max_depth + 0.01
+            n_shallow += a["min_depth_m"] < p.min_cover - 0.01
             if L["conn"] is None:
                 n_unconn += 1
                 to = ""
@@ -1382,6 +1499,14 @@ class DrainageLayout:
         if n_deep:
             self._warn("{} lateral(s) exceed the maximum depth; consider a contour-"
                        "following layout, a lower outlet or a submain.".format(n_deep))
+        if n_deep_col:
+            self._warn("{} main(s)/submain(s) go deeper than the maximum depth ({}) in "
+                       "places; see max_depth and the Tile elevation raster.".format(
+                           n_deep_col, self._fmt(p.max_depth, 2)))
+        if n_shallow:
+            self._warn("{} pipe(s) have less than the minimum cover ({}) in places; see "
+                       "min_depth and the Tile elevation raster.".format(
+                           n_shallow, self._fmt(p.min_cover, 2)))
         for c in collectors:
             for part in c["attrs"]["flag"].split("; "):
                 if part.endswith("below outlet"):
@@ -1401,6 +1526,7 @@ class DrainageLayout:
             "contour_azimuth_deg": round(az, 1),
             "unconnected_laterals": n_unconn,
             "deep_laterals": n_deep,
+            "shallow_pipes": n_shallow,
             "outlet_depth_m": (round(self.bury["outlet_depth"], 3)
                                if self.bury.get("outlet_depth") is not None else None),
             "outlet_start_depth_m": (round(self.bury["start_depth"], 3)

@@ -59,8 +59,16 @@ Requires QGIS 3.34 LTR or newer. Uses only QGIS.
    moved points** forgets them all. Like the network offset, they are a
    preview until **Apply to layer…**, which writes both: the Z of the vertices
    concerned, the end elevations and depths of the lines that change, their
-   `design_grade_pct` and `InSlope`. OutSlope, pipe sizes, `flag` and
-   `BURY_CHECK` are not worked out again.
+   `design_grade_pct` and `InSlope`. Each line that changes is also
+   rechecked: its `BURY_CHECK` loses Routine J's notes on how it placed the
+   tile ("Held at …", "Deepened …", the grade notes) and gets "Reverse or
+   zero grade (x%)" if a section of it now falls the wrong way, "Shallower
+   than absolute upper depth" or "Deeper than absolute lower depth" against
+   the absolute depths in the panel, and "Edited in Tile Profile"; other
+   notes, such as "Not connected", stay. Depth items that older layers carried
+   in `flag` are removed. The minimum and maximum grades are not rechecked
+   (the panel does not know them), nor are OutSlope and the pipe sizes: run
+   the layout tool again for those.
 7. **Check network** finds the profiles to check. It goes through every
    pipe of the network, sampling the tile every third of a cell against the
    absolute upper and lower depths, and looks for flat or reverse sections

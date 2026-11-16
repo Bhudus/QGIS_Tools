@@ -31,6 +31,15 @@ class DrainLayoutPlugin:
         self.iface.addPluginToMenu("&Subsurface Drainage", self.action)
         self.iface.addPluginToRasterMenu(TILE_DRAINAGE_MENU, self.action)
         self.iface.addToolBarIcon(self.action)
+        try:
+            from qgis.core import Qgis
+            self.iface.messageBar().pushMessage(
+                "Subsurface Drainage Layout",
+                "This plugin is superseded by Illini Subsurface Drain Layout (Burying "
+                "method: Minimum cover gives the same burying). It is no longer developed.",
+                level=Qgis.Warning, duration=12)
+        except Exception:  # noqa: BLE001
+            pass
 
     def unload(self):
         if self.action is not None:

@@ -104,7 +104,9 @@ def _advanced(param):
 
 
 class _Styler(QgsProcessingLayerPostProcessorInterface):
-    """Style the network: mains and submains red, laterals blue, flagged pipes orange."""
+    """Style the network: mains and submains red, laterals blue, layout problems (flag)
+    orange, grade problems (BURY_CHECK) purple. Depth problems are shown by the Tile
+    elevation raster's Tile depth check layer."""
 
     def postProcessLayer(self, layer, context, feedback):
         if not isinstance(layer, QgsVectorLayer):
@@ -123,7 +125,7 @@ class _Styler(QgsProcessingLayerPostProcessorInterface):
                 .format(kind), label))
         flagged = QgsLineSymbol.createSimple({"color": "217,119,6", "width": "0.5"})
         root.appendChild(QgsRuleBasedRenderer.Rule(
-            flagged, 0, 0, "\"flag\" <> ''", "Pipe to check (see flag)"))
+            flagged, 0, 0, "\"flag\" <> ''", "Layout problem (see flag)"))
         grade = QgsLineSymbol.createSimple({"color": "147,51,234", "width": "0.6"})
         root.appendChild(QgsRuleBasedRenderer.Rule(
             grade, 0, 0, "(\"flag\" IS NULL OR \"flag\" = '') AND "
@@ -232,6 +234,7 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
     CONST_GRADE = "CONST_GRADE"
     LOWER_OUTLET = "LOWER_OUTLET"
     GRADE_BREAK = "GRADE_BREAK"
+    BURY_METHOD = "BURY_METHOD"
     SIZE_PIPES = "SIZE_PIPES"
     PIPE_MATERIAL = "PIPE_MATERIAL"
     INTENSITY = "INTENSITY"
@@ -372,6 +375,15 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             "(in/day), D_AREA (acres), CUM_SEG_FLOW (cfs), ACTUAL_SIZE and NOMINAL (inches), "
             "with TILE_ORDER, FLOW_LENGTH (ft) and SIZE_SLOPE. The drain spacing is the "
             "lateral spacing.</p>"
+            "<p><b>Burying method.</b> <i>Routine J</i> (the default) buries the tile "
+            "as the Illini Drainage Tools do, aiming for the middle of the target depth "
+            "band between the absolute depths. <i>Minimum cover</i> buries it as shallow "
+            "as possible: each pipe starts at the minimum cover at its upstream end and "
+            "falls at least at the minimum grade, keeping the minimum cover all along; "
+            "pipes that join lower down are taken down to meet it. It uses the minimum "
+            "cover, maximum depth, minimum grades and grade-break spacing, and ignores the "
+            "target band, maximum slope, offset, constant slope and lower-the-outlet "
+            "settings.</p>"
             "<p><b>Sharpest bend</b>: no tile line turns more sharply than this angle "
             "between its legs (120 degrees = a change of direction of at most 60 degrees). "
             "Sharper corners in laterals, connectors and generated mains and submains are "
@@ -525,6 +537,11 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             self.tr("Herringbone angle between lateral and main (degrees)"),
             QgsProcessingParameterNumber.Double, defaultValue=60.0,
             minValue=15.0, maxValue=90.0)))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.BURY_METHOD, self.tr("Burying method"),
+            options=[self.tr("Routine J: target depth band (Illini Drainage Tools)"),
+                     self.tr("Minimum cover: as shallow as the minimum cover and grade allow")],
+            defaultValue=0))
         self.addParameter(_advanced(QgsProcessingParameterNumber(
             self.GRADE_BREAK, self.tr("Burying: longest segment between grade breaks"),
             QgsProcessingParameterNumber.Double, defaultValue=50.0, minValue=0.1)))
@@ -783,6 +800,8 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             constant_grade=num(self.CONST_GRADE) / 100.0,
             lower_outlet=self.parameterAsBool(parameters, self.LOWER_OUTLET, context),
             grade_break=num(self.GRADE_BREAK) * uf,
+            bury_method=("routine_j", "min_cover")[
+                self.parameterAsEnum(parameters, self.BURY_METHOD, context)],
             size_pipes=self.parameterAsBool(parameters, self.SIZE_PIPES, context),
             pipe_material=self.parameterAsEnum(parameters, self.PIPE_MATERIAL, context),
             intensity=(num(self.ASSIGNED_INTENSITY)
@@ -907,8 +926,10 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
                 feedback.pushInfo(self.tr("Outlet lowered from {:.2f} {} to {:.2f} {} deep to "
                                           "serve low ground.").format(sd, u_lbl, od, u_lbl))
             feedback.pushInfo(self.tr("Outlet tile depth: {:.2f} {}.").format(od, u_lbl))
-        feedback.pushInfo(self.tr("Buried {} segments between junctions and grade breaks.")
-                          .format(s["bury_segments"]))
+        feedback.pushInfo(self.tr("Buried {} segments between junctions and grade breaks "
+                                  "({}).").format(res["summary"]["bury_segments"],
+                                                  "Routine J" if params.bury_method ==
+                                                  "routine_j" else "minimum cover"))
         if s.get("length_by_size_m"):
             feedback.pushInfo(self.tr("Pipe by nominal size: {}").format("; ".join(
                 "{} in: {:,.0f} {}".format(k, v / uf, u_lbl)
@@ -1012,10 +1033,13 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             ("Mean field slope", "{:.2f}%".format(s["mean_slope_pct"])),
             ("Outlet tile depth", "{:.2f} {}".format(s["outlet_depth_m"] / uf, u)
              if s.get("outlet_depth_m") is not None else "–"),
+            ("Burying method", "Routine J (target depth band)" if params.bury_method ==
+             "routine_j" else "Minimum cover"),
             ("Burying segments / flagged in BURY_CHECK",
              "{} / {}".format(s["bury_segments"], s["bury_flagged"])),
             ("Dominant contour bearing", "{:.0f}°".format(s["contour_azimuth_deg"])),
             ("Laterals deeper than the maximum", str(s["deep_laterals"])),
+            ("Pipes with less than the minimum cover", str(s.get("shallow_pipes", 0))),
             ("Laterals without a collector", str(s["unconnected_laterals"])),
         ]
         rows += [("Pipe, {} in nominal".format(k), "{:,.0f} {}".format(v / uf, u))

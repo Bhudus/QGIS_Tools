@@ -542,3 +542,83 @@ def section_slope(profile, index):
     if not 0 <= index < len(pts) - 1 or pts[index + 1][0] - pts[index][0] <= 1e-9:
         return None
     return (pts[index + 1][1] - pts[index][1]) / (pts[index + 1][0] - pts[index][0])
+
+
+# BURY_CHECK notes that describe how Routine J placed the tile; after an edit
+# in Tile Profile they no longer apply, and the grade and depth checks are redone
+STALE_NOTES = ("Held at absolute upper depth", "Held at absolute lower depth",
+               "Deepened for low ground upstream", "Reverse or zero grade", "Grade ",
+               "Shallower than absolute upper depth", "Deeper than absolute lower depth",
+               "Edited in Tile Profile")
+STALE_FLAGS = ("deeper than", "cover under")       # depth items of older layers
+
+
+def refreshed_checks(attrs, xy, z, changes, abs_upper, abs_lower, units, xy_scale=1.0,
+                     m=None):
+    """BURY_CHECK and flag for a line whose tile was edited, as {field: value}.
+
+    The tile is (z, or the end elevations in `changes`/attrs); depths come from the
+    new min_depth/max_depth in `changes`, else from ground M values. BURY_CHECK keeps
+    notes that do not depend on the tile's position (e.g. "Not connected"), drops
+    Routine J's placement and grade notes, and adds "Reverse or zero grade (x%):
+    tile cannot drain" for a flat or reverse section, shallower/deeper notes
+    against the absolute depths, and "Edited in Tile Profile". flag loses the depth
+    items older layers carried there. Fields the layer lacks are left out.
+    """
+    low = {str(k).lower(): k for k in attrs}
+    out = {}
+    merged = dict(attrs)
+    merged.update(changes)
+
+    def num(name):
+        k = low.get(name.lower())
+        return None if k is None else _num(merged, k)
+
+    k_bc = low.get("bury_check")
+    if k_bc is not None:
+        old = attrs.get(k_bc)
+        old = "" if old is None else str(old)
+        notes = [n.strip() for n in old.split(";") if n.strip() and n.strip() != "OK"
+                 and not any(n.strip().startswith(p) for p in STALE_NOTES)]
+        # tile along the line
+        if z is not None and len(z) == len(xy):
+            tile = [float(v) for v in z]
+            ds = [0.0]
+            for a, b in zip(xy[:-1], xy[1:]):
+                ds.append(ds[-1] + _dist(a, b) * xy_scale)
+        else:
+            t1 = num("ElevDepth1") if num("ElevDepth1") is not None else num("invert_us")
+            t2 = num("ElevDepth2") if num("ElevDepth2") is not None else num("invert_ds")
+            L = num("length")
+            if L is None:
+                L = sum(_dist(a, b) for a, b in zip(xy[:-1], xy[1:])) * xy_scale
+            tile, ds = ([t1, t2], [0.0, L]) if t1 is not None and t2 is not None else ([], [])
+        # lines run upstream -> downstream: a good slope falls along the line
+        worst = None
+        for i in range(len(tile) - 1):
+            run = ds[i + 1] - ds[i]
+            if run > 1e-9:
+                sl = (tile[i] - tile[i + 1]) / run
+                if sl < FLAT_SLOPE and (worst is None or sl < worst):
+                    worst = sl
+        if worst is not None:
+            notes.append("Reverse or zero grade ({:.2f}%): tile cannot drain".format(worst * 100))
+        dmin, dmax = num("min_depth"), num("max_depth")
+        if (dmin is None or dmax is None) and m is not None and z is not None:
+            dep = [float(g) - float(t) for g, t in zip(m, z)]
+            dmin, dmax = min(dep), max(dep)
+        if dmin is not None and dmin < abs_upper - 0.005:
+            notes.append("Shallower than absolute upper depth ({:.2f} {})".format(dmin, units))
+        if dmax is not None and dmax > abs_lower + 0.005:
+            notes.append("Deeper than absolute lower depth ({:.2f} {})".format(dmax, units))
+        notes.append("Edited in Tile Profile")
+        out[k_bc] = "; ".join(notes)
+    k_fl = low.get("flag")
+    if k_fl is not None:
+        old = attrs.get(k_fl)
+        if old is not None:
+            parts = [p.strip() for p in str(old).split(";") if p.strip()]
+            kept = [p for p in parts if not any(p.startswith(s) for s in STALE_FLAGS)]
+            if kept != parts:
+                out[k_fl] = "; ".join(kept)
+    return out

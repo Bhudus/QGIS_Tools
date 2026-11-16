@@ -45,6 +45,7 @@ from .profile_core import (
     node_key,
     offset_profile,
     rasterize_samples,
+    refreshed_checks,
     section_slope,
     slope_offsets,
     table_rows,
@@ -810,9 +811,10 @@ class TileProfileDock(QDockWidget):
             "In “{}”, {}?\n\n"
             "This changes the tile elevations of the lines concerned (Z values, invert_us/"
             "invert_ds, ElevDepth1/ElevDepth2) and their depths (min_depth, max_depth, "
-            "depth_ds, BuryDepth1/BuryDepth2), design_grade_pct and InSlope. Ground "
-            "elevations do not change; OutSlope, the pipe sizes, flag and BURY_CHECK are "
-            "not worked out again.\n\n"
+            "depth_ds, BuryDepth1/BuryDepth2), design_grade_pct and InSlope, and rechecks "
+            "them: BURY_CHECK gets new grade and depth notes (against the absolute depths "
+            "above) and \"Edited in Tile Profile\". Ground elevations do not change; "
+            "OutSlope and the pipe sizes are not worked out again.\n\n"
             "The layer is left in edit mode: save the edits to keep them, or roll them "
             "back.".format(layer.name(), " and ".join(what)),
             QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
@@ -823,6 +825,8 @@ class TileProfileDock(QDockWidget):
                                 "“{}” cannot be edited.".format(layer.name()))
             return
         fields = layer.fields()
+        dd = self._depths()
+        xy_scale = _metres_per_map_unit(layer.crs()) / UNITS[self.units.currentIndex()][1]
         layer.beginEditCommand("Tile Profile: {}".format(" and ".join(what)))
         changed = 0
         try:
@@ -834,6 +838,8 @@ class TileProfileDock(QDockWidget):
                 ch, new_z = line_changes(attrs, rec["xy"], rec["z"], rec["m"], d, pts)
                 if not ch and new_z is None:
                     continue
+                ch.update(refreshed_checks(attrs, rec["xy"], new_z, ch, dd["abs_upper"],
+                                           dd["abs_lower"], u, xy_scale, rec["m"]))
                 for name, value in ch.items():
                     layer.changeAttributeValue(f.id(), fields.indexOf(name), value)
                 if new_z is not None and g is not None and not g.isEmpty():

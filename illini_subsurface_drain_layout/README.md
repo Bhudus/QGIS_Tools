@@ -5,7 +5,8 @@ DEM, a field boundary, an outlet location and the lateral spacing. Laterals run
 near parallel or near perpendicular to the field contours, in a
 parallel/gridiron or herringbone pattern, as straight lines or bending with the
 terrain. The tile is buried with the scheme of Routine J (Tile Burying System)
-of the [Illini Drainage Tools](https://github.com/FVW-Services/Illini-Drainage-Tools),
+of the [Illini Drainage Tools](https://github.com/FVW-Services/Illini-Drainage-Tools)
+(or, if you choose, as shallow as the minimum cover and grade allow),
 and sized with Routine K (Network Pipe Sizing), using the Strahler tile order
 of Routine G. The output carries the Routine J and K fields, so it can go on
 to Routine L (Sized Pipe Estimations) and the other Illini routines.
@@ -48,6 +49,7 @@ The plugin is also listed under **Raster → Tile Drainage**, a menu shared by t
 | Lateral shape | *Straight* (default) or *Contour-following*. |
 | Straight laterals: bearing | *Follow the terrain* (default: set by the lateral orientation), *North-south*, *East-west*, *Northwest-southeast* or *Northeast-southwest*, on the map grid of the DEM's CRS. Straight laterals only. |
 | Parallelism | Contour-following laterals only, 0–1 (default 0.9). Steers each lateral to run parallel to its neighbour at exactly one spacing; 0 follows the terrain freely, 1 makes every lateral an offset of its neighbour. |
+| Burying method | *Routine J* (default): the Illini target depth band, below. *Minimum cover*: as shallow as the minimum cover and minimum grade allow (see How the layout is built, step 5). |
 | Burying: upper and lower tile depth | The target depth band (Routine J). Tile aims for the middle of it. Defaults 3.25 ft and 4.25 ft. |
 | Burying: absolute upper and lower tile depth | Tile is never shallower or deeper than these (minimum cover, maximum depth). Defaults 2.5 ft and 6 ft. |
 | Burying: maximum slope; minimum slope for laterals and for mains | Percent. Defaults 5%, 0.1% and 0.1%. |
@@ -137,6 +139,21 @@ OutSlope.
    Between grade breaks the tile runs at a constant grade. The port reproduces
    Routine J exactly: run on the same segments, the original Illini code and
    this plugin give the same tile elevations and BURY_CHECK notes.
+
+   **Minimum cover** (the other burying method) lays the tile as shallow as
+   it can go, on the same segments. Each pipe starts at the minimum cover at
+   its upstream end; each segment's downstream end is as high as it can be
+   while the tile falls at least at the minimum grade and keeps the minimum
+   cover at every point along the segment. A pipe that joins another is
+   buried first, and the pipe it joins is kept no higher than it there
+   (BURY_CHECK: "Lowered to a pipe joining here"); where the pipe it joins
+   lies lower, its last segment is taken down to meet it ("Dropped to the
+   pipe it joins"). The target band, maximum slope, offset, constant slope
+   and lower-the-outlet settings do not apply. Tile is never shallower than
+   the minimum cover or flatter than the minimum grade; on rolling ground it
+   may go deeper than the maximum depth through knolls, which the Tile depth
+   check layer and the log show. This replaces the separate Subsurface
+   Drainage Layout plugin, which buried tile this way.
 6. **Pipe sizing (Routines G and K).** Each line of the network is a sizing
    segment:
    - `TILE_ORDER` is its Strahler order: the highest inflowing order, plus one
@@ -185,7 +202,7 @@ each junction, so each link runs node to node in the direction of flow.
 | `BURY_CHECK` | Routine J notes for the burying segments in this line, or `OK`: held at an absolute depth, deepened for low ground, grade below minimum, reverse grade and so on. Lines with grade problems are drawn purple. |
 | `TILE_ORDER`, `FLOW_LENGTH`, `SIZE_SLOPE` | Sizing inputs: Strahler order (Routine G), tile length draining through the line in feet (Routine I), and the slope used. |
 | `D_COEFF`, `D_AREA`, `CUM_SEG_FLOW`, `ACTUAL_SIZE`, `NOMINAL` | Routine K fields: drainage coefficient (inch/day), drained area (acres), flow (cfs), required inside diameter and nominal pipe size (inches). Always in Routine K's US units. |
-| `flag` | Anything else to check (below), with lengths in the design units. Flagged links are drawn orange. |
+| `flag` | Layout problems (below), with lengths in the design units. Flagged links are drawn orange. Depth problems are not repeated here: they are in `min_depth`/`max_depth`, the Tile elevation raster's Tile depth check layer and the log. |
 
 The Drainage network lines are 3-D: each vertex carries the tile elevation
 as its Z value and the ground elevation as its M value, in design units, and
@@ -193,11 +210,20 @@ every Routine J grade break is a vertex, so the tile runs straight between
 vertices. The Tile Profile plugin draws profiles from them. The Surface
 Layout layer stays flat (2-D).
 
-Flags:
+Where to look for problems:
 
-- `deeper than …` / `cover under … between grade breaks` — the ground between
-  two grade breaks takes the tile outside the absolute depths. Shorten the
-  grade-break spacing to follow the ground more closely.
+- **Depth** — tile shallower than the minimum cover or deeper than the
+  maximum depth: the **Tile depth check** layer (red and purple cells) shows
+  exactly where; `min_depth`/`max_depth` give each line's range; the log
+  counts the pipes. Usually the ground between two grade breaks: shorten the
+  grade-break spacing to follow the ground more closely. Tile Profile's
+  **Check network** lists them too.
+- **Grade** — reverse or zero grade, grade below the minimum, tile held at a
+  depth limit: `BURY_CHECK`, drawn purple.
+- **Layout** — `flag`, drawn orange:
+
+- `invert … below outlet` — the main reaches the outlet lower than the
+  outlet invert you gave.
 - `connector …` — reaches a collector or another lateral through a straight
   connector.
 - `unconnected: needs its own collector` — the low ground this lateral drains
