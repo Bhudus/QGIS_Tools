@@ -34,7 +34,7 @@ from qgis.core import (
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.PyQt.QtGui import QColor
 
-from .hooghoudt import spacing_for_layers
+from .hooghoudt import format_profile, spacing_for_layers
 from .rosetta import ksat_for_layers
 from .soilgrids import IGH_PROJ, SoilGridsError, fetch_layers, post_json, snap_bbox
 from .style import apply_boundary_style
@@ -84,6 +84,7 @@ OUTPUT_FIELDS = [
     ("ka_sub", "dbl", 12, 3),       # Ksat of the saturated zone above drains, subirrigation
     ("subirr_m", "int", 6, 0),      # inverse Hooghoudt subirrigation spacing, nearest 1 m
     ("ksat_src", "str", 60, 0),
+    ("ksat_prof", "str", 254, 0),   # layer Ksat "top-bottom cm:m/day;…", for the Drain spacing recalculator
 ]
 
 
@@ -475,6 +476,7 @@ class SoilGridsDrainageAlgorithm(QgsProcessingAlgorithm):
                 _round(sub["ka"], 3),
                 _round_m(sub["spacing_m"]),
                 ksat_src[:60],
+                format_profile(layers),
             ])
             sink.addFeature(feat, FAST_INSERT)
         feedback.setProgress(100.0)

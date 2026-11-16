@@ -97,6 +97,7 @@ OUTPUT_FIELDS = [
     ("spacing_ft", "int", 6, 0),   # Hooghoudt drain spacing, nearest 5 ft
     ("ka_sub", "dbl", 12, 3),      # Ksat of the saturated zone above drains, subirrigation
     ("subirr_ft", "int", 6, 0),    # inverse Hooghoudt subirrigation spacing, nearest 5 ft
+    ("ksat_prof", "str", 254, 0),  # layer Ksat "top-bottom cm:m/day;…", for the Drain spacing recalculator
 ]
 
 
@@ -473,6 +474,7 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
                 _round_to(sp.get("spacing_ft"), 5),
                 _round(sp.get("ka_sub"), 3),
                 _round_to(sp.get("subirr_ft"), 5),
+                sp.get("ksat_prof"),
             ])
             sink.addFeature(feat, FAST_INSERT)
             written += 1
@@ -519,6 +521,7 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
                                         mid_ft=hm, drain_level_ft=hw)
             sp["ka_sub"] = sub.get("ka_ftday")
             sp["subirr_ft"] = sub.get("spacing_ft")
+            sp["ksat_prof"] = sub.get("ksat_prof")
             result[k] = sp
             b = sp.get("barrier_ft")
             if sp.get("spacing_ft") is not None and b is not None and b <= drain_depth_ft:

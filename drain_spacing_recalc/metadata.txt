@@ -1,0 +1,19 @@
+[general]
+name=Drain spacing recalculator
+qgisMinimumVersion=3.22
+supportsQt6=True
+description=Recalculates drain and subirrigation spacings on a soil map from SSURGO or SoilGrids drainage soil map, for a new drain depth, coefficients and water table heights.
+version=0.1.0
+changelog=0.1.0 - First release: one scenario per run, US customary or metric units, Hooghoudt drain spacing with an optional mid-drain water table and inverse Hooghoudt subirrigation spacing, using each soil's ksat_prof field.
+author=Richard Cooke
+email=raccooke@gmail.com
+about=Companion to SSURGO drainage soil map and SoilGrids drainage soil map. Pick a soil map they made, enter a drain depth, drainage coefficient, mid-drain water table, impermeable layer depth or subirrigation water levels, and get a copy of the soil map with new drain and subirrigation spacings. Uses each soil's layer-by-layer Ksat (ksat_prof field), so no internet connection is needed. Run it again for each scenario.
+tags=drainage,drain spacing,subirrigation,hooghoudt,ssurgo,soilgrids,soil,agriculture,tile
+category=Vector
+icon=icon.png
+experimental=False
+deprecated=False
+hasProcessingProvider=yes
+homepage=https://bhudus.github.io/QGIS_Tools/
+repository=https://github.com/Bhudus/QGIS_Tools
+tracker=https://github.com/Bhudus/QGIS_Tools/issues

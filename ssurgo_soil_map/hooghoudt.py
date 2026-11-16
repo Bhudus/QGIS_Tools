@@ -136,9 +136,12 @@ def spacing_for_component(horizons, barrier_cm, drain_depth_ft, coef_in_day, dra
         of the soil profile when there is none).
     Returns a dict: ka_ftday, kb_ftday, barrier_ft, spacing_ft (any may be None).
     """
-    out = {"ka_ftday": None, "kb_ftday": None, "barrier_ft": None, "spacing_ft": None}
+    out = {"ka_ftday": None, "kb_ftday": None, "barrier_ft": None, "spacing_ft": None,
+           "ksat_prof": None}
     if not horizons:
         return out
+    out["ksat_prof"] = format_profile(
+        [(t, b, k * M_PER_DAY_PER_UM_PER_S if k is not None else None) for t, b, k in horizons])
     drain_cm = drain_depth_ft * CM_PER_FT
     if barrier_cm is None:
         barrier_cm = max((b for _, b, _ in horizons if b is not None), default=None)
@@ -172,3 +175,20 @@ def spacing_for_component(horizons, barrier_cm, drain_depth_ft, coef_in_day, dra
     if L is not None:
         out["spacing_ft"] = L / M_PER_FT
     return out
+
+
+def format_profile(layers):
+    """Layer-by-layer Ksat as text, e.g. "0-30:0.778;30-203:0.346".
+
+    layers: (top_cm, bottom_cm, ksat_m_day). Depths in cm, Ksat in m/day,
+    whatever units the rest of the layer uses, so the Drain spacing
+    recalculator can read output from either soil plugin. Layers with no
+    Ksat are left out. Fits a 254-character shapefile text field.
+    """
+    parts = []
+    for top, bot, k in sorted(layers, key=lambda L: (L[0] is None, L[0])):
+        if top is None or bot is None or k is None or bot <= top:
+            continue
+        parts.append(f"{top:g}-{bot:g}:{k:.4g}")
+    text = ";".join(parts)
+    return text if len(text) <= 254 else None
