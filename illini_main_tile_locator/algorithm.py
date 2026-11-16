@@ -10,7 +10,9 @@ from qgis.core import (
     QgsField,
     QgsFields,
     QgsGeometry,
+    QgsLineString,
     QgsLineSymbol,
+    QgsPoint,
     QgsPointXY,
     QgsProcessing,
     QgsProcessingAlgorithm,
@@ -205,6 +207,7 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
     ADD_SUBMAINS = "ADD_SUBMAINS"
     MAX_SUBMAINS = "MAX_SUBMAINS"
     SUBMAINS = "SUBMAINS"
+    PROFILE_MAIN = "PROFILE_MAIN"
     N_CANDIDATES = 5          # the chosen main and four runners-up
 
     # ------------------------------------------------------------ metadata
@@ -276,6 +279,14 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
             "and the upper end where they are. The reshaped main is scored and buried again "
             "before any submains are added; mains made of straight lines are left as they "
             "are.</p>"
+            "<p><b>Chosen main in straight sections (for Tile Profile)</b>: the chosen main "
+            "as straight sections no shorter than the minimum section length (as it is, if it "
+            "is already straight), buried with Routine J, and written like the Drainage "
+            "network layer of Illini Subsurface Drain Layout so the Tile Profile plugin can "
+            "read it: one line per stretch between junctions, linked by from_node and "
+            "to_node, with the tile elevation as Z and the ground as M at every corner and "
+            "grade break, and the fields pipe_id, kind, pipe, invert_us/ds, ground_us/ds, "
+            "ElevDepth1/2, BuryDepth1/2, InSlope, OutSlope, BURY_CHECK and flag.</p>"
             "<p><b>Maximum lateral length.</b> By default it is the capacity of the lateral "
             "tile, from the maxLength routine (Table 6): the length a tile of the given inside "
             "diameter, slope and Manning's n can drain flowing full, for a strip one lateral "
@@ -324,7 +335,9 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
             self.SMOOTH_DIST, self.tr("Smoothing distance (when smoothed)"), D,
             defaultValue=200.0, minValue=1.0))
         self.addParameter(QgsProcessingParameterNumber(
-            self.MIN_SECTION, self.tr("Minimum section length (when straight sections)"), D,
+            self.MIN_SECTION,
+            self.tr("Minimum section length (straight sections, and the main for Tile Profile)"),
+            D,
             defaultValue=300.0, minValue=1.0))
         self.addParameter(QgsProcessingParameterBoolean(
             self.ADD_SUBMAINS,
@@ -434,6 +447,10 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterFeatureSink(
             self.CANDIDATES, self.tr("Candidate mains (chosen and four runners-up)"),
             QgsProcessing.TypeVectorLine))
+        self.addParameter(QgsProcessingParameterFeatureSink(
+            self.PROFILE_MAIN,
+            self.tr("Chosen main in straight sections (for Tile Profile)"),
+            QgsProcessing.TypeVectorLine, optional=True, createByDefault=True))
         self.addParameter(QgsProcessingParameterFeatureSink(
             self.SUBMAINS, self.tr("Submains (when added)"), QgsProcessing.TypeVectorLine,
             optional=True, createByDefault=True))
@@ -693,6 +710,60 @@ class MainTileLocatorAlgorithm(QgsProcessingAlgorithm):
         if context.willLoadLayerOnCompletion(cand_id):
             _POST[cand_id] = _CandidateStyler()
             context.layerToLoadOnCompletionDetails(cand_id).setPostProcessor(_POST[cand_id])
+
+        # ---------------------------------------------------- main for Tile Profile
+        pm = res.get("profile_main")
+        if parameters.get(self.PROFILE_MAIN) is not None and pm is None:
+            feedback.pushWarning(self.tr("The straight-section main for Tile Profile could "
+                                         "not be made."))
+        elif parameters.get(self.PROFILE_MAIN) is not None:
+            # the same fields as the Drainage network layer of Illini Subsurface Drain
+            # Layout, which Tile Profile reads: tile elevation as Z and ground as M at
+            # every vertex, in design units
+            pm_fields = fields([
+                ("id", Iv), ("pipe_id", Iv), ("kind", Sv), ("pipe", Sv), ("from_node", Iv),
+                ("to_node", Iv), ("ds_link", Iv), ("length", Dv), ("sections", Iv),
+                ("ground_us", Dv), ("ground_ds", Dv), ("terrain_grade_pct", Dv),
+                ("invert_us", Dv), ("invert_ds", Dv), ("design_grade_pct", Dv),
+                ("max_depth", Dv), ("min_depth", Dv), ("depth_ds", Dv),
+                ("ElevDepth1", Dv), ("BuryDepth1", Dv), ("ElevDepth2", Dv), ("BuryDepth2", Dv),
+                ("InSlope", Dv), ("OutSlope", Dv), ("BURY_CHECK", Sv), ("flag", Sv)])
+            psink, pm_id = self.parameterAsSink(parameters, self.PROFILE_MAIN, context,
+                                                pm_fields, QgsWkbTypes.LineStringZM, crs)
+            if psink is not None:
+                for ln in pm["lines"]:
+                    a = ln["attrs"]
+                    vals = {"id": a["id"], "pipe_id": a["pipe_id"], "kind": a["kind"],
+                            "pipe": a["pipe"], "from_node": a["from_node"],
+                            "to_node": a["to_node"], "ds_link": a["ds_link"],
+                            "length": L(a["length_m"]), "sections": a["sections"],
+                            "ground_us": L(a["ground_us"]), "ground_ds": L(a["ground_ds"]),
+                            "terrain_grade_pct": a["terrain_grade_pct"],
+                            "invert_us": L(a["invert_us"]), "invert_ds": L(a["invert_ds"]),
+                            "design_grade_pct": a["design_grade_pct"],
+                            "max_depth": L(a["max_depth_m"]), "min_depth": L(a["min_depth_m"]),
+                            "depth_ds": L(a["depth_ds_m"]),
+                            "ElevDepth1": L(a["invert_us"]),
+                            "BuryDepth1": L(a["ground_us"] - a["invert_us"]),
+                            "ElevDepth2": L(a["invert_ds"]),
+                            "BuryDepth2": L(a["ground_ds"] - a["invert_ds"]),
+                            "InSlope": a["in_slope"], "OutSlope": a["out_slope"],
+                            "BURY_CHECK": a["bury_check"], "flag": a["flag"]}
+                    f = QgsFeature(pm_fields)
+                    f.setGeometry(QgsGeometry(QgsLineString([
+                        QgsPoint(x / xf, y / xf, float(zt) / uf, float(gm) / uf)
+                        for (x, y), zt, gm in zip(ln["coords"], ln["tile_z"],
+                                                  ln["ground_m"])])))
+                    f.setAttributes([vals[pm_fields.at(i).name()]
+                                     for i in range(pm_fields.count())])
+                    psink.addFeature(f, QgsFeatureSink.FastInsert)
+                out[self.PROFILE_MAIN] = pm_id
+                feedback.pushInfo(self.tr(
+                    "Main for Tile Profile: {} straight sections, none shorter than {:g} {} "
+                    "except the link to the outlet; {} line(s); its laterals reach {:.1f}% of "
+                    "the drainable area.").format(
+                    pm["sections"], params.min_section / uf, u_lbl, len(pm["lines"]),
+                    pm["served_pct"]))
 
         # ---------------------------------------------------- submains
         if params.add_submains and parameters.get(self.SUBMAINS) is not None:

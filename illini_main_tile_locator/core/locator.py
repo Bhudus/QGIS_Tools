@@ -361,11 +361,15 @@ class MainLocator:
         if shaped is not best:
             scored.insert(0, shaped)
             best = shaped
+        self._progress(83, "Straight-section main for Tile Profile")
+        profile_main = self._profile_main(best)
         net = None
         if self.p.add_submains:
             net = self._add_submains(best)
         self._progress(96, "Summarising")
-        return self._results(best, scored, net)
+        res = self._results(best, scored, net)
+        res["profile_main"] = profile_main
+        return res
 
     # ------------------------------------------------------------ prepare
     def _prepare(self):
@@ -1034,6 +1038,123 @@ class MainLocator:
             self._warn("Reshaping the main changed the area its laterals reach by {:+.1f} "
                        "percentage points.".format(d))
         return out
+
+    def _profile_main(self, best):
+        """The chosen main as straight sections, laid out like the Drainage network
+        layer of Illini Subsurface Drain Layout, for the Tile Profile plugin.
+
+        One line per stretch between junctions (a second arm of a header joins
+        the main at the outlet end), digitised upstream -> downstream, with
+        from_node/to_node, the tile elevation and ground at every vertex: every
+        corner of the straight sections and every Routine J grade break.
+        """
+        p = self.p
+        if best["cand"]["curved"] and p.main_shape != SHAPE_SECTIONS:
+            sec = [straight_sections(a, p.min_section, self.hc) for a in best["arms_in"]]
+            ev = self._evaluate(best["cand"], sec)
+            if ev is None:
+                return None
+        else:
+            ev = best
+            sec = [np.asarray(a, dtype=float) for a in ev["arms_in"]]
+        pipes, jv = ev["pipes"], ev["jv"]
+        notes_by = {}
+        for r in ev["seg_rows"]:
+            notes_by.setdefault(r["arm"], []).append(r)
+
+        def exact_line(k):
+            e = straight_sections(sec[k], 0.0) if len(sec[k]) > 2 else sec[k]
+            e = np.asarray(e, dtype=float)
+            end = pipes[k]["pts"][-1]
+            if math.hypot(*(e[-1] - end)) > 1e-6:
+                e = np.vstack([e, [end]])              # connector to the outlet
+            return e
+
+        def arc_of(e, q):
+            """Arc position of point q on polyline e (nearest segment)."""
+            se = cumulative_length(e)
+            best_t, best_d = 0.0, float("inf")
+            for i in range(len(e) - 1):
+                a, b = e[i], e[i + 1]
+                ab = b - a
+                n2 = float(ab @ ab)
+                t = 0.0 if n2 < 1e-12 else min(1.0, max(0.0, float((q - a) @ ab) / n2))
+                d = math.hypot(*(a + t * ab - q))
+                if d < best_d:
+                    best_d, best_t = d, se[i] + t * math.sqrt(n2)
+            return best_t
+
+        nodes = {"outlet": 1}
+
+        def node(key):
+            if key not in nodes:
+                nodes[key] = len(nodes) + 1
+            return nodes[key]
+
+        names = ["main"] + ["main arm {}".format(k + 1) for k in range(1, len(pipes))]
+        lines = []
+        for k, pp in enumerate(pipes):
+            e = exact_line(k)
+            se = cumulative_length(e)
+            B = list(pp["B"])
+            cuts = [0, len(pp["pts"]) - 1]
+            if k == 0 and len(pipes) > 1 and 0 < jv < len(pp["pts"]) - 1:
+                cuts = [0, jv, len(pp["pts"]) - 1]
+            # grade breaks at their arc positions on the exact line
+            gb = [(arc_of(e, pp["pts"][i]), i) for i in B]
+            gb_s = np.array([t for t, _ in gb])
+            gb_inv = np.array([pp["inv"][i] for _, i in gb])
+            for a, b in zip(cuts[:-1], cuts[1:]):
+                ta, tb = arc_of(e, pp["pts"][a]), arc_of(e, pp["pts"][b])
+                ts = sorted({t for t, i in gb if a <= i <= b}
+                            | {float(t) for t in se if ta + 1e-6 < t < tb - 1e-6})
+                xy = np.column_stack([np.interp(ts, se, e[:, 0]), np.interp(ts, se, e[:, 1])])
+                tile = np.interp(ts, gb_s, gb_inv)
+                ground = self.ground(xy)
+                L = float(cumulative_length(xy)[-1]) if len(xy) > 1 else 0.0
+                if L <= 0:
+                    continue
+                depth = ground - tile
+                ins = float(tile[0] - tile[-1]) / L
+                notes = []
+                for r in notes_by.get(k, []):
+                    if r["up"] >= a and r["dn"] <= b:
+                        for t in r["notes"]:
+                            if t not in notes:
+                                notes.append(t)
+                flags = []
+                if float(depth.max()) > p.max_depth + 0.01:
+                    flags.append("deeper than " + self._fmt(p.max_depth, 2))
+                if float(depth.min()) < p.min_cover - 0.01:
+                    flags.append("cover under " + self._fmt(p.min_cover, 2))
+                to_key = ("arm", k, b) if b != len(pp["pts"]) - 1 else (
+                    "outlet" if k == 0 else ("arm", 0, jv))
+                corners = sum(1 for t in se if ta + 1e-6 < t < tb - 1e-6)
+                lines.append({"coords": xy, "tile_z": tile, "ground_m": ground, "attrs": {
+                    "pipe_id": k + 1, "kind": "main" if k == 0 else "submain",
+                    "pipe": names[k],
+                    "from_node": node(("arm", k, a)), "to_node": node(to_key),
+                    "length_m": round(L, 3), "sections": corners + 1,
+                    "ground_us": round(float(ground[0]), 3),
+                    "ground_ds": round(float(ground[-1]), 3),
+                    "terrain_grade_pct": round(100 * float(ground[0] - ground[-1]) / L, 3),
+                    "invert_us": round(float(tile[0]), 3),
+                    "invert_ds": round(float(tile[-1]), 3),
+                    "design_grade_pct": round(100 * ins, 3),
+                    "max_depth_m": round(float(depth.max()), 3),
+                    "min_depth_m": round(float(depth.min()), 3),
+                    "depth_ds_m": round(float(depth[-1]), 3),
+                    "in_slope": round(ins, 6),
+                    "out_slope": round(min(max(ins, p.min_main_grade), p.max_grade), 6),
+                    "bury_check": "; ".join(notes) or "OK",
+                    "flag": "; ".join(flags)}})
+        out_of = {L["attrs"]["from_node"]: i for i, L in enumerate(lines)}
+        for i, L in enumerate(lines):
+            j = out_of.get(L["attrs"]["to_node"])
+            L["attrs"]["id"] = i + 1
+            L["attrs"]["ds_link"] = j + 1 if j is not None else 0
+        return {"lines": lines, "served_pct": ev["served_pct"],
+                "sections": sum(L["attrs"]["sections"] for L in lines)}
 
     def _trim(self, ev):
         """Shorten the upstream end of each arm while that raises the score."""

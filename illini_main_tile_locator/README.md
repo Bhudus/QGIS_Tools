@@ -39,7 +39,7 @@ The plugin is also listed under **Raster → Tile Drainage**, a menu shared by t
 | Lateral shape | *Bend with the terrain* (follow the contours, or the fall line; default) or *Straight* (on the field's dominant contour or fall bearing). |
 | Shape of the chosen main, if it is curved | *As located* (default), *Smoothed* or *Straight sections of a minimum length*. Applies only when the chosen main follows the low ground, the fall line or the contours; straight mains are left alone. |
 | Smoothing distance | Default 200 ft. Width of the Gaussian used to smooth the main along its length; larger is smoother. |
-| Minimum section length | Default 300 ft. Each straight section is at least this long; the sections chosen are those that follow the curve most closely. |
+| Minimum section length | Default 300 ft. Each straight section is at least this long; the sections chosen are those that follow the curve most closely. Also used for the *Chosen main in straight sections* layer. |
 | Add submains to cover the field | Off by default. When on, submains are added to the chosen main until no further submain is worth adding (see below). |
 | Main alignment | *Best of all candidates* (default), *Bend with the terrain only*, or *Straight lines only*. |
 | Design units | Feet (default) or metres, for every length, depth and output. |
@@ -149,6 +149,27 @@ dashed, and every candidate is labelled with its rank.
 | `score` | Served hectares after the length and burying costs. |
 
 The log summarises the result and lists warnings.
+
+**Chosen main in straight sections (for Tile Profile)**: the chosen main as
+straight sections no shorter than the *Minimum section length* (as it is, if it
+is already made of straight lines; the short link to the outlet across the
+boundary setback can be shorter), buried with Routine J. It is written like the
+**Drainage network** layer of Illini Subsurface Drain Layout, so the **Tile
+Profile** plugin picks it up and draws its profile as soon as you select it:
+
+- a LineStringZM layer with the tile elevation as Z and the ground as M, in
+  design units, at every section corner and every Routine J grade break;
+- one line per stretch between junctions, digitised upstream to downstream and
+  linked by `from_node` → `to_node` (a header's second arm joins the main where
+  it reaches the outlet end, and shows as a tributary on the main's profile);
+- the fields `id`, `pipe_id`, `kind`, `pipe`, `from_node`, `to_node`, `ds_link`,
+  `length`, `sections`, `ground_us/ds`, `terrain_grade_pct`, `invert_us/ds`,
+  `design_grade_pct`, `max_depth`, `min_depth`, `depth_ds`, `ElevDepth1/2`,
+  `BuryDepth1/2`, `InSlope`, `OutSlope`, `BURY_CHECK` and `flag`.
+
+The log gives the number of sections and the share of the field its laterals
+reach. The *Shape of the chosen main* setting does not change this layer, only
+the chosen main in the Candidate mains layer.
 
 **Submains** (only when *Add submains to cover the field* is on): one line per
 submain, digitised from its upper end to where it joins, drawn orange and
