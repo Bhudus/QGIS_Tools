@@ -213,6 +213,65 @@ def year_of(text):
     return max(years) if years else 0
 
 
+def project_year(name):
+    """Collection year of a USGS 3DEP project from its name.
+
+    'USGS_LPC_IL_DOT_District5_DewittCo_2012_LAS_2017' -> 2012 (LAS_2017 is when the
+    LAS was reprocessed, not flown); 'IL_8County_2020_D20' -> 2020; work units named
+    only by their delivery year, such as 'IL_MidNorth_3_D22' -> 2022."""
+    name = str(name or "")
+    core = re.sub(r"(?i)LAS_(?:19|20)\d\d", "", name)
+    years = [int(y) for y in re.findall(r"(?<!\d)((?:19|20)\d\d)(?!\d)", core)]
+    if years:
+        return max(years)
+    m = re.search(r"(?i)(?:^|_)D(\d{2})(?:_|$)", name)
+    if m:
+        return 2000 + int(m.group(1))
+    return 0
+
+
+def fixed_boundary(parameters, key, source, context, feedback):
+    """Run QGIS's 'Fix geometries' on the boundary layer first.
+
+    Returns (geometries, CRS). If the tool cannot run, the original features are
+    used; valid_polygon() still repairs the merged outline afterwards."""
+    from qgis.core import QgsProcessingUtils
+    try:
+        res = processing.run("native:fixgeometries",
+                             {"INPUT": parameters[key], "OUTPUT": "TEMPORARY_OUTPUT"},
+                             context=context, feedback=None, is_child_algorithm=True)
+        lyr = QgsProcessingUtils.mapLayerFromString(res["OUTPUT"], context)
+        if lyr is not None and lyr.isValid():
+            geoms = [f.geometry() for f in lyr.getFeatures()
+                     if f.hasGeometry() and not f.geometry().isEmpty()]
+            if geoms:
+                feedback.pushInfo("Ran Fix geometries on the boundary (%d feature(s))"
+                                  % len(geoms))
+                return geoms, lyr.crs()
+    except Exception as e:
+        feedback.pushInfo("Fix geometries could not run (%s); using the boundary as is" % e)
+    geoms = [f.geometry() for f in source.getFeatures() if f.hasGeometry()]
+    return geoms, source.sourceCrs()
+
+
+def valid_polygon(g):
+    """Repair an invalid polygon (self-intersections, touching rings, as in
+    watershed outlines traced from raster cells) so GDAL accepts it as a cutline."""
+    if g is None or g.isEmpty() or g.isGeosValid():
+        return g
+    fixed = g.makeValid()
+    if fixed is None or fixed.isEmpty():
+        fixed = g
+    if fixed.type() != QgsWkbTypes.PolygonGeometry or not fixed.isGeosValid():
+        parts = [p for p in fixed.asGeometryCollection()
+                 if p.type() == QgsWkbTypes.PolygonGeometry] \
+            if fixed.isMultipart() or fixed.type() != QgsWkbTypes.PolygonGeometry else [fixed]
+        fixed = QgsGeometry.unaryUnion(parts) if parts else g.buffer(0, 8)
+    if not fixed.isGeosValid():
+        fixed = fixed.buffer(0, 8)
+    return fixed
+
+
 def srs_string(crs):
     """A non-empty SRS string PDAL/PROJ understands: EPSG code, else WKT2, else PROJ."""
     if crs is None or not crs.isValid():
@@ -649,11 +708,13 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
         feedback.pushInfo("PDAL: %s" % pdal_exe)
 
         # ---- field geometry (all / selected features dissolved) ----
-        geoms = [f.geometry() for f in source.getFeatures() if f.hasGeometry()]
+        geoms, field_crs = fixed_boundary(parameters, self.INPUT, source, context, feedback)
         if not geoms:
             raise QgsProcessingException("The field layer has no polygons.")
         field = QgsGeometry.unaryUnion(geoms)
-        field_crs = source.sourceCrs()
+        if not field.isGeosValid():
+            feedback.pushInfo("The boundary had self-intersections; repaired it.")
+            field = valid_polygon(field)
         field_wgs = QgsGeometry(field)
         field_wgs.transform(QgsCoordinateTransform(field_crs, WGS84, context.transformContext()))
         c = field_wgs.centroid().asPoint()
@@ -704,6 +765,7 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
         # field and buffered field in output CRS
         field_out = QgsGeometry(field)
         field_out.transform(QgsCoordinateTransform(field_crs, out_crs, context.transformContext()))
+        field_out = valid_polygon(field_out)     # reprojection can create tiny overlaps
         upm = metres_per_unit(out_crs)                    # metres per output CRS unit
         if out_crs.isGeographic():
             raise QgsProcessingException("Choose a projected output CRS (not lat/long).")
@@ -762,6 +824,7 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
         field_only_out = QgsGeometry(field_only)
         field_only_out.transform(QgsCoordinateTransform(field_crs, out_crs,
                                                         context.transformContext()))
+        field_only_out = valid_polygon(field_only_out)
         lo, hi = self._field_percentiles(raw_dem, field_only_out)
         results[self.ELEV_LOW], results[self.ELEV_HIGH] = lo, hi
         z_factor = hillshade_z_factor(z_target_m, upm)
@@ -1051,6 +1114,11 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
             "KEEP_RESOLUTION": True, "OPTIONS": "COMPRESS=DEFLATE|TILED=YES",
             "DATA_TYPE": 6, "OUTPUT": dest,
         }, context=context, feedback=feedback, is_child_algorithm=True)
+        if not os.path.exists(dest):
+            raise QgsProcessingException(
+                "Clipping the DEM to the boundary failed (see the GDAL message above). "
+                "If it mentions an invalid cutline, run 'Fix geometries' (Processing "
+                "Toolbox > Vector geometry) on the boundary layer and try again.")
 
     @staticmethod
     def _fill_raster(src, dest, cell, min_slope, z_per_xy, feedback, xy_unit_m=FT_US,
@@ -1115,7 +1183,7 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
         if not crs.authid():
             lyr.setCrs(crs)
         f = QgsFeature()
-        f.setGeometry(geom)
+        f.setGeometry(valid_polygon(geom))
         lyr.dataProvider().addFeatures([f])
         opts = QgsVectorFileWriter.SaveVectorOptions()
         opts.driverName = "GPKG"
@@ -1441,17 +1509,17 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
                 continue
             nm = ft["name"] if "name" in names else ""
             url = ft["url"] if "url" in names and ft["url"] else USGS_EPT_BASE + nm + "/ept.json"
-            hits.append({"name": nm, "url": url, "year": year_of(nm)})
+            hits.append({"name": nm, "url": url, "year": project_year(nm)})
             feedback.pushInfo("  found: %s" % nm)
         if not hits:
             raise QgsProcessingException("No USGS 3DEP point clouds cover this field.")
         if year_req:
-            hits = [h for h in hits if year_req in h["name"]]
+            hits = [h for h in hits if year_req == str(h["year"]) or year_req in h["name"]]
             if not hits:
                 raise QgsProcessingException("No 3DEP project for year %s here." % year_req)
         best = max(h["year"] for h in hits)
         use = [h for h in hits if h["year"] == best]
-        others = sorted({h["year"] for h in hits if h["year"] != best}, reverse=True)
+        others = sorted({h["year"] for h in hits if h["year"] not in (best, 0)}, reverse=True)
         if others:
             feedback.pushInfo("Other years available here: %s" % ", ".join(map(str, others)))
 

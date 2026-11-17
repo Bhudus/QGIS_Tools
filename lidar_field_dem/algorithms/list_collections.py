@@ -16,6 +16,7 @@ from qgis.core import (
 )
 
 from .collections import describe, field_to_wgs, list_collections
+from .field_dem import fixed_boundary
 
 
 class ListLidarCollections(QgsProcessingAlgorithm):
@@ -56,8 +57,8 @@ class ListLidarCollections(QgsProcessingAlgorithm):
 
     def processAlgorithm(self, parameters, context, feedback):
         source = self.parameterAsSource(parameters, self.INPUT, context)
-        geoms = [f.geometry() for f in source.getFeatures() if f.hasGeometry()]
-        field_wgs = field_to_wgs(geoms, source.sourceCrs(), context.transformContext())
+        geoms, crs = fixed_boundary(parameters, self.INPUT, source, context, feedback)
+        field_wgs = field_to_wgs(geoms, crs, context.transformContext())
 
         rows = list_collections(field_wgs, feedback)
 

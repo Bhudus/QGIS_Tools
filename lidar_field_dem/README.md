@@ -53,7 +53,7 @@ The outline is added to the map as a temporary layer, **Traced field boundary**,
 ## Parameters
 | Parameter | Default | Notes |
 |---|---|---|
-| Field boundary | – | Polygon layer; all (or selected) features are merged into one field. |
+| Field boundary | – | Polygon layer; all (or selected) features are merged into one field. QGIS's *Fix geometries* is run on it first, so self-intersecting outlines (e.g. StreamStats watersheds) work as they are. |
 | LiDAR source | Automatic | Automatic = ISGS in Illinois, USGS 3DEP elsewhere. A field outside Illinois always uses 3DEP, even if ISGS is chosen. "In Illinois" is checked against ISGS's LiDAR coverage. |
 | Collection year | blank | Blank = most recent. Use *Find collections* to see the years available. |
 | DEM cell size | blank | In US survey feet. Blank = 10 × the LiDAR's native cell size: the ISGS DTM cell size for that collection (2 ft for Champaign 2020, so 20 ft), or 1 m for 3DEP (so 32.8 ft). The native size falls back to an estimate from point spacing. |

@@ -26,6 +26,8 @@ from .field_dem import (
     cache_dir,
     download_to,
     http_get,
+    project_year,
+    valid_polygon,
     year_of,
 )
 
@@ -34,7 +36,7 @@ def field_to_wgs(geoms, crs, transform_context=None):
     """Union of the field polygons, in WGS84."""
     if not geoms:
         raise QgsProcessingException("The field layer has no polygons.")
-    g = QgsGeometry.unaryUnion(geoms)
+    g = valid_polygon(QgsGeometry.unaryUnion(geoms))
     tc = transform_context or QgsCoordinateTransformContext()
     g.transform(QgsCoordinateTransform(crs, WGS84, tc))
     return g
@@ -119,7 +121,7 @@ def list_usgs(field_wgs, feedback):
         if not g.intersects(field_wgs):
             continue
         nm = ft["name"] if "name" in names else ""
-        y = year_of(nm)
+        y = project_year(nm)
         out.append({
             "source": "USGS 3DEP",
             "collection": nm,
