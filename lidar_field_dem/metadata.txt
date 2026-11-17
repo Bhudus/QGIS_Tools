@@ -7,10 +7,11 @@ about=Given a field boundary, finds the LiDAR covering it and builds a bare-eart
     USGS 3DEP (any U.S. state): streams the field's points from the public AWS Entwine Point Tile archive.
     Ground points are triangulated and rasterized with PDAL, then clipped to the field plus a 100 ft margin with GDAL. Optionally also writes a DEM with sinks filled by the Wang & Liu (2006) method.
     Requires the PDAL command-line program (for example from the OSGeo4W installer).
-version=0.4.4
+version=0.4.5
 author=Richard Cooke
 email=raccooke@gmail.com
-changelog=0.4.4 - Runs QGIS Fix geometries on the boundary layer before anything else.
+changelog=0.4.5 - Filled DEM (Wang & Liu) is built by default; hillshade layer is off by default.
+    0.4.4 - Runs QGIS Fix geometries on the boundary layer before anything else.
     0.4.3 - Repairs self-intersecting boundaries (e.g. StreamStats watersheds) instead of silently producing no DEM; a failed clip now stops the run. USGS 3DEP collection years read correctly (IL_MidNorth_3_D22 = 2022; ..._2012_LAS_2017 = 2012), so the newest data is used.
     0.4.2 - Large areas (watersheds) are gridded tile by tile, so PDAL no longer runs out of memory; clearer message if PDAL crashes.
     0.4.1 - DEM colors (hypsometric, greens, tan/brown) stretched to the field, with hillshade, as in Depressions and Laylines.

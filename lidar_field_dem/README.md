@@ -34,7 +34,7 @@ The same list is available as a Processing tool, **LiDAR Field DEM → LiDAR →
 The window never freezes QGIS:
 
 - **Find collections** searches in the background; you can keep working while it runs.
-- **Build in background** runs the DEM as a QGIS task with the default settings, using the selected collection (or the most recent if none is selected). Tick **Also fill sinks (Wang & Liu)** to get the filled DEM too, and choose **Save to folder** to keep the results as `<field>_<source>_<year>_dem.tif` (and `_dem_filled.tif`); leave it blank for temporary layers.
+- **Build in background** runs the DEM as a QGIS task with the default settings, using the selected collection (or the most recent if none is selected). **Also fill sinks (Wang & Liu)** is ticked by default, so the filled DEM is built too, and choose **Save to folder** to keep the results as `<field>_<source>_<year>_dem.tif` (and `_dem_filled.tif`); leave it blank for temporary layers.
 - Close the window, keep working, or start more fields; each run shows in the task bar at the bottom of QGIS, where it can be canceled. The DEM is added to the map with a message when it is done.
 - The run's log goes to **View → Panels → Log Messages**, on the *LiDAR Field DEM* tab.
 
@@ -64,18 +64,18 @@ The outline is added to the map as a temporary layer, **Traced field boundary**,
 | Output CRS | blank | Illinois: EPSG:3435 (NAD83 / Illinois East, ftUS) or EPSG:3436 (West). The zone comes from the ISGS data; for 3DEP it's estimated from longitude (~89.1° W). Outside Illinois: NAD83 UTM zone. |
 | Elevation units | Feet (US) | Or meters. |
 | Save clipped ground points | off | Writes `<dem>_ground.laz` next to the DEM. |
-| Also produce a DEM with sinks filled (Wang & Liu) | off | Writes a second DEM in which every depression is filled so each cell drains to the DEM's edge. |
+| Also produce a DEM with sinks filled (Wang & Liu) | on | Writes a second DEM in which every depression is filled so each cell drains to the DEM's edge. |
 | Minimum slope across filled sinks | 0.06° | Keeps a slight gradient over filled areas so flow directions are defined; 0 gives flat fills. |
 | Filled DEM | blank | Where the filled DEM is saved. Blank = `<dem>_filled.tif` next to the DEM. |
 | DEM color scheme | Hypsometric | Colors the DEM when it is added to the map: Hypsometric (green – yellow – brown), Greens, Tan / brown, or don't color. Stretched over the field's elevations (2nd–98th percentile). |
-| Add a hillshade over the DEM colors | on | A shaded-relief layer just above the DEM, multiplied at 45% with 3× vertical exaggeration. |
+| Add a hillshade over the DEM colors | off | A shaded-relief layer just above the DEM, multiplied at 45% with 3× vertical exaggeration. |
 | PDAL executable | blank | Auto-detected; set the full path if not found. |
 
 ## Filling sinks (Wang & Liu)
-Tick **Also produce a DEM with sinks filled (Wang & Liu)** to get a second DEM for flow routing and watershed work. Filling follows Wang, L. and Liu, H. (2006), *An efficient method for identifying and filling surface depressions in digital elevation models for hydrologic analysis and modelling*, IJGIS 20(2): 193–213: a priority queue grows inward from the outlets (the edge of the DEM and any NoData) in order of spill elevation, raising each cell to at least the level of the cell it was reached from plus the minimum-slope rise. The fill runs on the DEM plus its interpolation buffer, then is clipped like the DEM, so water can leave across the field margin. The log reports how many cells were raised, the deepest fill and the filled volume. It needs no SAGA install.
+**Also produce a DEM with sinks filled (Wang & Liu)** is on by default; it produces a second DEM for flow routing and watershed work. Filling follows Wang, L. and Liu, H. (2006), *An efficient method for identifying and filling surface depressions in digital elevation models for hydrologic analysis and modelling*, IJGIS 20(2): 193–213: a priority queue grows inward from the outlets (the edge of the DEM and any NoData) in order of spill elevation, raising each cell to at least the level of the cell it was reached from plus the minimum-slope rise. The fill runs on the DEM plus its interpolation buffer, then is clipped like the DEM, so water can leave across the field margin. The log reports how many cells were raised, the deepest fill and the filled volume. It needs no SAGA install.
 
 ## DEM colors and hillshade
-The DEM is colored when it is added to the map, with the same scheme as the Depressions and Laylines plugin. **Hypsometric** (default) runs green on low ground through yellow and tan to brown on high ground, which leaves blue free for depressions and laylines drawn on top. The colors are stretched over the field's own elevations (2nd to 98th percentile), so the 100 ft margin and odd edge cells don't wash out the field; the log reports that range. **Hillshade** (on by default) adds a layer named *Hillshade – <DEM>* directly above the DEM, multiplied at 45% opacity with 3× vertical exaggeration, to show micro-relief such as swales and old furrows. The filled DEM gets the same colors and stretch, without a hillshade. DEMs from **Build in background** are colored the same way.
+The DEM is colored when it is added to the map, with the same scheme as the Depressions and Laylines plugin. **Hypsometric** (default) runs green on low ground through yellow and tan to brown on high ground, which leaves blue free for depressions and laylines drawn on top. The colors are stretched over the field's own elevations (2nd to 98th percentile), so the 100 ft margin and odd edge cells don't wash out the field; the log reports that range. **Hillshade** (off by default; tick it to add one) adds a layer named *Hillshade – <DEM>* directly above the DEM, multiplied at 45% opacity with 3× vertical exaggeration, to show micro-relief such as swales and old furrows. The filled DEM gets the same colors and stretch, without a hillshade. DEMs from **Build in background** are colored the same way, without a hillshade.
 
 ## Cache
 Tile indexes, downloaded LAS tiles and the 3DEP project index are cached in

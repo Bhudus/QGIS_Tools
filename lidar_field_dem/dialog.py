@@ -145,6 +145,7 @@ class CollectionsDialog(QDialog):
         bg = QHBoxLayout()
         bg.addWidget(QLabel("Background run:"))
         self.bg_fill = QCheckBox("Also fill sinks (Wang & Liu)")
+        self.bg_fill.setChecked(True)
         bg.addWidget(self.bg_fill)
         bg.addWidget(QLabel("Save to folder:"))
         self.bg_folder = QgsFileWidget()
@@ -462,7 +463,7 @@ class CollectionsDialog(QDialog):
         lo = (results or {}).get("ELEV_LOW")
         hi = (results or {}).get("ELEV_HIGH")
         for key, title, shade in (("FILLED", "Filled DEM (Wang & Liu)", False),
-                                  ("OUTPUT", "Bare-earth DEM", True)):
+                                  ("OUTPUT", "Bare-earth DEM", False)):
             path = (results or {}).get(key)
             if path and os.path.exists(path):
                 rl = QgsRasterLayer(path, "%s - %s" % (title, name))

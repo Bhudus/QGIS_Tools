@@ -604,14 +604,14 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
             "acres), and above that averages the ground points in each cell one tile at a "
             "time, which keeps memory low for watersheds and large farms. Cells with no "
             "ground points (buildings, water) are then filled from their neighbours.\n"
-            "Fill sinks (Wang & Liu): also writes a DEM in which every depression is filled so "
+            "Fill sinks (Wang & Liu, on by default): also writes a DEM in which every depression is filled so "
             "that each cell drains to the DEM's edge. Minimum slope (degrees) keeps a slight "
             "gradient across filled areas; 0 gives flat fills.\n"
             "DEM color scheme: the DEM is colored when it is added to the map. Hypsometric "
             "(default) runs green on low ground through yellow and tan to brown on high "
             "ground. The colors are stretched over the field's elevations (2nd to 98th "
             "percentile), so the margin and odd edge cells don't wash out the field. "
-            "Hillshade (on by default) adds a shaded-relief layer just above the DEM, "
+            "Hillshade (off by default) adds a shaded-relief layer just above the DEM, "
             "multiplied at 45% with 3x vertical exaggeration, to show micro-relief such as "
             "swales and old furrows. The filled DEM gets the same colors, without a "
             "hillshade.\n"
@@ -656,7 +656,7 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
             defaultValue=False))
         self.addParameter(QgsProcessingParameterBoolean(
             self.FILL, self.tr("Also produce a DEM with sinks filled (Wang & Liu)"),
-            defaultValue=False))
+            defaultValue=True))
         self.addParameter(QgsProcessingParameterNumber(
             self.MINSLOPE, self.tr("Minimum slope across filled sinks (degrees, 0 = flat)"),
             QgsProcessingParameterNumber.Double, defaultValue=0.06, minValue=0.0, maxValue=5.0))
@@ -664,7 +664,7 @@ class LidarFieldDEM(QgsProcessingAlgorithm):
             self.COLOR_DEM, self.tr("DEM color scheme"), options=SCHEMES, defaultValue=0))
         self.addParameter(QgsProcessingParameterBoolean(
             self.HILLSHADE, self.tr("Add a hillshade over the DEM colors"),
-            defaultValue=True))
+            defaultValue=False))
         self.addParameter(QgsProcessingParameterString(
             self.PDAL, self.tr("PDAL executable (blank = auto-detect)"),
             defaultValue="", optional=True))
