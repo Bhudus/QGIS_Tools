@@ -24,6 +24,7 @@ from qgis.PyQt.QtWidgets import (
     QRadioButton,
     QSpinBox,
     QSplitter,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -229,7 +230,13 @@ class TileSizeDock(QDockWidget):
         row4.addWidget(self.reload_btn)
         row4.addWidget(self.apply_btn)
         v.addLayout(row4)
-        self.setWidget(w)
+        from .bom_panel import BomPanel
+        self.tabs = QTabWidget()
+        self.tabs.addTab(w, "Pipe sizes")
+        self.bom = BomPanel(self)
+        self.tabs.addTab(self.bom, "Bill of materials")
+        self.tabs.currentChanged.connect(self._tab_changed)
+        self.setWidget(self.tabs)
 
         self.band = QgsRubberBand(self.canvas, LINE_GEOMETRY)      # the picked pipe
         self.band.setColor(QColor(255, 196, 0, 170))
@@ -321,7 +328,10 @@ class TileSizeDock(QDockWidget):
         if self.layer is not None:
             names = self.layer.fields().names()
             for f in self.layer.getFeatures():
-                self.records.append({"fid": f.id(),
+                g = f.geometry()
+                xy = ([(p.x(), p.y()) for p in g.vertices()]
+                      if g is not None and not g.isEmpty() else [])
+                self.records.append({"fid": f.id(), "xy": xy,
                                      "attrs": {n: _value(f[n]) for n in names}})
         self.labels = {pipe_key(r["attrs"], r["fid"]): pipe_label(r["attrs"])
                        for r in self.records}
@@ -400,6 +410,8 @@ class TileSizeDock(QDockWidget):
         self._fill_sizes()
         self._fill_pipes()
         self._fill_sections()
+        if getattr(self, "tabs", None) is not None and self.tabs.currentIndex() == 1:
+            self.bom.refresh()
 
     def _fill_sizes(self):
         s = self.summary
@@ -431,6 +443,16 @@ class TileSizeDock(QDockWidget):
         self.pipes.resizeColumnsToContents()
         self.clear_btn.setEnabled(bool(self.overrides or self.sections))
         self._show_band(self.set_band, keys)
+
+    def _tab_changed(self, index, *args):
+        if index == 1:
+            self.bom.refresh()
+
+    def bom_input(self):
+        """The network's lines (with their vertices) and the sizes shown on the Pipe
+        sizes tab, {fid: (nominal, pipe type)}, for the bill of materials."""
+        sizes = {r["fid"]: (r["new"]["NOMINAL"], r["new"]["PIPE_TYPE"]) for r in self.rows}
+        return self.records, sizes
 
     def _material(self):
         """The one pipe type for every line, or None for each line's own (PIPE_TYPE)."""

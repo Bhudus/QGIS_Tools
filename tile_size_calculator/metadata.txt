@@ -1,9 +1,9 @@
 [general]
 name=Tile Size Calculator
 qgisMinimumVersion=3.34
-description=Set drainage coefficients (one value, by Strahler order or pipe by pipe) and pipe types (for the network or section by section) and resize the pipes of an Illini Subsurface Drain Layout network with Routine K.
+description=Bill of materials, cost estimate and printable quote, and set drainage coefficients (one value, by Strahler order or pipe by pipe) and pipe types (for the network or section by section) and resize the pipes of an Illini Subsurface Drain Layout network with Routine K.
 about=Works on the Drainage network layer of Illini Subsurface Drain Layout. Choose one drainage coefficient for every line, one per Strahler order (TILE_ORDER), or click pipes on the map and give each its own; set the pipe type for the whole network or for single sections of a pipe, such as part of the main; the panel shows at once how the pipe sizes change (length by nominal size, now and after), and Apply to layer writes D_COEFF, PIPE_TYPE, CUM_SEG_FLOW, ACTUAL_SIZE, NOMINAL and D_AREA as one undoable edit. Sizing follows Routine K of the Illini Drainage Tools (Manning's equation for a full pipe, flow = FLOW_LENGTH x drain spacing x coefficient), as in Illini Subsurface Drain Layout. Uses only QGIS.
-version=0.1.0
+version=0.2.0
 author=Richard Cooke and Anamelechi Falasy
 email=raccooke@gmail.com
 
@@ -11,8 +11,9 @@ tracker=https://github.com/Bhudus/QGIS_Tools/issues
 repository=https://github.com/Bhudus/QGIS_Tools
 homepage=https://bhudus.github.io/QGIS_Tools/
 
-changelog=0.1.0 - First release: one coefficient, by Strahler order or pipe by pipe; pipe type for the network or section by section; preview of the sizes; Apply to layer.
-tags=drainage,tile,subsurface,pipe,sizing,drainage coefficient,illini
+changelog=0.2.0 - Bill of materials and cost estimate: pipe by size and type, tees and wyes by joining angle, reducers, elbows, end caps, outlet pipe, rodent guard, structures, installation and mobilization, priced from an editable price table (CSV import and export, NRCS practice codes), with markup and tax; Bill of materials and Fittings layers, CSV, and a print layout (built-in two-page quote or your template through Layout from Template).
+    0.1.0 - First release: one coefficient, by Strahler order or pipe by pipe; pipe type for the network or section by section; preview of the sizes; Apply to layer.
+tags=drainage,tile,subsurface,pipe,sizing,drainage coefficient,illini,bill of materials,cost estimate,quote,EQIP
 category=Vector
 icon=icon.png
 experimental=True

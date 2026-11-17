@@ -6,7 +6,10 @@ resizes its pipes. Choose one coefficient for every line, one per Strahler
 order, or click pipes on the map and give each its own; choose the pipe type
 for the whole network or section by section (for example smooth wall on part
 of the main); the panel shows at once how the pipe sizes change, and **Apply
-to layer…** writes the new sizes.
+to layer…** writes the new sizes. The **Bill of materials** tab turns the
+network into a priced bill (pipe by size, tees, wyes, reducers, end caps,
+outlet pipe, rodent guard, structures and installation) from a price table you
+edit, and makes a print layout for a quote or an EQIP package.
 
 Requires QGIS 3.34 LTR or newer. Uses only QGIS.
 
@@ -65,6 +68,73 @@ in the project by itself; choose another under **Network**.
 The coefficient, the pipe type, the option and the per-order values are
 remembered between sessions; pipe coefficients and section types are kept in
 the layer once applied.
+
+## Bill of materials and cost estimate
+
+The **Bill of materials** tab lists what the network needs, with the pipe sizes
+shown on the Pipe sizes tab (applied or not), and prices it.
+
+**Quantities** come from the network layer:
+
+| Item | How it is counted |
+|---|---|
+| Pipe | Length of each pipe type and nominal size, plus the **Waste** allowance. |
+| Tee, wye | One where each pipe joins another, sized run × branch (run: the pipe downstream of the junction). A pipe joining at up to 67.5° to the run is a wye, otherwise a tee. |
+| Reducer | Where the run changes size at a junction or along a pipe, sized large × small. |
+| Elbow | Where a pipe starts at a junction and the pipe carried on into it turns more than 22.5°. |
+| End cap | At the upper end of every pipe. |
+| Outlet pipe (rigid) | **Outlet pipe** length (default 20 ft; 0 for none) of the outlet size. |
+| Rodent guard | One of the outlet size, if ticked. |
+| Installation | Length of tile of each size, if **Installation** is ticked, priced per length. |
+| Structures, mobilization | The numbers you enter: inspection ports, water control structures, surface inlets, mobilization. |
+
+Lengths are in the units of the layer's length field (**Lengths in**: ft or m).
+
+**Prices** come from the price table on the right, which you edit like a
+spreadsheet; it is kept between sessions. Each row prices every item of its
+category and item with that size; a fitting without a row of its own size takes
+the row of its run size (a 6 × 4 in tee takes "Tee, 6 in"), and size `*` covers
+every size. Rows the bill needs are added with no price, and the bill shows
+"no price" until you fill them in. The table starts empty of prices: enter your
+own, or **Import prices…** from a CSV file with the columns category, item,
+size, unit, price and (optionally) practice; **Export prices…** writes one to
+edit or share. **Practice** is the NRCS conservation practice code: 606
+Subsurface Drain for pipe, fittings, outlet and installation and 587 Structure
+for Water Control for water control structures by default; change any of them.
+
+Below the tables: the subtotal, **Markup** and **Tax** (on the subtotal plus
+markup), the total, and the total of each practice for an EQIP application.
+
+**Outputs:**
+
+- **Add to map** adds a *Bill of materials* table layer (the priced lines and
+  the totals) and a *Fittings* point layer (tees, wyes, reducers, elbows, end
+  caps and the outlet, labelled) in a *Tile Size Calculator* group, replacing
+  the ones made before.
+- **Save bill…** writes the bill as a CSV file, with the project details at the
+  top.
+- **Print layout…** adds the layers and makes a print layout, opened in the
+  layout designer to adjust and export to PDF:
+  - With no template, a ready-made quote on US Letter: page 1, a landscape
+    plan of the network and fittings with legend, scale bar, north arrow,
+    project details and the total; page 2, the bill of materials and cost
+    estimate (more pages if the table runs on).
+  - With your own template (.qpt, chosen beside the button), the layout is
+    made by the [Layout from Template](../layout_from_template/) plugin when
+    it is installed (it fits the map to the network and sets the title), else
+    loaded directly. An attribute table whose frame has the item ID
+    `bom_table` is filled with the bill, and labels can show the project
+    details and totals with `[% @tsc_project %]`, `@tsc_client`,
+    `@tsc_prepared_by`, `@tsc_date`, `@tsc_notes`, `@tsc_subtotal`,
+    `@tsc_markup`, `@tsc_tax` and `@tsc_total`. An easy way to make one: print
+    the built-in quote, change it in the layout designer (logo, colours, terms
+    and conditions, an EQIP cover page), and save it with **Layout ▸ Save as
+    Template…**. Run it from **Print layout…** so the table is filled in.
+
+The project details (project or field, client, prepared by, notes) and all the
+settings are remembered between sessions. The quote is a planning estimate:
+it counts what the network layer shows, so check it against the plan before
+it goes out, and it is not an NRCS form.
 
 ## How the sizes are worked out
 
