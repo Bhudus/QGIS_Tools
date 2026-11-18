@@ -29,6 +29,53 @@ FIRST_YEAR = 1980
 SETTINGS_KEY = "drainmod_weather_files/"
 
 
+USER_AGENT = "QGIS-DRAINMOD_Weather_Files"
+NET_HINT = (
+    "Check that https://daymet.ornl.gov opens in your web browser. If it does, a "
+    "VPN, firewall or antivirus program may be blocking secure connections from "
+    "QGIS: try again off the VPN, or ask IT to allow daymet.ornl.gov.")
+
+
+def _download(url):
+    """GET url and return the body as text.
+
+    Tries the QGIS network stack first (uses the QGIS proxy and SSL settings).
+    If that fails at the connection level (e.g. "SSL handshake failed"), retries
+    with Python's own HTTPS client, which uses a different TLS library and the
+    Windows certificate store.
+    """
+    req = QgsBlockingNetworkRequest()
+    qreq = QNetworkRequest(QUrl(url))
+    qreq.setRawHeader(b"User-Agent", USER_AGENT.encode())
+    err = req.get(qreq, True)
+    reply = req.reply()
+    body = bytes(reply.content()).decode("utf-8", errors="replace")
+    if err == QgsBlockingNetworkRequest.ErrorCode.NoError:
+        return body
+    qt_msg = (body.strip() or req.errorMessage())[:500]
+    status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+    if status:
+        # The server answered with an error (bad point, dates, ...): report it.
+        raise RuntimeError(f"Daymet request failed: {qt_msg}")
+    # No HTTP answer at all (SSL/TLS, proxy, DNS ...): try Python's HTTPS client.
+
+    import ssl
+    import urllib.error
+    import urllib.request
+    try:
+        ctx = ssl.create_default_context()
+        r = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(r, timeout=180, context=ctx) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace").strip() or str(e)
+        raise RuntimeError(f"Daymet request failed: {detail[:500]}")
+    except Exception as e:  # noqa
+        raise RuntimeError(
+            f"Daymet request failed: {qt_msg}\n(Retry without QGIS networking "
+            f"also failed: {e})\n\n{NET_HINT}")
+
+
 # --------------------------------------------------------------------------
 # Dialog: dates + output folder
 # --------------------------------------------------------------------------
@@ -146,14 +193,7 @@ class DaymetTask(QgsTask):
             q.addQueryItem("format", "json")
             url.setQuery(q)
 
-            # Uses QGIS network settings (proxy, SSL) automatically.
-            req = QgsBlockingNetworkRequest()
-            err = req.get(QNetworkRequest(url), True)
-            reply = req.reply()
-            body = bytes(reply.content()).decode("utf-8", errors="replace")
-            if err != QgsBlockingNetworkRequest.ErrorCode.NoError:
-                msg = body.strip() or req.errorMessage()
-                raise RuntimeError(f"Daymet request failed: {msg[:500]}")
+            body = _download(bytes(url.toEncoded()).decode("ascii"))
             if self.isCanceled():
                 return False
             self.setProgress(60)
