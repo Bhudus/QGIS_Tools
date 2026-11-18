@@ -12,6 +12,15 @@ class NetError(Exception):
     pass
 
 
+class NoResponse(NetError):
+    """QGIS got no HTTP answer at all (SSL/TLS handshake, proxy, DNS ...)."""
+
+
+# Set once QGIS networking has failed without any HTTP answer; later requests
+# then go straight to Python's HTTPS client instead of failing twice each.
+_use_urllib = False
+
+
 def _get_qgis(url, timeout):
     from qgis.core import QgsBlockingNetworkRequest
     from qgis.PyQt.QtCore import QUrl
@@ -24,22 +33,57 @@ def _get_qgis(url, timeout):
         pass
     b = QgsBlockingNetworkRequest()
     err = b.get(req, True)
-    if err != QgsBlockingNetworkRequest.ErrorCode.NoError:
-        raise NetError("%s\n%s" % (b.errorMessage(), url))
     reply = b.reply()
     status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+    if err != QgsBlockingNetworkRequest.ErrorCode.NoError:
+        if not status:
+            raise NoResponse("%s\n%s" % (b.errorMessage(), url))
+        raise NetError("HTTP %s: %s\n%s" % (status, b.errorMessage(), url))
     if status and int(status) >= 400:
         raise NetError("HTTP %s for %s" % (status, url))
     return bytes(reply.content())
 
 
 def _get_urllib(url, timeout):
+    """Python's own HTTPS client: a different TLS library from QGIS/Qt, using
+    the Windows certificate store on Windows."""
+    import ssl
+    import urllib.error
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout,
+                                    context=ssl.create_default_context()) as r:
             return r.read()
+    except urllib.error.HTTPError as e:
+        raise NetError("HTTP %s for %s" % (e.code, url))
     except Exception as e:  # noqa
         raise NetError("%s\n%s" % (e, url))
+
+
+NET_HINT = ("Check that the data server opens in your web browser. If it does, a "
+            "VPN, firewall or antivirus program may be blocking secure connections "
+            "from QGIS: try again off the VPN, or ask IT to allow the server.")
+
+
+def _get(url, timeout, use_qgis):
+    global _use_urllib
+    if not use_qgis or _use_urllib:
+        return _get_urllib(url, timeout)
+    try:
+        return _get_qgis(url, timeout)
+    except ImportError:
+        return _get_urllib(url, timeout)
+    except NoResponse as qe:
+        # e.g. "SSL handshake failed": retry with Python's HTTPS client.
+        try:
+            data = _get_urllib(url, timeout)
+        except NetError as pe:
+            if str(pe).startswith("HTTP "):
+                raise
+            raise NetError("%s\n(Retry without QGIS networking also failed: %s)\n\n%s"
+                           % (qe, str(pe).split("\n")[0], NET_HINT))
+        _use_urllib = True
+        return data
 
 
 def http_get(url, timeout=120, retries=3, cache_dir=None, use_qgis=True):
@@ -53,13 +97,7 @@ def http_get(url, timeout=120, retries=3, cache_dir=None, use_qgis=True):
     last = None
     for attempt in range(retries):
         try:
-            if use_qgis:
-                try:
-                    data = _get_qgis(url, timeout)
-                except ImportError:
-                    data = _get_urllib(url, timeout)
-            else:
-                data = _get_urllib(url, timeout)
+            data = _get(url, timeout, use_qgis)
             if cache_path:
                 tmp = cache_path + ".part"
                 with open(tmp, "wb") as f:
