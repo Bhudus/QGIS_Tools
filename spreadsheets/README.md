@@ -7,6 +7,7 @@ code as text (`vba/`) so you can read the macros before running them.
 | Workbook | What it does |
 |---|---|
 | [DRAINMOD Drainage Design](drainmod_drainage_design/) | Runs a DRAINMOD project for every combination of drain depth, drain spacing and weather set (current and future), and charts relative yield against spacing |
+| [DRAINMOD Path Fixer](drainmod_path_fixer/) | Rewrites the paths in a moved or copied DRAINMOD project (.prj, .gen and input files) so DRAINMOD finds its files, with a check first, .bak copies and undo |
 | [Main Telescoping Worksheet](main_telescoping_worksheet/) | Sizes the sections of a telescoping main from the laterals, upstream area, attached pipes, inflows and inlets it carries |
 | [Tile Slopes](tile_slopes/) | Sets tile depths and grades along a main or lateral from a surface profile, within depth and slope limits |
 
