@@ -1,0 +1,21 @@
+[general]
+name=Water Management Zones
+qgisMinimumVersion=3.34
+description=Splits a tile-drained field into water management zones for controlled drainage and subirrigation, by elevation interval, and places a water-control structure for each zone, with board settings and the share of each zone under control.
+about=For controlled drainage and subirrigation design. With a drainage network (from the Illini Subsurface Drain Layout, Subsurface Drainage Layout, Illini Drainage System Design or Tile Drainage Layout plugins, or drawn by hand), walks the mains and submains up from the outlet and places a control structure wherever the land served since the last one spans more than the zone elevation interval. Each structure gets its zone, board (stop-log) elevation, board height above the tile invert, and the share of its zone where the managed water table is above the tile and within a set depth of the surface. A control-status raster maps controlled land, high ground where the water table is too deep, land whose tile sits above the managed water table and land where it would reach the surface. Without a network, cuts the field into elevation-band zones to lay a zonal system out around. An options table compares several intervals: structures needed against controlled area. Uses only QGIS, GDAL and numpy.
+version=0.1.0
+author=Richard Cooke
+email=raccooke@gmail.com
+
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+
+changelog=0.1.0 - First release (named Controlled Drainage Zones during testing): zones and control structures from a drainage network or elevation bands, board settings, control-status raster, interval options table, merging of zones smaller than a given area (both modes), structure latitude/longitude, and a layer of each zone's lowest point and the places the network crosses the field boundary (surface elevation and tile depth there), and networks of several separate drainage systems (one outlet each, from an outlets layer or the lowest free end) with optional zone polygons that keep each zone's land on its own system.
+tags=drainage,tile,controlled drainage,drainage water management,subirrigation,water table,control structure,zones,dem
+category=Analysis
+experimental=True
+deprecated=False
+hasProcessingProvider=yes
+icon=icon.png
+license=GPL-3.0-or-later
