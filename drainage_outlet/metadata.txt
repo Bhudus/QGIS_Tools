@@ -1,0 +1,26 @@
+[general]
+name=Drainage outlet
+qgisMinimumVersion=3.16
+qgisMaximumVersion=3.99
+description=Traces the natural downhill path from a field boundary or drainage system outlet point to the nearest downstream stream within its StreamStats watershed.
+about=Given drainage system outlet point(s) (tile outlets, culverts, ditch ends) or a field boundary and the USGS StreamStats watershed that contains them, the plugin fills depressions in a DEM, computes D8 flow directions and traces the steepest-descent path to the first stream (mapped NHD lines and/or DEM-derived channels). A DEM can be supplied or downloaded from USGS 3DEP. Pure Python/NumPy/GDAL - no GRASS, SAGA or WhiteboxTools required.
+version=2.5.0
+changelog=2.5.0 - Downloaded 3DEP DEM is saved as an output (feet in US mode)
+    2.4.0 - Runs as a background task (status-bar progress and cancel); results load when finished
+    2.3.0 - Single toolbar button opens the tool window directly (map-pick buttons removed; pick a point from inside the window)
+    2.2.1 - Field mode: path always starts on the field boundary (fixes lines inside the field when a stream buffer overlaps it or flow re-enters a concave field)
+    2.2.0 - Field boundary mode: finds the field's natural outlet automatically (no point needed); Pick field on map tool
+    2.1.0 - Pick an outlet point on the map (toolbar map tool or point parameter)
+    2.0.0 - Input is now drainage-system outlet point(s) instead of fields; optional snap to flow line; output keeps point attributes
+    1.1.0 - Feet / US survey feet DEMs and US customary outputs (ft, acres, mi²)
+author=Richard Cooke
+email=raccooke@gmail.com
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+tags=hydrology,drainage,tile drainage,outlet,streamstats,flow path,watershed,dem,agriculture
+category=Analysis
+icon=icon.png
+experimental=False
+deprecated=False
+hasProcessingProvider=yes
