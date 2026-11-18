@@ -1,0 +1,21 @@
+[general]
+name=Crop History
+qgisMinimumVersion=3.34
+description=Crop history and rotation of fields from the USDA NASS Cropland Data Layer (CDL), downloaded year by year from CropScape: main crop by year, crop sequence, rotation class, years in corn, soybeans, small grain and hay, a rotation map and the latest CDL.
+about=For the background-information step of drainage design, and for the crop inputs of drainage return-on-investment and DRAINMOD studies. For one or more field boundaries in the lower 48 states, downloads the Cropland Data Layer for each year from the CropScape web service (cached locally) and reports, per field and year, the main crop, its share of the field, the second crop and every crop over 1%; and per field, the sequence of main crops, the rotation (corn-soybean, continuous corn, continuous soybean, corn-soybean-small grain, row crops with hay, hay or forage, other cropping, mostly non-cropland), the most common crop, years in each crop group, and flags for fields split between crops or rotations and years with no data. A rotation map shows the rotation of every CDL cell, and the latest CDL loads with its official colours. Uses only QGIS, GDAL and numpy.
+version=0.1.0
+author=Richard Cooke
+email=raccooke@gmail.com
+
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+
+changelog=0.1.0 - First release: field crop history, crop sequences and rotation classes from the CDL, rotation map, latest CDL, download cache; settings kept while the project is open.
+tags=crops,cropland data layer,cdl,cropscape,nass,usda,rotation,crop history,land use,drainage,agriculture
+category=Analysis
+experimental=True
+deprecated=False
+hasProcessingProvider=yes
+icon=icon.png
+license=GPL-3.0-or-later
