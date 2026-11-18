@@ -11,11 +11,33 @@ that hold up under both current and projected (future) weather.
 ## Needs
 
 * Windows Excel with macros enabled.
-* DRAINMOD (`dmhydro.exe`) and a DRAINMOD project (.prj with its .gen) that runs with a
+* DRAINMOD (`dmhydro.exe`, from
+  [NC State University](https://bae.ncsu.edu/agricultural-water-management/drainmod/download/))
+  and a DRAINMOD project (.prj with its .gen) that runs with a
   crop sequence and yield inputs.
 * Rainfall (.RAI) and temperature (.TEM) files for the current weather and, optionally,
   for a future climate (for example from the
   [DRAINMOD Climate-Scenario Weather Files](../../drainmod_climate/) plugin).
+
+## Example project (DDESIGN)
+
+The zip includes an example, the **DDESIGN** folder: a Drummer soil project for a
+corn–soybean rotation (`inputs\Design.prj`), Champaign weather for the current climate
+(1980–2010, `Champaign0`) and a future climate (2040–2099, `Champaign1`), and soil, crop
+and DSSAT files for Illinois soils. The workbook is already set up for it. DRAINMOD itself
+is not included: you add it.
+
+1. Extract the zip and move the **DDESIGN** folder to `C:\DDESIGN`.
+2. Install DRAINMOD (free from NC State University:
+   <https://bae.ncsu.edu/agricultural-water-management/drainmod/download/>) and copy
+   `dmhydro.exe` and `DMSOILP.EXE` from its program folder into `C:\DDESIGN\Program`.
+3. Open the workbook (see *Opening a downloaded workbook* in the
+   [spreadsheets README](../README.md)) and click **1. Read project and weather files**,
+   then **2. Run design analysis**.
+
+The folder can go elsewhere too: select its `inputs\Design.prj` on the Setup sheet and
+the workbook offers to rewrite the paths in the project files (keeping the originals as
+`.bak`).
 
 ## Use
 

@@ -135,7 +135,7 @@ Private Sub EnsureChartOptions()
             .TextRange.Font.Size = 13
             .TextRange.Font.Bold = msoTrue
         End With
-        sh.Title = caps(i - 1)
+        sh.title = caps(i - 1)
         If sh.AlternativeText = "on" Then anyOn = True
     Next i
     If Not anyOn Then ws.Shapes("btnYield1").AlternativeText = "on"
@@ -151,11 +151,11 @@ Private Sub PaintChartOptions()
         isOn = (sh.AlternativeText = "on")
         If isOn Then
             sh.Fill.ForeColor.RGB = RGB(68, 114, 196)
-            sh.TextFrame2.TextRange.Text = ChrW(&H25C9) & "  " & sh.Title
+            sh.TextFrame2.TextRange.Text = ChrW(&H25C9) & "  " & sh.title
             sh.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = RGB(255, 255, 255)
         Else
             sh.Fill.ForeColor.RGB = RGB(242, 242, 242)
-            sh.TextFrame2.TextRange.Text = ChrW(&H25CB) & "  " & sh.Title
+            sh.TextFrame2.TextRange.Text = ChrW(&H25CB) & "  " & sh.title
             sh.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = RGB(64, 64, 64)
         End If
     Next i
@@ -196,7 +196,7 @@ Private Sub AddButton(ws As Worksheet, ByVal nm As String, ByVal caption As Stri
         Set b = ws.Buttons.Add(at.Left, at.Top, wd, 20)
         b.Name = nm
     End If
-    b.Caption = caption
+    b.caption = caption
     b.OnAction = macro
 End Sub
 
@@ -350,7 +350,7 @@ End Sub
 ' first as <file>.bak; returns the files changed, one per line
 Private Function DoFixPaths() As String
     Dim files As New Collection, lines As Variant, i As Long, l As String, v As String, ext As String
-    Dim f As Variant, txt As String, done As String
+    Dim f As Variant, txt As String, Done As String
     On Error Resume Next
     files.Add CStr(Cfg("PrjFile").Value), LCase$(CStr(Cfg("PrjFile").Value))
     files.Add CStr(Cfg("GenFile").Value), LCase$(CStr(Cfg("GenFile").Value))
@@ -371,15 +371,15 @@ Private Function DoFixPaths() As String
         If InStr(1, txt, oldRoot, vbTextCompare) > 0 Then
             If Dir(CStr(f) & ".bak") = "" Then FileCopy CStr(f), CStr(f) & ".bak"
             WriteAllText CStr(f), Replace(txt, oldRoot, newRoot, 1, -1, vbTextCompare)
-            done = done & CStr(f) & vbLf
+            Done = Done & CStr(f) & vbLf
         End If
     Next f
-    DoFixPaths = done
+    DoFixPaths = Done
 End Function
 
 ' ask, then rewrite the project's files for where it is now
 Private Sub OfferFixPaths(ByVal always As Boolean)
-    Dim ans As VbMsgBoxResult, done As String
+    Dim ans As VbMsgBoxResult, Done As String
     If oldRoot = "" Then
         If always Then MsgBox "The paths in the project already match where it is.", vbInformation
         Exit Sub
@@ -390,12 +390,12 @@ Private Sub OfferFixPaths(ByVal always As Boolean)
         "If you choose No, the design runs still use the right paths; only your project files stay as they are " & _
         "(and DRAINMOD itself will still look in " & oldRoot & ").", vbYesNo + vbQuestion, "Project was moved")
     If ans <> vbYes Then Exit Sub
-    done = DoFixPaths()
+    Done = DoFixPaths()
     LoadProject
-    If done = "" Then
+    If Done = "" Then
         MsgBox "No file needed changing.", vbInformation
     Else
-        MsgBox "Paths rewritten in:" & vbLf & done, vbInformation
+        MsgBox "Paths rewritten in:" & vbLf & Done, vbInformation
     End If
 End Sub
 
@@ -812,7 +812,7 @@ End Sub
 Private Function FileDone(ByVal p As String) As Boolean
     Dim f As Integer, n1 As Long
     If Not FileExists(p) Then Exit Function
-    On Error GoTo Busy
+    On Error GoTo busy
     n1 = FileLen(p)
     f = FreeFile
     Open p For Binary Access Read Lock Read Write As #f
@@ -824,7 +824,7 @@ Private Function FileDone(ByVal p As String) As Boolean
     Close #f
     FileDone = True
     Exit Function
-Busy:
+busy:
 End Function
 
 ' wait (up to the run time limit) until DRAINMOD has finished writing a file
