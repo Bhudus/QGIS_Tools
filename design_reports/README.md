@@ -60,8 +60,12 @@ irrigation coefficient (in/day).
 6.5 in wide with scale bar, north arrow and legend, at standard engineering scales. The
 system and topographic maps share sheets: one page when the field fits at the largest
 scale (Advanced: 1:3,600 drainage, 1:2,400 subirrigation), otherwise several sheets at
-that scale. Location and watershed maps use OpenStreetMap or Esri imagery (Advanced; needs
-internet); the background map uses Esri imagery.
+that scale. **Maximum pages** limits the system and topographic maps to that many
+sheets: the tools step to the next standard scale (1:3,000, 1:3,600, 1:4,800, …) until
+the sheets fit, and give a warning that the maps are at a smaller scale than the template
+asks for (1 page = the whole field on one page). Location and watershed maps use
+OpenStreetMap or Esri imagery (Advanced; needs internet); the background map uses Esri
+imagery.
 
 ## Notes
 

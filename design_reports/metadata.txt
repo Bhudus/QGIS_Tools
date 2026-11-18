@@ -3,7 +3,7 @@ name=Design Reports
 qgisMinimumVersion=3.34
 description=Writes the Illinois drainage system design report and subirrigation design report (Word) from their templates, filled from your design layers: site data, soil map, depth/spacing simulations, watershed, depressions and run-on areas, LiDAR topographic map with laylines, design information, system maps with pipe sizes, lengths and slopes, irrigated area, subirrigation zones and zonal overlay maps.
 about=Two Processing tools, one per template (both templates ship with the plugin). They take the field boundary, the LiDAR DEM, the Illini Subsurface Drainage network, existing tile, the SSURGO drainage soil map (or Soil Data Access), Crop History, the StreamStats Delineator watershed, outlet and streams, the Depressions and Laylines outputs (or find depressions, run-on areas and laylines from the DEM themselves) and, for subirrigation, the Controlled Drainage Zones zones and structures. Each pipe is labeled with its size, length (nearest 10 ft) and slope (nearest 0.05 %); a pipe schedule and the component table follow the system map. Large fields are split into map sheets at the largest scale (1:3,600 drainage, 1:2,400 subirrigation, with the topographic map on the same sheets). The subirrigation report delineates the irrigated area by the half-spacing / third-of-recommended-spacing rule, labels each zone with acres and minimum elevation, checks that the drainage coefficient is at least the irrigation coefficient, and draws an overlay map per structure with the impacted area (limited to 1 ft above the control elevation when structures are more than 1 ft apart). Uses only QGIS.
-version=0.1.1
+version=0.1.2
 author=Richard Cooke
 email=raccooke@gmail.com
 
@@ -11,7 +11,8 @@ tracker=https://github.com/Bhudus/QGIS_Tools/issues
 repository=https://github.com/Bhudus/QGIS_Tools
 homepage=https://bhudus.github.io/QGIS_Tools/
 
-changelog=0.1.1 - Toolbar button for the subirrigation report (with its own icon) next to the drainage one.
+changelog=0.1.2 - Maximum pages for the system (tile) and topographic maps: fewer sheets at a smaller standard scale, with a warning when that is below the template's scale.
+    0.1.1 - Toolbar button for the subirrigation report (with its own icon) next to the drainage one.
     0.1.0 - First release: drainage system design and subirrigation design reports from the Illinois templates; settings kept while the project is open.
 tags=drainage,tile,subirrigation,design,report,controlled drainage,depressions,run-on,watershed,illinois,nrcs
 category=Analysis

@@ -195,3 +195,26 @@ def sheet_centers(xmin, ymin, xmax, ymax, w, h, overlap=0.05):
     cx0 = (xmin + xmax) / 2.0 - (nx - 1) * sw / 2.0
     cy0 = (ymin + ymax) / 2.0 + (ny - 1) * sh / 2.0
     return [(cx0 + i * sw, cy0 - j * sh) for j in range(ny) for i in range(nx)]
+
+
+def sheet_scale_for_pages(count_at, max_scale, fit_scale, max_pages, scales=None):
+    """Scale for map sheets limited to `max_pages` pages.
+
+    count_at(scale) -> number of (non-empty) sheets at that scale. Starting at
+    `max_scale`, steps through the standard scales until the sheets fit in `max_pages`;
+    returns (scale, sheets) with sheets = None when one page at `fit_scale` is used."""
+    from .compute import NICE_SCALES
+    if max_pages and max_pages <= 1:
+        return fit_scale, None
+    n = count_at(max_scale)
+    if not max_pages or n <= max_pages:
+        return max_scale, n
+    for s in (scales or NICE_SCALES):
+        if s <= max_scale:
+            continue
+        if s >= fit_scale:
+            break
+        n = count_at(s)
+        if n <= max_pages:
+            return s, n
+    return fit_scale, None

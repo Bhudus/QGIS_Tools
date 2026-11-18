@@ -65,7 +65,7 @@ class DrainageReportAlgorithm(ReportAlgorithm):
             "tile), lateral spacing, drainage coefficient (D_COEFF), materials. "
             "<b>Drainage system maps</b>: every pipe labeled with size, length (nearest 10 "
             "ft) and slope (nearest 0.05 %), existing tile dashed, components and a pipe "
-            "schedule. Large fields are split into sheets at the largest scale.</p>")
+            "schedule. Large fields are split into sheets at the largest scale; <b>Maximum pages</b> caps the number of sheets (at a smaller scale).</p>")
 
     def extra_text(self):
         for nm, _, label in SIMS:

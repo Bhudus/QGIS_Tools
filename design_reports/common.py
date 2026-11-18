@@ -35,7 +35,7 @@ from . import maps
 from .core.compute import (component_rows, crop_text, fmt_latlon, lateral_spacing,
                            polygon_mask, scale_text, series_name, smooth, soil_rows)
 from .core.design import (coarsen, depressions_and_runon, depth_range, pipe_schedule,
-                          sheet_centers)
+                          sheet_centers, sheet_scale_for_pages)
 from .core import terrain
 
 PLUGIN_DIR = os.path.dirname(__file__)
@@ -231,6 +231,10 @@ class ReportAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterString(
             "OTHER", self.tr("Other considerations"), defaultValue="", optional=True,
             multiLine=True))
+        self.addParameter(QgsProcessingParameterNumber(
+            "MAX_PAGES", self.tr("Maximum pages for the system (tile) and topographic maps "
+                                 "(0 = no limit; fewer pages = smaller scale)"),
+            QgsProcessingParameterNumber.Integer, defaultValue=0, minValue=0))
         self.addParameter(advanced(QgsProcessingParameterBoolean(
             "SCHEDULE", self.tr("Add a pipe schedule (size, length, slope of every pipe)"),
             defaultValue=True)))
@@ -859,34 +863,65 @@ class ReportAlgorithm(QgsProcessingAlgorithm):
         r.grow(max(r.width(), r.height()) * grow + 30.0 / c["ft"])
         return r
 
-    def sheets(self, c, layers, title, legend, caption, max_scale):
-        """The map on one page, or on several sheets at `max_scale`."""
+    def _sheet_centers(self, c, rect, scale):
+        """Centres of the sheets at `scale` that show some of the field or tile."""
+        w_mu = scale * maps.PAGE_W_IN / 12.0 / c["ft"]
+        h_mu = scale * SHEET_H_IN / 12.0 / c["ft"]
+        out = []
+        for x, y in sheet_centers(rect.xMinimum(), rect.yMinimum(), rect.xMaximum(),
+                                  rect.yMaximum(), w_mu, h_mu):
+            sheet = QgsGeometry.fromRect(QgsRectangle(x - w_mu / 2, y - h_mu / 2,
+                                                      x + w_mu / 2, y + h_mu / 2))
+            if c["field"].intersects(sheet) or any(p["geom"].intersects(sheet)
+                                                   for p in c["pipes"]):
+                out.append((x, y))
+        return out
+
+    def sheet_plan(self, c, max_scale, max_pages):
+        """(scale, centres or None for one page) shared by the system and topographic
+        maps, so both use the same sheets."""
+        if "sheet_plan" in c:
+            return c["sheet_plan"]
         rect = self.field_rect(c)
         fit = maps.page_scale(rect, c["crs"], height_in=SHEET_H_IN)
         if not max_scale or fit <= max_scale:
-            h = min(SHEET_H_IN, max(4.0, rect.height() * c["ft"] * 12.0 / fit + 0.6))
-            png, sc = self.render(c, layers, title, legend, rect, h, fit)
-            return [(png, "{}. Scale {}".format(caption, scale_text(sc)))], fit
-        w_mu = max_scale * maps.PAGE_W_IN / 12.0 / c["ft"]
-        h_mu = max_scale * SHEET_H_IN / 12.0 / c["ft"]
-        centers = sheet_centers(rect.xMinimum(), rect.yMinimum(), rect.xMaximum(),
-                                rect.yMaximum(), w_mu, h_mu)
-        out = []
-        for k, (x, y) in enumerate(centers):
-            # skip sheets with nothing of the field on them
-            sheet = QgsRectangle(x - w_mu / 2, y - h_mu / 2, x + w_mu / 2, y + h_mu / 2)
-            if not c["field"].intersects(QgsGeometry.fromRect(sheet)) and not any(
-                    p["geom"].intersects(QgsGeometry.fromRect(sheet)) for p in c["pipes"]):
-                continue
-            out.append((x, y))
+            plan = (fit, None)
+        else:
+            cache = {}
+
+            def count_at(s):
+                cache[s] = self._sheet_centers(c, rect, s)
+                return len(cache[s])
+            scale, n = sheet_scale_for_pages(count_at, max_scale, fit, max_pages)
+            plan = (scale, cache.get(scale) if n is not None else None)
+            if scale != max_scale:
+                if max_scale not in cache:
+                    count_at(max_scale)
+                c["warnings"].append(
+                    "System and topographic maps at {} to fit {} page(s); the template asks "
+                    "for {} or closer ({} sheets at that scale).".format(
+                        scale_text(scale), max_pages, scale_text(max_scale),
+                        len(cache.get(max_scale) or [])))
+        c["sheet_plan"] = plan
+        return plan
+
+    def sheets(self, c, layers, title, legend, caption, max_scale, max_pages=0):
+        """The map on one page, or on sheets at `max_scale`; with `max_pages`, at the
+        largest standard scale that needs no more than that many pages."""
+        scale, centers = self.sheet_plan(c, max_scale, max_pages)
+        if centers is None:
+            rect = self.field_rect(c)
+            h = min(SHEET_H_IN, max(4.0, rect.height() * c["ft"] * 12.0 / scale + 0.6))
+            png, sc = self.render(c, layers, title, legend, rect, h, scale)
+            return [(png, "{}. Scale {}".format(caption, scale_text(sc)))], scale
         res = []
-        for k, (x, y) in enumerate(out):
-            t = "{} - sheet {} of {}".format(title, k + 1, len(out))
-            png, sc = self.render(c, layers, t, legend, height=SHEET_H_IN, scale=max_scale,
+        for k, (x, y) in enumerate(centers):
+            t = "{} - sheet {} of {}".format(title, k + 1, len(centers))
+            png, sc = self.render(c, layers, t, legend, height=SHEET_H_IN, scale=scale,
                                   center=QgsPointXY(x, y))
-            res.append((png, "{}. Sheet {} of {}. Scale {}".format(caption, k + 1, len(out),
-                                                                   scale_text(sc))))
-        return res, max_scale
+            res.append((png, "{}. Sheet {} of {}. Scale {}".format(
+                caption, k + 1, len(centers), scale_text(sc))))
+        return res, scale
 
     def common_maps(self, c, system_title):
         """Location, background, soils, watershed, depressions, topographic and system maps."""
@@ -953,6 +988,7 @@ class ReportAlgorithm(QgsProcessingAlgorithm):
         cap["depressions"] = "Scale {}.".format(scale_text(sc))
         self.feedback.setProgress(72)
         max_scale = self.parameterAsInt(self.P, "MAX_SCALE", self.context)
+        max_pages = self.parameterAsInt(self.P, "MAX_PAGES", self.context)
         # topographic
         lay_leg = [("line", "#0288d1", "Layline")] if c["lay_lyr"] else []
         topo, tsc = self.sheets(
@@ -961,14 +997,14 @@ class ReportAlgorithm(QgsProcessingAlgorithm):
                 c["interval"]))] + lay_leg,
             "Contours at {:g} ft from the LiDAR DEM{} (elevations in ft)".format(
                 c["interval"], ", smoothed over {:g} ft".format(c["smooth_ft"])
-                if c["smooth_ft"] else ""), max_scale)
+                if c["smooth_ft"] else ""), max_scale, max_pages)
         img["topo"] = topo
         self.feedback.setProgress(80)
         system, ssc = self.sheets(
             c, [c["field_lyr"], c["net_lyr"], c["existing_lyr"]], system_title,
             [LF] + net_leg + ex_leg,
             "Labels: size, length (nearest 10 ft), slope (nearest 0.05 %)" +
-            ("; " + c["tile_note"] if c["tile_note"] else ""), max_scale)
+            ("; " + c["tile_note"] if c["tile_note"] else ""), max_scale, max_pages)
         img["system"] = system if c["pipes"] else []
         self.feedback.setProgress(88)
         return img, cap

@@ -39,3 +39,19 @@ c = sheet_centers(0, 0, 100, 50, 60, 60)
 assert len(c) == 2, c
 assert len(sheet_centers(0, 0, 50, 50, 60, 60)) == 1
 print("design ok")
+
+# page limit: a 3000 x 5000 ft field on 6.5 x 7.4 in sheets
+import math
+def pages(s):
+    w, h = s * 6.5 / 12 * 0.95, s * 7.4 / 12 * 0.95
+    return math.ceil(3000 / w) * math.ceil(5000 / h)
+fit = 9600
+assert sheet_scale_for_pages(pages, 2400, fit, 0) == (2400, pages(2400))      # no limit
+assert pages(2400) > 4
+s, n = sheet_scale_for_pages(pages, 2400, fit, 4)
+assert n <= 4 and s > 2400 and pages(s) == n, (s, n)
+prev = [x for x in (3000, 3600, 4800, 6000, 7200) if x < s]
+assert all(pages(x) > 4 for x in prev if x > 2400)                            # largest scale that fits
+assert sheet_scale_for_pages(pages, 2400, fit, 1) == (fit, None)              # one page
+assert sheet_scale_for_pages(pages, 2400, fit, 100) == (2400, pages(2400))    # already fits
+print("page limit ok", s, n, pages(2400))

@@ -53,7 +53,7 @@ class SubirrigationReportAlgorithm(ReportAlgorithm):
             "components and pipe schedule. <b>Irrigated area</b>: tile buffered by half the "
             "lateral spacing, or by a third of the recommended spacing when the laterals are "
             "more than two thirds of the recommended spacing apart. <b>Topographic map</b>: "
-            "6-inch contours at 1:2,400 or closer, the same sheets as the system map.</p>"
+            "6-inch contours at 1:2,400 or closer, the same sheets as the system map. <b>Maximum pages</b> caps the number of sheets of both (at a smaller scale, with a warning).</p>"
             "<p><b>Zonal overlay maps</b>, one per structure: the impacted area is the "
             "structure's zone within the irrigated area, limited to the ground within 1 ft "
             "above the control elevation when the next structure upstream is set more than "
