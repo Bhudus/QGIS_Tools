@@ -1,0 +1,21 @@
+[general]
+name=Field Run-on
+qgisMinimumVersion=3.34
+description=Maps the run-on areas of a field: the land outside it whose surface water flows into it, from the field boundary and a DEM of its watershed. Vector and raster maps with their areas, the inlets where the water enters, and smoothed polygon boundaries.
+about=For tile and surface drainage design: run-on is extra water the field's surface inlets, waterways and outlet have to carry. Routes water by D8 steepest descent over the Wang & Liu filled DEM (re-filled with a tiny gradient so flats and filled depressions drain to their spill point) and marks every cell outside the field whose flow path enters it. Splits the run-on by inlet (one area for each place water enters the field, with the inlet as a point and the acres it carries) or into connected areas. Outputs run-on polygons (optionally smoothed) with acres, hectares, share of the field and an open flag where the area reaches the edge of the DEM, a raster of each run-on cell's area, and the inlet points. Works with a StreamStats watershed and a LiDAR or 3DEP DEM; large DEMs are resampled for routing. Uses only QGIS, GDAL and numpy.
+version=0.1.0
+author=Richard Cooke
+email=raccooke@gmail.com
+
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+
+changelog=0.1.0 - First release: run-on areas by inlet or connected, vector (smoothed) and raster maps with areas, inlet points, open flag; settings kept while the project is open.
+tags=drainage,run-on,runon,surface water,watershed,dem,lidar,flow routing,d8,tile drainage,surface inlet,waterway
+category=Analysis
+experimental=True
+deprecated=False
+hasProcessingProvider=yes
+icon=icon.png
+license=GPL-3.0-or-later
