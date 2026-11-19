@@ -136,15 +136,19 @@ def _utm_crs_for(geom, crs, context):
 
 
 class _PathStyler(QgsProcessingLayerPostProcessorInterface):
-    """Give the flow-path output a blue line with direction arrows."""
-    instance = None
+    """Give a flow-path output a coloured line with direction arrows."""
+    instances = []   # keep post-processors alive until QGIS has used them
+
+    def __init__(self, color="31,120,180"):
+        super().__init__()
+        self.color = color
 
     def postProcessLayer(self, layer, context, feedback):
         if not isinstance(layer, QgsVectorLayer):
             return
-        sym = QgsLineSymbol.createSimple({"color": "31,120,180", "width": "0.9"})
+        sym = QgsLineSymbol.createSimple({"color": self.color, "width": "0.9"})
         arrow = QgsMarkerSymbol.createSimple(
-            {"name": "filled_arrowhead", "color": "31,120,180", "size": "3",
+            {"name": "filled_arrowhead", "color": self.color, "size": "3",
              "outline_style": "no"})
         ml = QgsMarkerLineSymbolLayer()
         ml.setInterval(15)
@@ -154,9 +158,24 @@ class _PathStyler(QgsProcessingLayerPostProcessorInterface):
         layer.triggerRepaint()
 
     @staticmethod
-    def create():
-        _PathStyler.instance = _PathStyler()
-        return _PathStyler.instance
+    def create(color="31,120,180"):
+        inst = _PathStyler(color)
+        _PathStyler.instances = _PathStyler.instances[-7:] + [inst]
+        return inst
+
+
+def _name_field(fields, candidates):
+    """First field name from ``candidates`` present in ``fields`` (or None)."""
+    for cand in candidates:
+        if fields.indexFromName(cand) >= 0:
+            return cand
+    return None
+
+
+STREAM_NAME_FIELDS = ("GNIS_NAME", "gnis_name", "gnisname", "NAME", "name", "Name")
+DRAIN_NAME_FIELDS = ("DRAIN_NAME", "drain_name", "DrainName", "Drain_Name", "DRAIN_NM",
+                     "drain_nm", "DRAIN", "Drain", "drain", "NAME", "name", "Name",
+                     "GNIS_NAME", "gnis_name")
 
 
 # --------------------------------------------------------------------------
@@ -177,6 +196,10 @@ class DrainagePathAlgorithm(QgsProcessingAlgorithm):
     UNITS = "UNITS"
     DEM_Z_UNITS = "DEM_Z_UNITS"
     POINT_SNAP = "POINT_SNAP"
+    DRAINS = "DRAINS"
+    DRAIN_SNAP = "DRAIN_SNAP"
+    DRAIN_ROUTE = "DRAIN_ROUTE"
+    OUTPUT_DRAIN_PATHS = "OUTPUT_DRAIN_PATHS"
     OUTPUT_PATHS = "OUTPUT_PATHS"
     OUTPUT_STREAMS = "OUTPUT_STREAMS"
     OUTPUT_DEM = "OUTPUT_DEM"
@@ -241,7 +264,16 @@ class DrainagePathAlgorithm(QgsProcessingAlgorithm):
             "or metric. Cell size, snap distance and channel area are entered in the chosen "
             "units, and all lengths, elevations and areas in the outputs use them. Set the "
             "DEM's elevation unit separately (many state lidar DEMs are in US survey feet). "
-            "Any horizontal CRS works, including State Plane in feet.</p>")
+            "Any horizontal CRS works, including State Plane in feet.</p>"
+            "<p><b>District drain</b> (optional): give the district / legal drain as a line "
+            "layer and a second output, <i>Paths to district drain</i>, is made for every "
+            "start point. The path follows natural downhill flow (streams do not stop it) "
+            "until it touches the drain. If the natural flow never reaches the drain (it "
+            "leaves the watershed first) and <i>route over higher ground</i> is ticked, the "
+            "path is instead routed along the lowest ground to the nearest point on the drain, "
+            "avoiding climbs where it can; <i>climb</i> and <i>max_cut</i> show how much high "
+            "ground the route crosses. <i>end_type</i> says which happened. The stream "
+            "paths are made as before.</p>")
 
     UNIT_OPTIONS = ["US customary (feet, acres, mi²)", "Metric (metres, hectares, km²)"]
     Z_OPTIONS = ["Feet (international)", "US survey feet", "Metres"]
@@ -296,9 +328,23 @@ class DrainagePathAlgorithm(QgsProcessingAlgorithm):
             self.POINT_SNAP,
             self.tr("Snap outlet to strongest flow line within, ft or m (0 = use point as-is)"),
             type=NUM_DOUBLE, defaultValue=0.0, minValue=0.0))
+        self.addParameter(QgsProcessingParameterFeatureSource(
+            self.DRAINS, self.tr("District drain lines - also trace a path to the drain [optional]"),
+            [T_LINE], optional=True))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.DRAIN_SNAP, self.tr("District drain snap distance, ft or m"),
+            type=NUM_DOUBLE, defaultValue=50.0, minValue=0.0))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.DRAIN_ROUTE,
+            self.tr("If natural flow misses the district drain, route over the lowest ground to it"),
+            defaultValue=True))
 
         self.addParameter(QgsProcessingParameterFeatureSink(
             self.OUTPUT_PATHS, self.tr("Drainage paths"), T_LINE))
+        self.addParameter(QgsProcessingParameterFeatureSink(
+            self.OUTPUT_DRAIN_PATHS,
+            self.tr("Paths to district drain (made only when a district drain is given)"),
+            T_LINE, optional=True, createByDefault=True))
         self.addParameter(QgsProcessingParameterRasterDestination(
             self.OUTPUT_DEM,
             self.tr("Downloaded 3DEP DEM (saved only when 'Download DEM' is ticked)"),
@@ -364,6 +410,9 @@ class DrainagePathAlgorithm(QgsProcessingAlgorithm):
         use_derived = self.parameterAsBool(parameters, self.USE_DERIVED, context)
         thr_km2 = self.parameterAsDouble(parameters, self.THRESHOLD, context)
         point_snap = self.parameterAsDouble(parameters, self.POINT_SNAP, context)
+        drains_src = self.parameterAsSource(parameters, self.DRAINS, context)
+        drain_snap_m = self.parameterAsDouble(parameters, self.DRAIN_SNAP, context)
+        drain_route = self.parameterAsBool(parameters, self.DRAIN_ROUTE, context)
         us = self.parameterAsEnum(parameters, self.UNITS, context) == 0
         z_choice = self.parameterAsEnum(parameters, self.DEM_Z_UNITS, context)
 
@@ -373,6 +422,7 @@ class DrainagePathAlgorithm(QgsProcessingAlgorithm):
         res_m = res_m * u
         snap_m = snap_m * u
         point_snap = point_snap * u
+        drain_snap_m = drain_snap_m * u
         thr_m2 = thr_km2 * (2589988.110336 if us else 1e6)
         # DEM vertical unit -> metres
         z_to_m = {0: 0.3048, 1: 1200.0 / 3937.0, 2: 1.0}[z_choice]
@@ -511,11 +561,7 @@ class DrainagePathAlgorithm(QgsProcessingAlgorithm):
             grid_rect = QgsRectangle(xmin, ymin, xmax, ymax)
             back = QgsCoordinateTransform(work_crs, s_crs, context.transformContext())
             req = QgsFeatureRequest().setFilterRect(back.transformBoundingBox(grid_rect))
-            name_field = None
-            for cand in ("GNIS_NAME", "gnis_name", "gnisname", "NAME", "name", "Name"):
-                if streams_src.fields().indexFromName(cand) >= 0:
-                    name_field = cand
-                    break
+            name_field = _name_field(streams_src.fields(), STREAM_NAME_FIELDS)
             geoms, vals = [], []
             for k, f in enumerate(streams_src.getFeatures(req), start=1):
                 if not f.hasGeometry():
@@ -535,6 +581,38 @@ class DrainagePathAlgorithm(QgsProcessingAlgorithm):
                 feedback.pushWarning(self.tr(
                     "No stream lines fall inside the watershed; switching to DEM-derived channels."))
                 use_derived = True
+
+        # ---- district drain cells -------------------------------------
+        drain = None
+        drain_id = None
+        drain_info = {}  # burn value -> (fid, name)
+        if drains_src is not None:
+            d_crs = drains_src.sourceCrs()
+            back = QgsCoordinateTransform(work_crs, d_crs, context.transformContext())
+            req = QgsFeatureRequest().setFilterRect(
+                back.transformBoundingBox(QgsRectangle(xmin, ymin, xmax, ymax)))
+            name_field = _name_field(drains_src.fields(), DRAIN_NAME_FIELDS)
+            geoms, vals = [], []
+            for k, f in enumerate(drains_src.getFeatures(req), start=1):
+                if not f.hasGeometry() or f.geometry().isEmpty():
+                    continue
+                g = to_work(f.geometry(), d_crs)
+                if drain_snap_m > 0:
+                    g = g.buffer(drain_snap_m / m_factor, 4)
+                geoms.append(g)
+                vals.append(k)
+                drain_info[k] = (f.id(), str(f[name_field]) if name_field and f[name_field] is not None else "")
+            drain_id = np.zeros(shape, dtype=np.int32)
+            if geoms:
+                drain_id = _rasterize(geoms, vals, shape, gt, work_wkt, all_touched=True)
+                drain_id[~valid] = 0
+            drain = drain_id > 0
+            if drain.any():
+                feedback.pushInfo(self.tr("District drain lines in watershed area: {}").format(len(geoms)))
+            else:
+                feedback.pushWarning(self.tr(
+                    "No district drain lines fall inside the watershed; paths to the district drain "
+                    "will not reach it. Check the drain layer and the watershed."))
 
         acc = None
         if use_derived or (point_snap > 0 and (pts_src is not None or map_pt is not None)):
@@ -597,6 +675,27 @@ class DrainagePathAlgorithm(QgsProcessingAlgorithm):
             r, c = divmod(int(i), ncols)
             return gt[0] + (c + 0.5) * gt[1], gt[3] + (r + 0.5) * gt[5]
 
+        def field_start(oi, cells, boundary):
+            """Start the line exactly where the flow crosses the field boundary
+            (outlet cell centre is inside the polygon, the next cell's is outside).
+            Returns (first_point, cells_without_the_outlet_cell)."""
+            first = center(oi)
+            if len(cells) < 2:
+                return first, cells
+            a, b2 = center(oi), center(cells[1])
+            seg = QgsGeometry.fromPolylineXY([QgsPointXY(*a), QgsPointXY(*b2)])
+            hit = seg.intersection(boundary)
+            verts = [] if (hit is None or hit.isEmpty()) else \
+                [QgsPointXY(v.x(), v.y()) for v in hit.vertices()]
+            if verts:
+                # last crossing along the segment = where water leaves the field
+                o = QgsPointXY(*b2)
+                bp = min(verts, key=lambda v: v.sqrDist(o))
+                first = (bp.x(), bp.y())
+            else:
+                first = ((a[0] + b2[0]) / 2.0, (a[1] + b2[1]) / 2.0)
+            return first, cells[1:]
+
         sidf = stream_id.ravel()
         validf = valid.ravel()
         snap_cells = int(math.ceil((point_snap / m_factor) / res)) if point_snap > 0 else 0
@@ -649,7 +748,7 @@ class DrainagePathAlgorithm(QgsProcessingAlgorithm):
                 label=label, attrs=attrs + [None] * n_fl_attr, source=src_label,
                 pt_fid=fid, field_fid=None, rank=None, share=None,
                 first=(px, py), cells=cells, why=why, z_cell=r * ncols + c,
-                snapped=round(snapped / u, 2)))
+                snapped=round(snapped / u, 2), start=start, boundary=None, fcells=None))
 
         # -- field boundaries: find where the field naturally drains ----
         if fld_src is not None:
@@ -687,33 +786,22 @@ class DrainagePathAlgorithm(QgsProcessingAlgorithm):
                 if secondary > 0:
                     chosen += [o for o in outs[1:] if 100.0 * o[1] / n_src >= secondary]
 
+                if drain is not None and (fmask & drain).any():
+                    feedback.pushInfo(self.tr(
+                        "{}: the district drain (or its snap buffer) crosses the field; the path "
+                        "to the drain still starts at the field's natural outlet.").format(label))
                 boundary = QgsGeometry(fg.constGet().boundary())
+                fcells = set(np.flatnonzero(fmask.ravel()).tolist()) if drain is not None else None
                 for rank, (oi, ncell) in enumerate(chosen, start=1):
                     cells, why = hydro.trace_path(oi, rcv, stream_out)
-                    first = center(oi)
-                    j = int(rcv[oi])
-                    # Start the line exactly where the flow crosses the field boundary
-                    # (outlet cell centre is inside the polygon, its receiver's is outside)
-                    if j >= 0 and len(cells) > 1:
-                        a, b2 = center(oi), center(j)
-                        seg = QgsGeometry.fromPolylineXY([QgsPointXY(*a), QgsPointXY(*b2)])
-                        hit = seg.intersection(boundary)
-                        verts = [] if (hit is None or hit.isEmpty()) else \
-                            [QgsPointXY(v.x(), v.y()) for v in hit.vertices()]
-                        if verts:
-                            # last crossing along the segment = where water leaves the field
-                            o = QgsPointXY(*b2)
-                            bp = min(verts, key=lambda v: v.sqrDist(o))
-                            first = (bp.x(), bp.y())
-                        else:
-                            first = ((a[0] + b2[0]) / 2.0, (a[1] + b2[1]) / 2.0)
-                        cells = cells[1:]
+                    first, cells = field_start(oi, cells, boundary)
                     jobs.append(dict(
                         label="{} outlet {}".format(label, rank),
                         attrs=[None] * n_pt_attr + list(feat.attributes()),
                         source="field boundary", pt_fid=None, field_fid=feat.id(),
                         rank=rank, share=round(100.0 * ncell / n_src, 2),
-                        first=first, cells=cells, why=why, z_cell=oi, snapped=None))
+                        first=first, cells=cells, why=why, z_cell=oi, snapped=None,
+                        start=oi, boundary=boundary, fcells=fcells))
 
         # -- write paths ------------------------------------------------
         demf = dem.ravel()
@@ -722,7 +810,7 @@ class DrainagePathAlgorithm(QgsProcessingAlgorithm):
         for k, jb in enumerate(jobs):
             if feedback.isCanceled():
                 break
-            feedback.setProgress(80 + 20 * k / njobs)
+            feedback.setProgress(80 + (10 if drain is not None else 20) * k / njobs)
             cells, why = jb["cells"], jb["why"]
             pts = [QgsPoint(*jb["first"])] + [QgsPoint(*center(i)) for i in cells]
             if len(pts) == 1:
@@ -758,12 +846,149 @@ class DrainagePathAlgorithm(QgsProcessingAlgorithm):
 
         feedback.pushInfo(self.tr("Traced {} drainage path(s).").format(n_paths))
 
+        # -- paths to the district drain --------------------------------
+        d_id = None
+        if drain is not None and jobs and not feedback.isCanceled():
+            d_id = self._write_drain_paths(
+                parameters, context, feedback, jobs, p_fields, n_pt_attr + n_fl_attr,
+                drain, drain_id, drain_info, drain_route, stream, rcv, zfill, valid, dem,
+                center, field_start, res, m_factor, u, len_sfx, work_crs)
+
         if context.willLoadLayerOnCompletion(p_id):
             context.layerToLoadOnCompletionDetails(p_id).setPostProcessor(_PathStyler.create())
+        if d_id and context.willLoadLayerOnCompletion(d_id):
+            context.layerToLoadOnCompletionDetails(d_id).setPostProcessor(
+                _PathStyler.create("227,26,28"))
 
         result = {self.OUTPUT_PATHS: p_id}
+        if d_id:
+            result[self.OUTPUT_DRAIN_PATHS] = d_id
         if download and saved_dem:
             result[self.OUTPUT_DEM] = saved_dem
         if self.OUTPUT_STREAMS in parameters and parameters[self.OUTPUT_STREAMS]:
             result[self.OUTPUT_STREAMS] = self.parameterAsOutputLayer(parameters, self.OUTPUT_STREAMS, context)
         return result
+
+    # ------------------------------------------------------------------
+    def _write_drain_paths(self, parameters, context, feedback, jobs, p_fields, n_attr,
+                           drain, drain_id, drain_info, drain_route, stream, rcv, zfill,
+                           valid, dem, center, field_start, res, m_factor, u, len_sfx,
+                           work_crs):
+        """Second output: a path from every start to the district drain.
+
+        Natural D8 flow is followed (streams do not stop it) until it touches
+        the drain. Starts whose natural flow never reaches the drain are, if
+        allowed, routed along the lowest ground to the nearest drain cell."""
+        d_fields = QgsFields()
+        taken = set()
+        for k in range(n_attr):
+            d_fields.append(QgsField(p_fields.at(k)))
+            taken.add(p_fields.at(k).name().lower())
+        for n, t in (("source", F_STR), ("pt_fid", F_INT), ("field_fid", F_INT),
+                     ("outlet_rank", F_INT), ("share_pct", F_DBL),
+                     ("length_" + len_sfx, F_DBL),
+                     ("start_z_" + len_sfx, F_DBL), ("end_z_" + len_sfx, F_DBL),
+                     ("drop_" + len_sfx, F_DBL), ("slope_pct", F_DBL), ("end_type", F_STR),
+                     ("drain_fid", F_INT), ("drain_nm", F_STR), ("via_stream", F_INT),
+                     ("climb_" + len_sfx, F_DBL), ("max_cut_" + len_sfx, F_DBL),
+                     ("start_x", F_DBL), ("start_y", F_DBL),
+                     ("end_x", F_DBL), ("end_y", F_DBL), ("cell_" + len_sfx, F_DBL)):
+            name = n if n.lower() not in taken else "dp_" + n
+            d_fields.append(QgsField(name, t))
+            taken.add(name.lower())
+
+        d_sink, d_id = self.parameterAsSink(parameters, self.OUTPUT_DRAIN_PATHS, context,
+                                            d_fields, WKB_LINE, work_crs)
+        if d_sink is None:
+            feedback.pushInfo(self.tr("'Paths to district drain' output is skipped; not traced."))
+            return None
+
+        feedback.pushInfo(self.tr("Tracing paths to the district drain..."))
+        # 1) natural downhill flow, stopping only at the drain
+        natural = [hydro.trace_path(jb["start"], rcv, drain) for jb in jobs]
+        need = [jb["start"] for jb, (_, why) in zip(jobs, natural) if why != "stream"]
+        routes = {}
+        if need and drain_route and drain.any():
+            feedback.pushInfo(self.tr(
+                "{} start(s) do not drain naturally to the district drain; routing over the "
+                "lowest ground...").format(len(set(need))))
+
+            def route_cb(frac):
+                feedback.setProgress(90 + 8 * frac)
+                return feedback.isCanceled()
+
+            try:
+                routes = hydro.route_to_targets(zfill, valid, drain, need,
+                                                cellsize=res * m_factor, feedback=route_cb)
+            except RuntimeError:
+                return d_id
+
+        demf = dem.ravel()
+        drf = drain_id.ravel()
+        side = (stream & ~drain).ravel()   # stream cells that are not the drain itself
+        cell_m = res * m_factor
+        n_out = 0
+        for jb, (cells, why) in zip(jobs, natural):
+            if feedback.isCanceled():
+                break
+            start = jb["start"]
+            if why == "stream":
+                end_type = "already at district drain" if len(cells) == 1 else "district drain"
+            elif start in routes:
+                cells = routes[start]
+                end_type = "routed to district drain (crosses higher ground)"
+            else:
+                end_type = "district drain not reached (left watershed)"
+                feedback.pushWarning(self.tr(
+                    "{}: no path to the district drain{}.").format(
+                        jb["label"], "" if drain_route else
+                        " by natural flow (tick 'route over the lowest ground' to force one)"))
+
+            # path begins at the point, or where the flow leaves the field
+            first = jb["first"]
+            fc = jb["fcells"]
+            if jb["boundary"] is not None:
+                if len(cells) > 1 and cells[1] not in fc:
+                    first, cells = field_start(start, cells, jb["boundary"])
+                else:
+                    first = center(start)
+            via = 0
+            for i in cells[:-1]:
+                if side[i] and (fc is None or i not in fc):
+                    via = 1
+                    break
+
+            pts = [QgsPoint(*first)] + [QgsPoint(*center(i)) for i in cells]
+            if len(pts) == 1:
+                pts.append(QgsPoint(*first))
+            line = QgsGeometry(QgsLineString(pts))
+            length = line.length() * m_factor
+            z0 = float(demf[jb["z_cell"]])
+            end_cell = cells[-1] if cells else start
+            z1 = float(demf[end_cell])
+            drop = z0 - z1
+            ex, ey = center(end_cell)
+            prof_z = [z0] + [float(demf[i]) for i in cells]
+            prof_d = [0.0]
+            for a, b in zip(pts[:-1], pts[1:len(prof_z)]):
+                prof_d.append(prof_d[-1] + math.hypot(b.x() - a.x(), b.y() - a.y()) * m_factor)
+            climb, max_cut = hydro.path_profile_stats(prof_z, prof_d)
+            if end_type.startswith("district drain not"):
+                dfid, dname = None, ""
+            else:
+                dfid, dname = drain_info.get(int(drf[end_cell]), (None, ""))
+                if end_type == "district drain" and length < cell_m:
+                    end_type = "already at district drain"
+
+            out = QgsFeature(d_fields)
+            out.setGeometry(line)
+            out.setAttributes(list(jb["attrs"]) + [
+                jb["source"], jb["pt_fid"], jb["field_fid"], jb["rank"], jb["share"],
+                round(length / u, 2), round(z0 / u, 3), round(z1 / u, 3), round(drop / u, 3),
+                round(100.0 * drop / length, 3) if length > 0 else None,
+                end_type, dfid, dname, via, round(climb / u, 3), round(max_cut / u, 3),
+                first[0], first[1], ex, ey, round(cell_m / u, 3)])
+            d_sink.addFeature(out, QgsFeatureSink.FastInsert)
+            n_out += 1
+        feedback.pushInfo(self.tr("Traced {} path(s) to the district drain.").format(n_out))
+        return d_id
