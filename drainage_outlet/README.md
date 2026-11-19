@@ -1,6 +1,6 @@
 # Drainage outlet (QGIS plugin)
 
-Traces the natural downhill path from a **drainage system outlet point** (tile-drain outlet, culvert, ditch end), or from the natural outlet on a **field boundary**, to the **nearest downstream stream**, inside the **USGS StreamStats watershed** that contains the point.
+Traces the natural downhill path from a **drainage system outlet point** (tile-drain outlet, culvert, ditch end), or from the natural outlet on a **field boundary**, to the **nearest downstream stream**, inside the **USGS StreamStats watershed** that contains the point. Optionally, it also traces a path to a **district drain** you provide.
 
 ## Install
 QGIS → *Plugins → Manage and Install Plugins → Install from ZIP* → `drainage_outlet.zip`. Run it from the toolbar button, *Plugins → Drainage outlet*, or the Processing Toolbox (works in models and batch mode).
@@ -13,7 +13,7 @@ QGIS → *Plugins → Manage and Install Plugins → Install from ZIP* → `drai
 They can be combined in one run. The `source` column says which one each path came from (`field boundary`, `layer`, `map`).
 
 ## Running it
-Click the **Drainage outlet** toolbar button (or *Plugins → Drainage outlet*). The tool window opens directly; a layer named like *globalwatershed* / *watershed* is pre-selected as the watershed.
+Click the **Drainage outlet** toolbar button (or *Plugins → Drainage outlet*). The tool window opens directly; a layer named like *globalwatershed* / *watershed* is pre-selected as the watershed, and a line layer named like *district drain* / *legal drain* as the district drain.
 * **Field:** choose the field layer; to run on specific fields, select them on the map first and tick *Selected features only*.
 * **Point on the map:** click **…** next to *Outlet point picked on the map*, then click the outlet.
 
@@ -37,6 +37,9 @@ Click the **Drainage outlet** toolbar button (or *Plugins → Drainage outlet*).
 | Stream lines | Optional, e.g. NHD / NHDPlus HR flowlines. Without them, channels are derived from the DEM. |
 | Stream snap distance | Mapped streams rarely line up exactly with the DEM valley; lines are widened by this (default 50 ft). |
 | DEM-derived channels / initiation area | Treat cells draining more than this area (default 0.2 mi²) as stream. |
+| District drain lines | Optional line layer of the district / legal drain (open ditch or tile main). When given, a second output with a path to the drain is made. |
+| District drain snap distance | The drain line is widened by this (default 50 ft); a path ends when it touches it. |
+| Route over the lowest ground if flow misses the drain | On by default. When off, a start whose natural flow doesn't reach the drain is reported as *not reached*. |
 | Snap outlet to strongest flow line | 0 = start exactly at the point. Otherwise the start moves to the cell with the most upstream drainage area within this radius (useful when a GPS point sits on a ditch bank). |
 
 ## Output
@@ -45,6 +48,12 @@ Click the **Drainage outlet** toolbar button (or *Plugins → Drainage outlet*).
 
 **Downloaded DEM** (when *Download DEM from USGS 3DEP* is ticked): saved as a GeoTIFF covering the watershed and added to the map. Elevations are in **feet** in US mode (metres in metric mode). Leave the output as a temporary file, or choose a file name to keep it. To reuse it later, pick it as the DEM input with *Elevation units of the DEM* = Feet (international); this skips the download.
 
+**Paths to district drain** (only when a district drain is given; red lines with arrows). One path per start, with the same start attributes and `length_ft`, `start_z_ft`, `end_z_ft`, `drop_ft`, `slope_pct`, `start_x/y`, `end_x/y`, `cell_ft`, plus:
+* `end_type`: *district drain* (natural flow gets there), *already at district drain*, *routed to district drain (crosses higher ground)*, or *district drain not reached (left watershed)*.
+* `drain_fid`, `drain_nm` (from a DRAIN_NAME / NAME field if present).
+* `via_stream`: 1 if the path runs through a mapped or derived stream (other than the drain) before reaching the drain.
+* `climb_ft`: total uphill rise along the path. `max_cut_ft`: the most the ground rises above a straight grade line from start to end, i.e. how deep a channel or tile at constant grade would have to cut. Both are about 0 for natural flow paths.
+
 Optional: **Stream cells used** raster, for checking the channel network.
 
 ## Method
@@ -52,8 +61,11 @@ Optional: **Stream cells used** raster, for checking the channel network.
 2. Depressions filled with priority-flood plus a small gradient on flats (Barnes et al., 2014), so water always finds a way out.
 3. D8 steepest-descent flow directions.
 4. From each outlet the path is followed downhill until it touches a stream cell: the hydrologically nearest stream, which isn't always the closest in a straight line.
+5. District drain (optional): the same downhill path is followed, ignoring streams, until it touches the drain. If it leaves the watershed first, a least-cost route to the nearest point on the drain is found on the filled DEM, where each step costs its length plus 100 × any rise (1 ft of climb costs as much as 100 ft of extra length). The route keeps to low ground and crosses a ridge at its lowest saddle. Field paths start at the field's natural outlet.
 
 ## Tips
 * Road embankments, culverts and ditches only show up in high-resolution (lidar) DEMs; use the best DEM you have.
 * If `end_type` says *left watershed*, increase the stream snap distance or tick *Also treat DEM-derived channels as streams*.
+* The district drain should lie inside the StreamStats watershed (cells outside it are not used). If a path to it says *not reached*, check that the drain is inside the watershed and tick the routing option.
+* A routed path is a planning aid for where a connection (tile or ditch) could go, not where water flows today; check `max_cut_ft` for the depth involved.
 * Only needs what ships with QGIS (Python, NumPy, GDAL).
