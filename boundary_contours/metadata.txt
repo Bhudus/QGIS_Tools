@@ -1,0 +1,23 @@
+[general]
+name=Boundary Contours
+qgisMinimumVersion=3.16
+qgisMaximumVersion=4.99
+supportsQt6=True
+description=Contour lines from a DEM, optionally sink-filled and smoothed, limited to a boundary polygon, with index contours.
+about=Works like Raster > Extraction > Contour, with more options. It can process only the part of the DEM inside a boundary polygon layer and clip the contours to it. It can contour a depression-filled DEM, with pits filled flat to their spill level, using a built-in Priority-Flood fill or SAGA Wang & Liu. It can smooth the DEM (Gaussian) and/or the lines (Chaikin). It flags every Nth contour as an index contour (INDEX/TYPE fields), with optional automatic styling and labels. It remembers the last-run settings for each project. Available in the Processing Toolbox and under Raster > Tile Drainage. Uses only QGIS, GDAL and numpy.
+version=1.3.0
+author=Richard Cooke
+email=raccooke@gmail.com
+
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+
+changelog=1.3.0 - First release: contours clipped to a boundary (selected features only, buffer, minimum length), index contours with automatic styling and labels, contours from a sink-filled DEM (built-in Priority-Flood or SAGA Wang & Liu) with an optional Filled / smoothed DEM output, Gaussian DEM smoothing and Chaikin line smoothing, and last-run settings remembered per project.
+tags=contour,contours,index contour,dem,raster,boundary,clip,fill sinks,filled dem,smoothing,tile drainage,drainage,terrain
+category=Raster
+experimental=False
+deprecated=False
+hasProcessingProvider=yes
+icon=icon.svg
+license=GPL-3.0-or-later
