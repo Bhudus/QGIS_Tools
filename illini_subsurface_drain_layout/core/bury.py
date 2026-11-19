@@ -21,6 +21,7 @@ and the network is buried again until nothing changes.
 All values are in metres and slopes are fractions (m/m).
 """
 from dataclasses import dataclass
+from typing import Optional
 
 HELD_NOTES = ("Held at absolute upper depth", "Held at absolute lower depth",
               "Deepened for low ground upstream")
@@ -37,6 +38,7 @@ class BuryParams:
     use_constant: bool = False
     constant_slope: float = 0.005
     lower_outlet: bool = False
+    fixed_outlet: Optional[float] = None     # outlet tile elevation held here, if given
 
 
 @dataclass
@@ -86,7 +88,11 @@ def bury_pass(rows, caps, bp):
             down_tile = r.down_ground - mid_depth - bp.offset
             # lowest the outlet may go: the lower tile depth (or the offset, if deeper)
             floors[r.down_key] = min(down_tile, r.down_ground - bp.lower_depth)
-            if r.outlet:
+            if r.outlet and bp.fixed_outlet is not None:
+                down_tile = float(bp.fixed_outlet)        # held at the outlet invert
+                floors[r.down_key] = down_tile
+                outlet_depth = r.down_ground - down_tile
+            elif r.outlet:
                 if r.down_key in caps and caps[r.down_key] < down_tile:
                     down_tile = max(caps[r.down_key], floors[r.down_key])
                     notes.append("Outlet lowered for low ground upstream")
@@ -147,7 +153,7 @@ def bury_network(rows, bp, cancel=None):
     caps = {}
     results, needs, floors, flagged, outlet_depth = bury_pass(rows, caps, bp)
     start_depth = outlet_depth
-    if bp.lower_outlet:
+    if bp.lower_outlet and bp.fixed_outlet is None:
         for _ in range(4 * len(rows) + 10):
             changed = False
             for junction, need in needs.items():

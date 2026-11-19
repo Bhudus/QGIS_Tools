@@ -1,0 +1,1557 @@
+"""Processing algorithm: zonal subirrigation layout, each subsystem contained in a zone."""
+import html
+import json
+import math
+import os
+
+import numpy as np
+from qgis.core import (
+    QgsCategorizedSymbolRenderer,
+    QgsCoordinateTransform,
+    QgsFeature,
+    QgsFeatureSink,
+    QgsFillSymbol,
+    QgsField,
+    QgsFields,
+    QgsGeometry,
+    QgsLineString,
+    QgsLineSymbol,
+    QgsMarkerSymbol,
+    QgsPalLayerSettings,
+    QgsPoint,
+    QgsPointXY,
+    QgsProcessing,
+    QgsProcessingAlgorithm,
+    QgsProcessingException,
+    QgsProcessingLayerPostProcessorInterface,
+    QgsProcessingOutputNumber,
+    QgsProcessingOutputString,
+    QgsProcessingParameterBoolean,
+    QgsProcessingParameterDefinition,
+    QgsProcessingParameterEnum,
+    QgsProcessingParameterFeatureSink,
+    QgsProcessingParameterFeatureSource,
+    QgsProcessingParameterFileDestination,
+    QgsProcessingParameterNumber,
+    QgsProcessingParameterPoint,
+    QgsProcessingParameterRasterDestination,
+    QgsProcessingParameterRasterLayer,
+    QgsProcessingParameterString,
+    QgsColorRampShader,
+    QgsPalettedRasterRenderer,
+    QgsProject,
+    QgsRasterFileWriter,
+    QgsRasterLayer,
+    QgsRasterShader,
+    QgsRectangle,
+    QgsSettings,
+    QgsSingleBandPseudoColorRenderer,
+    QgsTextFormat,
+    QgsRendererCategory,
+    QgsRuleBasedRenderer,
+    QgsUnitTypes,
+    QgsVectorLayer,
+    QgsVectorLayerSimpleLabeling,
+    QgsWkbTypes,
+)
+from qgis.PyQt.QtCore import QCoreApplication, QVariant
+from qgis.PyQt.QtGui import QColor, QFont, QIcon
+
+from .core import (
+    ORIENT_ACROSS,
+    ORIENT_ALONG,
+    PATTERN_HERRINGBONE,
+    PATTERN_PARALLEL,
+    SHAPE_CONTOUR,
+    SHAPE_STRAIGHT,
+    Grid,
+    LayoutCancelled,
+    LayoutError,
+    LayoutParams,
+    STATUS_LABELS,
+    ZoneParams,
+    run_zonal_layout,
+)
+from .core.zonal import ST_DEEP, ST_OK, ST_UNDRAINED, ST_WET
+
+PLUGIN_DIR = os.path.dirname(__file__)
+
+PATTERNS = [PATTERN_PARALLEL, PATTERN_HERRINGBONE]
+ORIENTS = [ORIENT_ACROSS, ORIENT_ALONG]
+SHAPES = [SHAPE_STRAIGHT, SHAPE_CONTOUR]
+Z_FACTORS = [1.0, 0.3048, 1200.0 / 3937.0]
+UNIT_FACTORS = [1.0, 0.3048]
+BEARINGS = ["terrain", "ns", "ew", "nwse", "nesw"]   # straight-lateral bearing options
+
+# keep post-processors alive until QGIS has used them
+_POST = {}
+
+
+def _meters_factor(crs):
+    """Map units -> metres."""
+    try:
+        from qgis.core import Qgis
+        return QgsUnitTypes.fromUnitToUnitFactor(crs.mapUnits(), Qgis.DistanceUnit.Meters)
+    except (ImportError, AttributeError):
+        return QgsUnitTypes.fromUnitToUnitFactor(crs.mapUnits(), QgsUnitTypes.DistanceMeters)
+
+
+def _union_box(a, b):
+    return QgsRectangle(min(a.xMinimum(), b.xMinimum()), min(a.yMinimum(), b.yMinimum()),
+                        max(a.xMaximum(), b.xMaximum()), max(a.yMaximum(), b.yMaximum()))
+
+
+def _advanced(param):
+    try:
+        from qgis.core import Qgis
+        param.setFlags(param.flags() | Qgis.ProcessingParameterFlag.Advanced)
+    except (ImportError, AttributeError):
+        param.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
+    return param
+
+
+ZONE_PALETTE = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b",
+                "#e377c2", "#7f7f7f", "#bcbd22", "#17becf", "#aec7e8", "#ffbb78",
+                "#98df8a", "#ff9896", "#c5b0d5", "#c49c94", "#f7b6d2", "#dbdb8d",
+                "#9edae5", "#393b79"]
+STATUS_COLORS = {ST_OK: "#16a34a", ST_DEEP: "#f59e0b", ST_WET: "#2563eb",
+                 ST_UNDRAINED: "#9ca3af"}
+
+
+def _zone_color(z):
+    return QColor(ZONE_PALETTE[(int(z) - 1) % len(ZONE_PALETTE)])
+
+
+def _labels(layer, expr, size=8.0, color="#111111"):
+    s = QgsPalLayerSettings()
+    s.fieldName = expr
+    s.isExpression = True
+    fmt = QgsTextFormat()
+    f = QFont()
+    f.setBold(True)
+    fmt.setFont(f)
+    fmt.setSize(size)
+    fmt.setColor(QColor(color))
+    b = fmt.buffer()
+    b.setEnabled(True)
+    b.setSize(0.8)
+    b.setColor(QColor("white"))
+    fmt.setBuffer(b)
+    s.setFormat(fmt)
+    layer.setLabeling(QgsVectorLayerSimpleLabeling(s))
+    layer.setLabelsEnabled(True)
+
+
+class _ZoneStyler(QgsProcessingLayerPostProcessorInterface):
+    """Zones in categorized colours, labelled with the zone and its board elevation."""
+
+    def __init__(self, zones):
+        super().__init__()
+        self.zones = zones
+
+    def postProcessLayer(self, layer, context, feedback):
+        if not isinstance(layer, QgsVectorLayer):
+            return
+        cats = []
+        for z in self.zones:
+            c = _zone_color(z)
+            sym = QgsFillSymbol.createSimple({
+                "color": "{},{},{},90".format(c.red(), c.green(), c.blue()),
+                "outline_color": "{},{},{},255".format(c.red(), c.green(), c.blue()),
+                "outline_width": "0.4"})
+            cats.append(QgsRendererCategory(int(z), sym, "Zone {}".format(z)))
+        layer.setRenderer(QgsCategorizedSymbolRenderer("zone", cats))
+        _labels(layer, "'Zone ' || \"zone\" || '\\nboard ' || "
+                       "format_number(\"board_elev\", 2)")
+        layer.triggerRepaint()
+
+
+class _StructureStyler(QgsProcessingLayerPostProcessorInterface):
+    """Control structures: green squares, red where flagged, labelled S<id> (zone)."""
+
+    def postProcessLayer(self, layer, context, feedback):
+        if not isinstance(layer, QgsVectorLayer):
+            return
+        root = QgsRuleBasedRenderer.Rule(None)
+        ok = QgsMarkerSymbol.createSimple({"name": "square", "color": "22,163,74",
+                                           "outline_color": "0,0,0", "size": "3.2"})
+        root.appendChild(QgsRuleBasedRenderer.Rule(
+            ok, 0, 0, "\"flag\" IS NULL OR \"flag\" = ''", "Control structure"))
+        bad = QgsMarkerSymbol.createSimple({"name": "square", "color": "220,38,38",
+                                            "outline_color": "0,0,0", "size": "3.6"})
+        root.appendChild(QgsRuleBasedRenderer.Rule(
+            bad, 0, 0, "\"flag\" <> ''", "Structure to check (see flag)"))
+        layer.setRenderer(QgsRuleBasedRenderer(root))
+        _labels(layer, "'S' || \"id\" || ' (zone ' || \"zone\" || ')'", size=8.5)
+        layer.triggerRepaint()
+
+
+class _StatusStyler(QgsProcessingLayerPostProcessorInterface):
+    def __init__(self, codes):
+        super().__init__()
+        self.codes = codes
+
+    def postProcessLayer(self, layer, context, feedback):
+        if not isinstance(layer, QgsRasterLayer):
+            return
+        classes = [QgsPalettedRasterRenderer.Class(c, QColor(STATUS_COLORS[c]),
+                                                   STATUS_LABELS[c]) for c in self.codes]
+        layer.setRenderer(QgsPalettedRasterRenderer(layer.dataProvider(), 1, classes))
+        layer.renderer().setOpacity(0.7)
+        layer.triggerRepaint()
+
+
+class _Styler(QgsProcessingLayerPostProcessorInterface):
+    """Style the network: mains and submains red, connectors grey dashed, laterals blue,
+    layout problems (flag) orange, grade problems (BURY_CHECK) purple. Depth problems
+    are shown by the Tile elevation raster's Tile depth check layer."""
+
+    def postProcessLayer(self, layer, context, feedback):
+        if not isinstance(layer, QgsVectorLayer):
+            return
+        root = QgsRuleBasedRenderer.Rule(None)
+        styles = [
+            ("main", "185,28,28", "1.0", "Main", "solid"),
+            ("submain", "185,28,28", "0.6", "Submain", "solid"),
+            ("connector", "85,85,85", "0.6", "Connector (unperforated)", "dash"),
+            ("lateral", "37,99,235", "0.35", "Lateral", "solid"),
+        ]
+        for kind, color, width, label, line in styles:
+            sym = QgsLineSymbol.createSimple({"color": color, "width": width,
+                                              "line_style": line})
+            root.appendChild(QgsRuleBasedRenderer.Rule(
+                sym, 0, 0, "\"kind\" = '{}' AND (\"flag\" IS NULL OR \"flag\" = '') AND NOT "
+                "(\"BURY_CHECK\" ILIKE '%grade%' OR \"BURY_CHECK\" LIKE '%Not connected%')"
+                .format(kind), label))
+        flagged = QgsLineSymbol.createSimple({"color": "217,119,6", "width": "0.5"})
+        root.appendChild(QgsRuleBasedRenderer.Rule(
+            flagged, 0, 0, "\"flag\" <> ''", "Layout problem (see flag)"))
+        grade = QgsLineSymbol.createSimple({"color": "147,51,234", "width": "0.6"})
+        root.appendChild(QgsRuleBasedRenderer.Rule(
+            grade, 0, 0, "(\"flag\" IS NULL OR \"flag\" = '') AND "
+            "(\"BURY_CHECK\" ILIKE '%grade%' OR \"BURY_CHECK\" LIKE '%Not connected%')",
+            "Grade problem (see BURY_CHECK)"))
+        layer.setRenderer(QgsRuleBasedRenderer(root))
+        layer.triggerRepaint()
+
+
+# tile-raster bands: 1 tile elevation, 2 tile depth, 3 depth check
+DEPTH_OK, DEPTH_SHALLOW, DEPTH_DEEP = 1, 2, 3
+RASTER_NODATA = -9999.0
+ELEV_RAMP = ["#440154", "#3b528b", "#21918c", "#5ec962", "#fde725"]   # viridis
+
+
+def _elevation_renderer(provider, vmin, vmax):
+    """Band 1 (tile elevation) on a viridis ramp from vmin to vmax."""
+    if not vmax > vmin:
+        vmax = vmin + 1.0
+    n = len(ELEV_RAMP)
+    items = [QgsColorRampShader.ColorRampItem(
+        vmin + (vmax - vmin) * k / (n - 1), QColor(c), "{:.2f}".format(
+            vmin + (vmax - vmin) * k / (n - 1))) for k, c in enumerate(ELEV_RAMP)]
+    fn = QgsColorRampShader(vmin, vmax)
+    try:
+        from qgis.core import Qgis
+        fn.setColorRampType(Qgis.ShaderInterpolationMethod.Linear)
+    except (ImportError, AttributeError):
+        fn.setColorRampType(QgsColorRampShader.Interpolated)
+    fn.setColorRampItemList(items)
+    shader = QgsRasterShader()
+    shader.setRasterShaderFunction(fn)
+    r = QgsSingleBandPseudoColorRenderer(provider, 1, shader)
+    r.setClassificationMin(vmin)
+    r.setClassificationMax(vmax)
+    return r
+
+
+def _depth_check_renderer(provider, shallow_label, deep_label):
+    """Band 3 (depth check): only cells outside the depth limits are drawn."""
+    return QgsPalettedRasterRenderer(provider, 3, [
+        QgsPalettedRasterRenderer.Class(DEPTH_SHALLOW, QColor(220, 38, 38), shallow_label),
+        QgsPalettedRasterRenderer.Class(DEPTH_DEEP, QColor(147, 51, 234), deep_label)])
+
+
+class _RasterStyler(QgsProcessingLayerPostProcessorInterface):
+    """Tile elevation on a colour ramp, with a "Tile depth check" layer above it
+    (from the same file) that shows only the cells outside the depth limits."""
+
+    def __init__(self, vmin, vmax, shallow_label, deep_label):
+        super().__init__()
+        self.vmin, self.vmax = vmin, vmax
+        self.labels = (shallow_label, deep_label)
+
+    def postProcessLayer(self, layer, context, feedback):
+        if not isinstance(layer, QgsRasterLayer):
+            return
+        layer.setRenderer(_elevation_renderer(layer.dataProvider(), self.vmin, self.vmax))
+        layer.triggerRepaint()
+        check = QgsRasterLayer(layer.source(), "Tile depth check", "gdal")
+        if not check.isValid():
+            return
+        check.setRenderer(_depth_check_renderer(check.dataProvider(), *self.labels))
+        project = (context.project() if context is not None else None) or QgsProject.instance()
+        project.addMapLayer(check, False)
+        root = project.layerTreeRoot()
+        node = root.findLayer(layer.id())
+        parent = node.parent() if node is not None else root
+        idx = parent.children().index(node) if node is not None else 0
+        parent.insertLayer(idx, check)
+
+
+SETTINGS_GROUP = "illini_subirrigation_layout/last_run"
+
+
+def reset_saved_settings():
+    """Forget the settings saved by the last run (back to the plugin defaults)."""
+    QgsSettings().remove(SETTINGS_GROUP)
+
+
+class IlliniSubirrigationLayoutAlgorithm(QgsProcessingAlgorithm):
+    DEM = "DEM"
+    FIELD = "FIELD"
+    OUTLET = "OUTLET"
+    MAIN = "MAIN"
+    SPACING = "SPACING"
+    PATTERN = "PATTERN"
+    ORIENTATION = "ORIENTATION"
+    SHAPE = "SHAPE"
+    PARALLELISM = "PARALLELISM"
+    LATERAL_BEARING = "LATERAL_BEARING"
+    UNITS = "UNITS"
+    Z_UNITS = "Z_UNITS"
+    HERRINGBONE_ANGLE = "HERRINGBONE_ANGLE"
+    MIN_BEND = "MIN_BEND"
+    CONTOUR_GRADE = "CONTOUR_GRADE"
+    MIN_LAT_GRADE = "MIN_LAT_GRADE"
+    MIN_MAIN_GRADE = "MIN_MAIN_GRADE"
+    MIN_COVER = "MIN_COVER"
+    MAX_DEPTH = "MAX_DEPTH"
+    UPPER_DEPTH = "UPPER_DEPTH"
+    LOWER_DEPTH = "LOWER_DEPTH"
+    MAX_GRADE = "MAX_GRADE"
+    OFFSET = "OFFSET"
+    USE_CONST = "USE_CONST"
+    CONST_GRADE = "CONST_GRADE"
+    LOWER_OUTLET = "LOWER_OUTLET"
+    GRADE_BREAK = "GRADE_BREAK"
+    BURY_METHOD = "BURY_METHOD"
+    MIN_BREAK_RUN = "MIN_BREAK_RUN"
+    BREAK_COST = "BREAK_COST"
+    EXCAVATION = "EXCAVATION"
+    MAX_GRADE_CHANGE = "MAX_GRADE_CHANGE"
+    FIX_OUTLET = "FIX_OUTLET"
+    SIZE_PIPES = "SIZE_PIPES"
+    PIPE_MATERIAL = "PIPE_MATERIAL"
+    DRAINAGE_COEFF = "DRAINAGE_COEFF"
+    SIZING_SLOPE = "SIZING_SLOPE"
+    OUTLET_INVERT = "OUTLET_INVERT"
+    SETBACK = "SETBACK"
+    CELL_SIZE = "CELL_SIZE"
+    SMOOTH = "SMOOTH"
+    MAIN_STOP = "MAIN_STOP"
+    SUBMAIN = "SUBMAIN"
+    NETWORK = "NETWORK"
+    SURFACE_LAYOUT = "SURFACE_LAYOUT"
+    REPORT = "REPORT"
+    TILE_RASTER = "TILE_RASTER"
+    ZONES = "ZONES"
+    INTERVAL = "INTERVAL"
+    MIN_ZONE_AREA = "MIN_ZONE_AREA"
+    ZONE_SETBACK = "ZONE_SETBACK"
+    ZONE_SUBMAINS = "ZONE_SUBMAINS"
+    WT_DEPTH = "WT_DEPTH"
+    CONTROL_DEPTH = "CONTROL_DEPTH"
+    SUPPLY_RATE = "SUPPLY_RATE"
+    P_LOW = "P_LOW"
+    ZONES_OUT = "ZONES_OUT"
+    STRUCTURES = "STRUCTURES"
+    STATUS = "STATUS"
+
+    # ------------------------------------------------------------ metadata
+    def tr(self, s):
+        return QCoreApplication.translate("IlliniSubirrigationLayout", s)
+
+    def createInstance(self):
+        return IlliniSubirrigationLayoutAlgorithm()
+
+    # ------------------------------------------------------------ saved settings
+    # Every design setting is saved when the algorithm runs and becomes the
+    # default the next time the dialog opens (QGIS builds a fresh algorithm, and
+    # so reads these again, for every dialog). Inputs that belong to one field
+    # (DEM, boundary, outlet, main line) and the output destinations are not saved.
+    NOT_SAVED = ("DEM", "FIELD", "OUTLET", "MAIN", "ZONES", "NETWORK", "SURFACE_LAYOUT",
+                 "REPORT", "TILE_RASTER", "ZONES_OUT", "STRUCTURES", "STATUS")
+
+    def addParameter(self, definition, createOutput=True):
+        name = definition.name()
+        if name not in self.NOT_SAVED:
+            if not hasattr(self, "_saved_names"):
+                self._saved_names = []
+            self._saved_names.append(name)
+            raw = QgsSettings().value("{}/{}".format(SETTINGS_GROUP, name), None)
+            if raw is not None:
+                try:
+                    value = json.loads(str(raw))
+                    ok = (definition.checkValueIsAcceptable(value)
+                          if hasattr(definition, "checkValueIsAcceptable") else True)
+                    if ok:
+                        definition.setDefaultValue(value)
+                except (ValueError, TypeError):
+                    pass
+        return super().addParameter(definition, createOutput)
+
+    def _save_settings(self, parameters):
+        settings = QgsSettings()
+        for name in getattr(self, "_saved_names", []):
+            if name not in parameters:
+                continue
+            try:
+                settings.setValue("{}/{}".format(SETTINGS_GROUP, name),
+                                  json.dumps(parameters[name]))
+            except (TypeError, ValueError):
+                pass
+
+    def name(self):
+        return "illinisubirrigationlayout"
+
+    def displayName(self):
+        return self.tr("Illini subirrigation layout")
+
+    def group(self):
+        return ""
+
+    def groupId(self):
+        return ""
+
+    def icon(self):
+        return QIcon(os.path.join(PLUGIN_DIR, "icon.png"))
+
+    def shortHelpString(self):
+        return self.tr(
+            "<p>Lays out a subirrigation (controlled drainage) tile system for a field from "
+            "a DEM, the field boundary, an outlet location and the lateral spacing, with "
+            "the field cut into zones and every subsystem contained within its zone.</p>"
+            "<p><b>Zones</b>: elevation bands one <i>zone elevation interval</i> high on the "
+            "smoothed terrain, each connected patch its own zone, with patches smaller than "
+            "the <i>smallest zone</i> merged into a neighbour. Or supply zone polygons (for "
+            "example the zones of the Water Management Zones plugin); each polygon piece "
+            "is a zone. Zones are numbered from the lowest (1) up.</p>"
+            "<p><b>Subsystems</b>: laterals keep the <i>zone setback</i> (default half the "
+            "spacing) from every zone boundary and only join collectors in their own zone, "
+            "so each lateral lies wholly in one zone. A zone that no collector reaches gets "
+            "its own submain, from its low ground nearest a lower zone's collector, joined "
+            "to it by an unperforated <i>connector</i>. Where a zone is served poorly by a "
+            "collector that only clips it, a submain is added and the laterals are placed "
+            "again.</p>"
+            "<p><b>Control structures</b> go wherever a collector carries water out of a "
+            "zone: where a main or submain crosses into the next zone, where a zone submain "
+            "enters its connector, and at the outlet. Structures always lie inside the field "
+            "boundary: with the outlet beyond the field edge, its structure goes where the "
+            "main enters the field. Each zone's board (stop-log) "
+            "elevation puts the managed water table the <i>water-table depth</i> below the "
+            "zone's low ground (the low-ground percentile, or the ground at its structure if "
+            "lower). Zones report the share of their land where the water table is within "
+            "the <i>control depth</i> of the ground, the share of their tile below the board "
+            "(tile that can carry water out into the soil), and the water supply rate for "
+            "the given daily rate. Pipes in the network are split at every structure and "
+            "carry their zone.</p>"
+            "<p>Defaults suit subirrigation: laterals across the slope, contour-following, at "
+            "0% target grade (on the contour, parallel to the zone boundaries; the tile gets "
+            "its grade from the burying), 40 ft spacing.</p>"
+            "<p><b>Pattern</b><br>"
+            "<i>Parallel / gridiron</i>: one main runs from the outlet perpendicular to "
+            "the laterals — up the slope when laterals run across it, or as a header "
+            "across the low side when laterals run down it.<br>"
+            "<i>Herringbone</i>: the main and any submains follow the low ground "
+            "(drainage-tree thalwegs) from the outlet; laterals enter from both sides.</p>"
+            "<p><b>Main line</b> (optional): draw your own main, and any submains, in a "
+            "line layer. The line ending nearest the outlet becomes the main and flows to "
+            "that end; each other line becomes a submain flowing to its end nearest the "
+            "main (or another submain), which it joins. Lines can run outside the field, "
+            "for example out to a ditch. With a main line the outlet is optional: the "
+            "lowest end of the lines is used. The pattern then only sets how laterals "
+            "leave the main.</p>"
+            "<p><b>Lateral orientation</b><br>"
+            "<i>Across the slope</i>: laterals run nearly parallel to the contours. With "
+            "contour-following shape they hold the target lateral grade along the "
+            "contour.<br>"
+            "<i>Down the slope</i>: laterals run nearly perpendicular to the contours "
+            "(along the fall line).</p>"
+            "<p><b>Lateral shape</b><br>"
+            "<i>Straight</i>: each lateral is a straight line (herringbone laterals leave "
+            "the main at the herringbone angle).<br>"
+            "<i>Contour-following</i>: laterals bend with the smoothed terrain; spacing "
+            "is held by evenly spaced streamline placement. <i>Parallelism</i> steers each "
+            "lateral to run parallel to its neighbour at exactly one spacing: 0 follows "
+            "the terrain freely, 1 makes each lateral an offset of its neighbour; 0.9 keeps "
+            "laterals near parallel while still bending with the land.</p>"
+            "<p><b>Straight laterals: bearing</b> keeps straight laterals running "
+            "north-south, east-west, northwest-southeast or northeast-southwest (on the "
+            "map grid of the DEM's CRS) instead of "
+            "following the terrain; the lateral orientation setting is then not used. With "
+            "the parallel pattern the main runs at right angles to the laterals, both ways "
+            "from the outlet, following the field edge where needed. Laterals that slope "
+            "uphill to their collector are reported in BURY_CHECK. It has no effect on "
+            "contour-following laterals.</p>"
+            "<p><b>Tile burying</b> follows Routine J (Tile Burying System) of the Illini "
+            "Drainage Tools. Every pipe is cut at its junctions and at grade breaks, and "
+            "the segments are buried from the outlet upstream. The outlet tile sits at the "
+            "middle of the target band (upper and lower tile depth) plus the offset; each "
+            "segment starts from the tile already set at its downstream junction, aims for "
+            "the middle of the band at its upstream end, keeps its slope between the "
+            "minimum and maximum (or at the constant slope), and stays between the "
+            "absolute upper and lower tile depths. <i>Lower the outlet</i> deepens the "
+            "outlet, down to the lower tile depth, when low ground upstream cannot keep "
+            "the minimum slope. Results are in the Routine J fields ElevDepth1/2, "
+            "BuryDepth1/2, InSlope, OutSlope and BURY_CHECK (1 = upstream end of the line, "
+            "2 = downstream end).</p>"
+            "<p><b>Pipe sizing</b> follows Routine K (Network Pipe Sizing) of the Illini "
+            "Drainage Tools, with the Strahler tile order of Routine G. Each line is sized "
+            "for the flow from all tile upstream (FLOW_LENGTH x drain spacing x drainage "
+            "coefficient), at the flattest burying slope among its segments (InSlope or "
+            "OutSlope), with Manning's equation for a full pipe, using one drainage "
+            "coefficient for every line (default 0.375 inch/day); the Tile Size Calculator "
+            "plugin can then set other coefficients, by tile order or pipe by pipe, and "
+            "resize the pipes. Single-wall pipe uses n = 0.015 up to 8 in, 0.017 "
+            "to 12 in and 0.020 above; the drain spacing is rounded to the nearest foot; and "
+            "TILE_ORDER is the standard Strahler order. Results are in the Routine K fields D_COEFF "
+            "(in/day), D_AREA (acres), CUM_SEG_FLOW (cfs), ACTUAL_SIZE and NOMINAL (inches), "
+            "with TILE_ORDER, FLOW_LENGTH (ft), SIZE_SLOPE and DRAIN_SPACE (the drain "
+            "spacing used, ft: the lateral spacing to the nearest foot).</p>"
+            "<p><b>Burying method.</b> <i>Routine J</i> (the default) buries the tile "
+            "as the Illini Drainage Tools do, aiming for the middle of the target depth "
+            "band between the absolute depths. <i>Minimum cover</i> buries it as shallow "
+            "as possible: each pipe starts at the minimum cover at its upstream end and "
+            "falls at least at the minimum grade, keeping the minimum cover all along; "
+            "pipes that join lower down are taken down to meet it. It uses the minimum "
+            "cover, maximum depth, minimum grades and grade-break spacing, and ignores the "
+            "target band, maximum slope, offset, constant slope and lower-the-outlet "
+            "settings. <i>Fewest grade breaks</i> lays each pipe as a chain of straight "
+            "runs with as few grade breaks as possible: the tile stays between the "
+            "absolute upper and lower depths at every point, every run falls at a grade "
+            "between the minimum and maximum slope, and no run is shorter than the "
+            "<i>shortest run between grade breaks</i> (default 20 ft; the run at the top "
+            "of a pipe may be shorter). Of the profiles with that fewest number of breaks, "
+            "the one closest to the middle of the target band is used. Pipes are buried "
+            "from the outlet upstream, each from the tile of the pipe it joins; the outlet "
+            "can be anywhere between the absolute depths (not below the outlet invert, if "
+            "given), and a pipe is kept deep enough where others join it that they can "
+            "keep the minimum cover. Where no profile fits, the depth limits, then the "
+            "minimum grade, are eased and BURY_CHECK says so. It ignores the grade-break "
+            "spacing, offset, constant slope and lower-the-outlet settings. "
+            "<i>Least cost</i> uses the same search but balances the number of grade "
+            "breaks against how far the tile strays from the middle of the target band: "
+            "each break costs as much as the <i>cost of a grade break</i> (default 100 ft) "
+            "of tile 1 ft off the target, and being 2 ft off costs four times as much. A "
+            "high cost gives the fewest breaks, a low one a profile close to Routine J's. "
+            "The <i>excavation weight</i> (default 0) adds a cost for every foot of depth, "
+            "which pulls the tile shallower. For both, <i>largest change of grade at a "
+            "break</i> (default 0 = any) limits how sharply the grade may change, for plows "
+            "and laser grade control; where that limit cannot be kept, it is eased and "
+            "BURY_CHECK says so.</p>"
+            "<p><i>Level within zones</i> is for subirrigation: in each zone the tile aims "
+            "for one level line, the middle of the target depth band below the zone's low "
+            "ground (so a fixed depth below the zone's board), and is kept at or below the "
+            "board so that all of it can take water in from the structure. It uses the "
+            "least-cost search (straight runs, the cost of a grade break, the shortest run "
+            "and the largest change of grade apply) within the minimum cover, maximum depth "
+            "and minimum grade; collectors step down to the next zone's level at its "
+            "structure. Where the tile cannot stay under the board within the maximum depth "
+            "(high ground in a zone), it goes as deep as allowed and BURY_CHECK says 'Tile "
+            "above the board in places'; the zones table reports the share of tile below the "
+            "board.</p>"
+            "<p><b>Bury from the outlet invert</b> holds the outlet tile at the outlet "
+            "invert elevation (enter the tile invert wanted at the outlet, for example the "
+            "ditch's normal water level plus a clearance) and buries the network upstream "
+            "from it, with any burying method; pipes that cannot then keep the minimum "
+            "cover or grade are noted in BURY_CHECK. Without it the outlet invert is only "
+            "checked. Lower the outlet and the offset do not apply.</p>"
+            "<p><b>Sharpest bend</b>: no tile line turns more sharply than this angle "
+            "between its legs (120 degrees = a change of direction of at most 60 degrees). "
+            "Sharper corners in laterals, connectors and generated mains and submains are "
+            "rounded with short straight cuts or a few gentle bends; junctions move with "
+            "them, so the network stays joined. A short stub at the upper end of a lateral "
+            "that doubles back is trimmed. Lines you supply as the main are left as drawn. "
+            "0 turns this off.</p>"
+            "<p><b>TileLength</b> is each line's length rounded to the nearest 5 ft, or the "
+            "nearest metre.</p>"
+            "<p><b>Tile elevation</b> (optional raster output) maps the buried tile on "
+            "the analysis grid, in design units: band 1 tile elevation, band 2 tile depth, "
+            "band 3 depth check (1 within limits, 2 shallower than the minimum cover, 3 "
+            "deeper than the maximum depth). It loads with a <i>Tile depth check</i> "
+            "layer above it that shows only the cells outside the limits: red too "
+            "shallow, purple too deep.</p>"
+            "<p>Long connectors, laterals with no collector downstream and cover outside "
+            "the absolute depths between grade breaks are flagged in the <i>flag</i> "
+            "field.</p>"
+            "<p><b>Output</b>: one connected network. Mains, submains and laterals are "
+            "split at every junction into links that run node to node, with "
+            "<i>from_node</i>, <i>to_node</i> and the downstream link (<i>ds_link</i>, 0 at "
+            "the outlet). <i>upstream_length</i> is the pipe length draining through each "
+            "link and <i>drained_area</i> the area served by the laterals upstream "
+            "(lateral length x spacing; hectares, or acres in feet mode), for pipe "
+            "sizing.</p>"
+            "<p>All lengths, depths and elevations on this form and in the outputs are in "
+            "the chosen design units. The DEM must be in a projected CRS. Grades are in "
+            "percent. Depth defaults are in feet; enter metre values if you design in "
+            "metres.</p>"
+            "<p>The burying and sizing schemes are ported from the Illini Drainage Tools by Anamelechi "
+            "Falasy and Richard Cooke, University of Illinois Urbana-Champaign (GPL v3).</p>")
+
+    # ------------------------------------------------------------ parameters
+    def initAlgorithm(self, config=None):
+        self.addParameter(QgsProcessingParameterRasterLayer(
+            self.DEM, self.tr("Elevation (DEM)")))
+        self.addParameter(QgsProcessingParameterFeatureSource(
+            self.FIELD, self.tr("Field boundary"), [QgsProcessing.TypeVectorPolygon]))
+        self.addParameter(QgsProcessingParameterPoint(
+            self.OUTLET, self.tr("Outlet location [optional if a main line is given]"),
+            optional=True))
+        self.addParameter(QgsProcessingParameterFeatureSource(
+            self.MAIN, self.tr("Main line(s) [optional; leave empty to route the main "
+                               "automatically]"),
+            [QgsProcessing.TypeVectorLine], optional=True))
+        self.addParameter(QgsProcessingParameterFeatureSource(
+            self.ZONES, self.tr("Zone polygons [optional; leave empty for elevation bands]"),
+            [QgsProcessing.TypeVectorPolygon], optional=True))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.UNITS, self.tr("Design units (spacing, depths, outputs)"),
+            options=[self.tr("Metres"), self.tr("Feet")], defaultValue=1))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.SPACING, self.tr("Lateral spacing"),
+            QgsProcessingParameterNumber.Double, defaultValue=40.0, minValue=1.0))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.PATTERN, self.tr("Layout pattern"),
+            options=[self.tr("Parallel / gridiron"), self.tr("Herringbone")],
+            defaultValue=0))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.ORIENTATION, self.tr("Lateral orientation"),
+            options=[self.tr("Across the slope (near parallel to contours)"),
+                     self.tr("Down the slope (near perpendicular to contours)")],
+            defaultValue=0))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.SHAPE, self.tr("Lateral shape"),
+            options=[self.tr("Straight"),
+                     self.tr("Contour-following (bend with the terrain)")],
+            defaultValue=1))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.LATERAL_BEARING, self.tr("Straight laterals: bearing"),
+            options=[self.tr("Follow the terrain (lateral orientation)"),
+                     self.tr("North-south"), self.tr("East-west"),
+                     self.tr("Northwest-southeast"), self.tr("Northeast-southwest")],
+            defaultValue=0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.PARALLELISM,
+            self.tr("Contour-following laterals: parallelism "
+                    "(0 = follow terrain, 1 = strictly parallel)"),
+            QgsProcessingParameterNumber.Double, defaultValue=0.9,
+            minValue=0.0, maxValue=1.0))
+        # zones and water management
+        self.addParameter(QgsProcessingParameterNumber(
+            self.INTERVAL, self.tr("Zone elevation interval"),
+            QgsProcessingParameterNumber.Double, defaultValue=1.0, minValue=0.01))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.MIN_ZONE_AREA, self.tr("Smallest zone (acres, or hectares in metres)"),
+            QgsProcessingParameterNumber.Double, defaultValue=1.0, minValue=0.0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.WT_DEPTH, self.tr("Managed water-table depth below the zone's low ground"),
+            QgsProcessingParameterNumber.Double, defaultValue=1.5, minValue=0.0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.CONTROL_DEPTH, self.tr("Control depth: deepest water table that still "
+                                        "counts as controlled"),
+            QgsProcessingParameterNumber.Double, defaultValue=3.0, minValue=0.0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.SUPPLY_RATE, self.tr("Water supply rate (inch/day, or mm/day in metres)"),
+            QgsProcessingParameterNumber.Double, defaultValue=0.3, minValue=0.0))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.ZONE_SUBMAINS, self.tr("Give zones no collector reaches their own submain"),
+            defaultValue=True))
+        # tile burying, after Routine J (Tile Burying System) of the Illini Drainage Tools
+        self.addParameter(QgsProcessingParameterNumber(
+            self.UPPER_DEPTH, self.tr("Burying: upper tile depth (target band)"),
+            QgsProcessingParameterNumber.Double, defaultValue=3.25, minValue=0.0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.LOWER_DEPTH, self.tr("Burying: lower tile depth (target band)"),
+            QgsProcessingParameterNumber.Double, defaultValue=4.25, minValue=0.0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.MIN_COVER, self.tr("Burying: absolute upper tile depth (minimum cover)"),
+            QgsProcessingParameterNumber.Double, defaultValue=2.5, minValue=0.0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.MAX_DEPTH, self.tr("Burying: absolute lower tile depth (maximum depth)"),
+            QgsProcessingParameterNumber.Double, defaultValue=6.0, minValue=0.1))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.MAX_GRADE, self.tr("Burying: maximum slope (%)"),
+            QgsProcessingParameterNumber.Double, defaultValue=5.0, minValue=0.01,
+            maxValue=100.0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.MIN_LAT_GRADE, self.tr("Burying: minimum slope, laterals (%)"),
+            QgsProcessingParameterNumber.Double, defaultValue=0.1, minValue=0.0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.MIN_MAIN_GRADE, self.tr("Burying: minimum slope, mains and submains (%)"),
+            QgsProcessingParameterNumber.Double, defaultValue=0.1, minValue=0.0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.OFFSET, self.tr("Burying: offset depth at the outlet (+ lowers the outlet)"),
+            QgsProcessingParameterNumber.Double, defaultValue=0.0))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.USE_CONST, self.tr("Burying: use constant slope (flat terrain only)"),
+            defaultValue=False))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.CONST_GRADE, self.tr("Burying: constant slope (%)"),
+            QgsProcessingParameterNumber.Double, defaultValue=0.5, minValue=0.0,
+            maxValue=100.0))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.LOWER_OUTLET,
+            self.tr("Burying: lower the outlet for low ground (down to the lower tile depth)"),
+            defaultValue=False))
+        # pipe sizing, after Routine K (Network Pipe Sizing) of the Illini Drainage Tools
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.SIZE_PIPES, self.tr("Sizing: size the pipes"), defaultValue=True))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.PIPE_MATERIAL, self.tr("Sizing: pipe material"),
+            options=[self.tr("Single Wall"), self.tr("Smooth Wall"),
+                     self.tr("Clay or Concrete")], defaultValue=0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.DRAINAGE_COEFF, self.tr("Sizing: drainage coefficient [inch/day]"),
+            QgsProcessingParameterNumber.Double, defaultValue=0.375, minValue=0.001,
+            maxValue=100.0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.OUTLET_INVERT,
+            self.tr("Outlet invert elevation, in DEM elevation units [optional]"),
+            QgsProcessingParameterNumber.Double, optional=True))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.FIX_OUTLET,
+            self.tr("Bury from the outlet invert (hold the outlet tile at it)"),
+            defaultValue=False))
+
+        self.addParameter(_advanced(QgsProcessingParameterEnum(
+            self.Z_UNITS, self.tr("DEM elevation units"),
+            options=[self.tr("Metres"), self.tr("International feet"),
+                     self.tr("US survey feet")], defaultValue=2)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.CONTOUR_GRADE, self.tr("Target grade for contour-following laterals (%; 0 = "
+                                        "on the contour)"),
+            QgsProcessingParameterNumber.Double, defaultValue=0.0, minValue=0.0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.MIN_BEND,
+            self.tr("Sharpest bend: smallest angle between tile legs (degrees; "
+                    "180 = straight, 0 = no limit)"),
+            QgsProcessingParameterNumber.Double, defaultValue=120.0,
+            minValue=0.0, maxValue=135.0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.HERRINGBONE_ANGLE,
+            self.tr("Herringbone angle between lateral and main (degrees)"),
+            QgsProcessingParameterNumber.Double, defaultValue=60.0,
+            minValue=15.0, maxValue=90.0)))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.BURY_METHOD, self.tr("Burying method"),
+            options=[self.tr("Routine J: target depth band (Illini Drainage Tools)"),
+                     self.tr("Minimum cover: as shallow as the minimum cover and grade allow"),
+                     self.tr("Fewest grade breaks: straight runs within the depth and "
+                             "slope limits"),
+                     self.tr("Least cost: balance grade breaks against distance from the "
+                             "target depth"),
+                     self.tr("Level within zones: tile level and below each zone's board "
+                             "(subirrigation)")],
+            defaultValue=0))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.MIN_BREAK_RUN,
+            self.tr("Fewest breaks / least cost: shortest run between grade breaks"),
+            QgsProcessingParameterNumber.Double, defaultValue=20.0, minValue=0.0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.MAX_GRADE_CHANGE,
+            self.tr("Fewest breaks / least cost: largest change of grade at a break [%, "
+                    "0 = any]"),
+            QgsProcessingParameterNumber.Double, defaultValue=0.0, minValue=0.0,
+            maxValue=10.0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.BREAK_COST,
+            self.tr("Least cost: cost of a grade break, as a length of tile 1 ft (1 m) "
+                    "off the target depth"),
+            QgsProcessingParameterNumber.Double, defaultValue=100.0, minValue=0.0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.EXCAVATION,
+            self.tr("Least cost: excavation weight (cost of 1 ft (1 m) more depth, relative "
+                    "to being 1 ft (1 m) off the target)"),
+            QgsProcessingParameterNumber.Double, defaultValue=0.0, minValue=0.0,
+            maxValue=100.0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.GRADE_BREAK, self.tr("Burying: longest segment between grade breaks"),
+            QgsProcessingParameterNumber.Double, defaultValue=50.0, minValue=0.1)))
+        self.addParameter(_advanced(QgsProcessingParameterEnum(
+            self.SIZING_SLOPE, self.tr("Sizing: burying slope used"),
+            options=[self.tr("InSlope"), self.tr("OutSlope")], defaultValue=0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.ZONE_SETBACK, self.tr("Lateral setback from zone boundaries [optional, "
+                                       "default half the spacing]"),
+            QgsProcessingParameterNumber.Double, optional=True, minValue=0.0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.P_LOW, self.tr("Low-ground percentile of a zone (for its board)"),
+            QgsProcessingParameterNumber.Double, defaultValue=5.0, minValue=0.0,
+            maxValue=50.0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.SETBACK, self.tr("Boundary setback [optional, default half the spacing]"),
+            QgsProcessingParameterNumber.Double, optional=True, minValue=0.0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.SMOOTH, self.tr("Terrain smoothing radius [optional, default the spacing]"),
+            QgsProcessingParameterNumber.Double, optional=True, minValue=0.0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.CELL_SIZE, self.tr("Analysis cell size [optional, automatic]"),
+            QgsProcessingParameterNumber.Double, optional=True, minValue=0.0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.MAIN_STOP,
+            self.tr("Main/submain ends where its drainage area falls below (% of field)"),
+            QgsProcessingParameterNumber.Double, defaultValue=2.0, minValue=0.1,
+            maxValue=50.0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.SUBMAIN,
+            self.tr("Herringbone: branches draining more than this become submains "
+                    "(% of field, 0 = none)"),
+            QgsProcessingParameterNumber.Double, defaultValue=10.0, minValue=0.0,
+            maxValue=100.0)))
+
+        self.addParameter(QgsProcessingParameterFeatureSink(
+            self.NETWORK, self.tr("Drainage network"), QgsProcessing.TypeVectorLine))
+        self.addParameter(QgsProcessingParameterFeatureSink(
+            self.ZONES_OUT, self.tr("Subirrigation zones"), QgsProcessing.TypeVectorPolygon))
+        self.addParameter(QgsProcessingParameterFeatureSink(
+            self.STRUCTURES, self.tr("Control structures"), QgsProcessing.TypeVectorPoint))
+        self.addParameter(QgsProcessingParameterFeatureSink(
+            self.SURFACE_LAYOUT, self.tr("Surface Layout"),
+            QgsProcessing.TypeVectorLine))
+        self.addParameter(QgsProcessingParameterFileDestination(
+            self.REPORT, self.tr("Layout report"), self.tr("HTML files (*.html)"),
+            optional=True, createByDefault=False))
+        self.addParameter(QgsProcessingParameterRasterDestination(
+            self.TILE_RASTER, self.tr("Tile elevation"),
+            optional=True, createByDefault=True))
+        self.addParameter(QgsProcessingParameterRasterDestination(
+            self.STATUS, self.tr("Water-table status"),
+            optional=True, createByDefault=False))
+
+        for key, desc in (("TOTAL_LENGTH", "Total pipe length"),
+                          ("LATERAL_LENGTH", "Lateral length"),
+                          ("COLLECTOR_LENGTH", "Main and submain length"),
+                          ("COVERAGE_PCT", "Drainable area within half a spacing of a pipe (%)"),
+                          ("N_LATERALS", "Number of laterals"),
+                          ("OUTLET_DEPTH", "Outlet tile depth"),
+                          ("N_ZONES", "Number of zones"),
+                          ("N_STRUCTURES", "Number of control structures"),
+                          ("CONTROLLED_PCT", "Land with the water table within the control "
+                                             "depth (%)"),
+                          ("SUPPLY", "Water supply, all zones (gpm, or L/s in metres)")):
+            self.addOutput(QgsProcessingOutputNumber(key, self.tr(desc)))
+        self.addOutput(QgsProcessingOutputString("WARNINGS", self.tr("Warnings")))
+
+    # ------------------------------------------------------------ inputs
+    @staticmethod
+    def _rings(geom, xf):
+        """Polygon rings (outer and holes) in metre coordinates."""
+        rings = []
+        if geom.isMultipart():
+            polys = geom.asMultiPolygon()
+        else:
+            polys = [geom.asPolygon()]
+        for poly in polys:
+            for ring in poly:
+                if len(ring) >= 3:
+                    rings.append(np.array([[p.x() * xf, p.y() * xf] for p in ring]))
+        return rings
+
+    @staticmethod
+    def _read_dem(layer, bounds, cell_map, nrows, ncols, feedback):
+        """Resample the DEM onto the analysis grid (bilinear). Returns (array, valid)."""
+        xmin, ymin, xmax, ymax = bounds
+        arr = None
+        if layer.providerType() == "gdal":
+            try:
+                from osgeo import gdal
+                src = layer.dataProvider().dataSourceUri()
+                tmp = "/vsimem/subirrigation_layout_dem.tif"
+                ds = gdal.Warp(tmp, src, format="GTiff",
+                               outputBounds=(xmin, ymin, xmax, ymax),
+                               width=ncols, height=nrows, resampleAlg="bilinear",
+                               dstNodata=-99999.0, outputType=gdal.GDT_Float32)
+                if ds is not None:
+                    arr = ds.GetRasterBand(1).ReadAsArray().astype(float)
+                    ds = None
+                gdal.Unlink(tmp)
+            except Exception as e:  # noqa: BLE001
+                feedback.pushWarning("GDAL resampling failed ({}); falling back to "
+                                     "nearest-neighbour reading.".format(e))
+                arr = None
+            if arr is not None:
+                valid = np.isfinite(arr) & (arr > -99998.0)
+                return arr, valid
+        prov = layer.dataProvider()
+        block = prov.block(1, QgsRectangle(xmin, ymin, xmax, ymax), ncols, nrows)
+        arr = np.empty((nrows, ncols))
+        valid = np.ones((nrows, ncols), dtype=bool)
+        for i in range(nrows):
+            for j in range(ncols):
+                arr[i, j] = block.value(i, j)
+                if block.isNoData(i, j):
+                    valid[i, j] = False
+        return arr, valid & np.isfinite(arr)
+
+    @staticmethod
+    def _rasterize_zones(geoms, x0, y0, cell, nrows, ncols):
+        """Zone label grid (1..n by feature, 0 outside) from zone polygons."""
+        from osgeo import gdal, ogr
+        ds = gdal.GetDriverByName("MEM").Create("", ncols, nrows, 1, gdal.GDT_Int32)
+        ds.SetGeoTransform((x0, cell, 0.0, y0, 0.0, -cell))
+        ds.GetRasterBand(1).Fill(0)
+        drv = ogr.GetDriverByName("Memory") or ogr.GetDriverByName("MEM")
+        src = drv.CreateDataSource("subirr_zones_in")
+        lyr = src.CreateLayer("zones", geom_type=ogr.wkbMultiPolygon)
+        lyr.CreateField(ogr.FieldDefn("zid", ogr.OFTInteger))
+        for k, g in enumerate(geoms, start=1):
+            f = ogr.Feature(lyr.GetLayerDefn())
+            f.SetField("zid", k)
+            f.SetGeometry(ogr.CreateGeometryFromWkb(bytes(g.asWkb())))
+            lyr.CreateFeature(f)
+        gdal.RasterizeLayer(ds, [1], lyr, options=["ATTRIBUTE=zid"])
+        return ds.GetRasterBand(1).ReadAsArray().astype(np.int64)
+
+    @staticmethod
+    def _polygonize(zr, x0, y0, cell):
+        """{zone id: QgsGeometry} from a zone grid (0 = none), in map units."""
+        from osgeo import gdal, ogr
+        nrows, ncols = zr.shape
+        ds = gdal.GetDriverByName("MEM").Create("", ncols, nrows, 1, gdal.GDT_Int32)
+        ds.SetGeoTransform((x0, cell, 0.0, y0, 0.0, -cell))
+        band = ds.GetRasterBand(1)
+        band.WriteArray(zr.astype(np.int32))
+        mds = gdal.GetDriverByName("MEM").Create("", ncols, nrows, 1, gdal.GDT_Byte)
+        mds.SetGeoTransform((x0, cell, 0.0, y0, 0.0, -cell))
+        mds.GetRasterBand(1).WriteArray((zr > 0).astype(np.uint8))
+        drv = ogr.GetDriverByName("Memory") or ogr.GetDriverByName("MEM")
+        src = drv.CreateDataSource("subirr_zones")
+        lyr = src.CreateLayer("zones", geom_type=ogr.wkbPolygon)
+        lyr.CreateField(ogr.FieldDefn("zone", ogr.OFTInteger))
+        gdal.Polygonize(band, mds.GetRasterBand(1), lyr, 0, [])
+        parts = {}
+        for f in lyr:
+            z = f.GetField(0)
+            g = QgsGeometry()
+            g.fromWkb(bytes(f.GetGeometryRef().ExportToWkb()))
+            parts.setdefault(int(z), []).append(g)
+        return {z: QgsGeometry.unaryUnion(gs) for z, gs in parts.items()}
+
+    @staticmethod
+    def _write_status(path, sr, x0, y0, cell, crs):
+        from osgeo import gdal
+        ds = gdal.GetDriverByName("GTiff").Create(path, sr.shape[1], sr.shape[0], 1,
+                                                  gdal.GDT_Byte, ["COMPRESS=DEFLATE"])
+        if ds is None:
+            raise QgsProcessingException("Could not write the water-table status raster "
+                                         "to {}.".format(path))
+        ds.SetGeoTransform((x0, cell, 0.0, y0, 0.0, -cell))
+        ds.SetProjection(crs.toWkt())
+        b = ds.GetRasterBand(1)
+        b.WriteArray(sr.astype(np.uint8))
+        b.SetNoDataValue(0)
+        ds.FlushCache()
+        ds = None
+
+    # ------------------------------------------------------------ run
+    def processAlgorithm(self, parameters, context, feedback):
+        self._save_settings(parameters)
+        status_path = self.parameterAsOutputLayer(parameters, self.STATUS, context)
+        # Ask for the raster path once only: for a temporary output every call
+        # returns a new file name, and QGIS loads the first one it handed out.
+        raster_path = self.parameterAsOutputLayer(parameters, self.TILE_RASTER, context)
+        dem_layer = self.parameterAsRasterLayer(parameters, self.DEM, context)
+        if dem_layer is None:
+            raise QgsProcessingException(self.tr("Could not load the DEM."))
+        crs = dem_layer.crs()
+        if not crs.isValid() or crs.isGeographic():
+            raise QgsProcessingException(self.tr(
+                "The DEM must be in a projected coordinate system (metres or feet). "
+                "Reproject it with Raster > Projections > Warp first."))
+        xf = _meters_factor(crs)                       # map units -> m
+        uf = UNIT_FACTORS[self.parameterAsEnum(parameters, self.UNITS, context)]
+        zf = Z_FACTORS[self.parameterAsEnum(parameters, self.Z_UNITS, context)]
+
+        def num(key, optional=False):
+            if optional and parameters.get(key) in (None, ""):
+                return None
+            v = self.parameterAsDouble(parameters, key, context)
+            if optional and (v is None or v != v):
+                return None
+            return v
+
+        spacing = num(self.SPACING) * uf
+        setback = num(self.SETBACK, True)
+        smooth_r = num(self.SMOOTH, True)
+        cell_in = num(self.CELL_SIZE, True)
+        outlet_inv = num(self.OUTLET_INVERT, True)
+        if self.parameterAsBool(parameters, self.FIX_OUTLET, context) and outlet_inv is None:
+            raise QgsProcessingException(self.tr(
+                "Bury from the outlet invert needs the Outlet invert elevation."))
+
+        # field geometry, in the DEM CRS
+        source = self.parameterAsSource(parameters, self.FIELD, context)
+        if source is None:
+            raise QgsProcessingException(self.tr("Could not load the field boundary."))
+        tr = QgsCoordinateTransform(source.sourceCrs(), crs, context.transformContext())
+        geoms = []
+        for f in source.getFeatures():
+            g = QgsGeometry(f.geometry())
+            if g.isEmpty():
+                continue
+            g.transform(tr)
+            geoms.append(g)
+        if not geoms:
+            raise QgsProcessingException(self.tr("The field layer has no polygons."))
+        field = QgsGeometry.unaryUnion(geoms) if len(geoms) > 1 else geoms[0]
+        if source.featureCount() > 1:
+            feedback.pushInfo(self.tr("{} field polygons merged into one field.")
+                              .format(source.featureCount()))
+        outlet = None
+        if parameters.get(self.OUTLET) not in (None, ""):
+            outlet = self.parameterAsPoint(parameters, self.OUTLET, context, crs)
+
+        # user-supplied main and submains, in the DEM CRS
+        mains = []
+        main_bb = None
+        main_src = None
+        if parameters.get(self.MAIN) not in (None, ""):
+            main_src = self.parameterAsSource(parameters, self.MAIN, context)
+        if main_src is not None:
+            mtr = QgsCoordinateTransform(main_src.sourceCrs(), crs, context.transformContext())
+            for f in main_src.getFeatures():
+                g = QgsGeometry(f.geometry())
+                if g.isEmpty():
+                    continue
+                g.transform(mtr)
+                parts = g.asMultiPolyline() if g.isMultipart() else [g.asPolyline()]
+                for part in parts:
+                    if len(part) >= 2:
+                        mains.append([(p.x(), p.y()) for p in part])
+                        b = QgsGeometry.fromPolylineXY(part).boundingBox()
+                        main_bb = b if main_bb is None else _union_box(main_bb, b)
+            if not mains:
+                raise QgsProcessingException(self.tr("The main line layer has no lines."))
+            feedback.pushInfo(self.tr("Using {} supplied line(s): the one ending nearest the "
+                                      "outlet is the main, the rest are submains.")
+                              .format(len(mains)))
+        if outlet is None and not mains:
+            raise QgsProcessingException(self.tr(
+                "Give an outlet location, a main line, or both."))
+
+        # optional zone polygons, in the DEM CRS
+        zone_geoms = []
+        if parameters.get(self.ZONES) not in (None, ""):
+            zsrc = self.parameterAsSource(parameters, self.ZONES, context)
+            if zsrc is not None:
+                ztr = QgsCoordinateTransform(zsrc.sourceCrs(), crs, context.transformContext())
+                for f in zsrc.getFeatures():
+                    g = QgsGeometry(f.geometry())
+                    if g.isEmpty():
+                        continue
+                    g.transform(ztr)
+                    zone_geoms.append(g)
+                if not zone_geoms:
+                    raise QgsProcessingException(self.tr("The zone layer has no polygons."))
+                feedback.pushInfo(self.tr("Using {} zone polygon(s).").format(len(zone_geoms)))
+
+        # analysis grid
+        bb = field.boundingBox()
+        if main_bb is not None:
+            bb = _union_box(bb, main_bb)
+        if outlet is not None:
+            bb = _union_box(bb, QgsRectangle(outlet.x(), outlet.y(), outlet.x(), outlet.y()))
+        area_m2 = field.area() * xf * xf
+        dem_res_m = abs(dem_layer.rasterUnitsPerPixelX()) * xf
+        if cell_in:
+            cell_m = cell_in * uf
+        else:
+            cell_m = max(dem_res_m, spacing / 12.0, 0.5)
+            cell_m = min(cell_m, spacing / 5.0)
+            cell_m = max(cell_m, math.sqrt(area_m2 / 2.0e6))
+            cell_m = round(cell_m, 2)
+        smooth_m = smooth_r * uf if smooth_r is not None else spacing
+        margin = (1.5 * smooth_m + 4 * cell_m) / xf
+        cell_map = cell_m / xf
+        xmin = math.floor((bb.xMinimum() - margin) / cell_map) * cell_map
+        ymin = math.floor((bb.yMinimum() - margin) / cell_map) * cell_map
+        xmax = math.ceil((bb.xMaximum() + margin) / cell_map) * cell_map
+        ymax = math.ceil((bb.yMaximum() + margin) / cell_map) * cell_map
+        ncols = int(round((xmax - xmin) / cell_map))
+        nrows = int(round((ymax - ymin) / cell_map))
+        if nrows * ncols > 12_000_000:
+            raise QgsProcessingException(self.tr(
+                "The analysis grid would have {:,} cells; set a larger analysis cell size."
+            ).format(nrows * ncols))
+        feedback.pushInfo(self.tr("Analysis grid: {} x {} cells of {:.2f} {}.")
+                          .format(ncols, nrows, cell_m / uf, "m" if uf == 1.0 else "ft"))
+
+        dem, valid = self._read_dem(dem_layer, (xmin, ymin, xmax, ymax), cell_map,
+                                    nrows, ncols, feedback)
+        if not valid.any():
+            raise QgsProcessingException(self.tr("The DEM has no data over the field."))
+        dem = dem * zf
+        grid = Grid(xmin * xf, ymax * xf, cell_m, nrows, ncols)
+        zone_grid = None
+        if zone_geoms:
+            zone_grid = self._rasterize_zones(zone_geoms, xmin, ymax, cell_map, nrows, ncols)
+
+        params = LayoutParams(
+            spacing=spacing,
+            units="m" if uf == 1.0 else "ft",
+            pattern=PATTERNS[self.parameterAsEnum(parameters, self.PATTERN, context)],
+            orientation=ORIENTS[self.parameterAsEnum(parameters, self.ORIENTATION, context)],
+            shape=SHAPES[self.parameterAsEnum(parameters, self.SHAPE, context)],
+            parallelism=num(self.PARALLELISM),
+            lateral_bearing=BEARINGS[self.parameterAsEnum(parameters, self.LATERAL_BEARING,
+                                                          context)],
+            herringbone_angle=num(self.HERRINGBONE_ANGLE),
+            min_bend_angle=num(self.MIN_BEND),
+            contour_grade=num(self.CONTOUR_GRADE) / 100.0,
+            min_lateral_grade=num(self.MIN_LAT_GRADE) / 100.0,
+            min_main_grade=num(self.MIN_MAIN_GRADE) / 100.0,
+            min_cover=num(self.MIN_COVER) * uf,
+            max_depth=num(self.MAX_DEPTH) * uf,
+            target_upper=num(self.UPPER_DEPTH) * uf,
+            target_lower=num(self.LOWER_DEPTH) * uf,
+            max_grade=num(self.MAX_GRADE) / 100.0,
+            outlet_offset=num(self.OFFSET) * uf,
+            use_constant=self.parameterAsBool(parameters, self.USE_CONST, context),
+            constant_grade=num(self.CONST_GRADE) / 100.0,
+            lower_outlet=self.parameterAsBool(parameters, self.LOWER_OUTLET, context),
+            grade_break=num(self.GRADE_BREAK) * uf,
+            bury_method=("routine_j", "min_cover", "fewest_breaks", "least_cost", "zone_level")[
+                self.parameterAsEnum(parameters, self.BURY_METHOD, context)],
+            min_break_run=num(self.MIN_BREAK_RUN) * uf,
+            break_cost=num(self.BREAK_COST) * uf,
+            excavation_weight=num(self.EXCAVATION),
+            max_grade_change=num(self.MAX_GRADE_CHANGE) / 100.0,
+            fix_outlet=self.parameterAsBool(parameters, self.FIX_OUTLET, context),
+            size_pipes=self.parameterAsBool(parameters, self.SIZE_PIPES, context),
+            pipe_material=self.parameterAsEnum(parameters, self.PIPE_MATERIAL, context),
+            drainage_coeff=num(self.DRAINAGE_COEFF),
+            sizing_slope="in" if self.parameterAsEnum(
+                parameters, self.SIZING_SLOPE, context) == 0 else "out",
+            outlet_invert=outlet_inv * zf if outlet_inv is not None else None,
+            setback=setback * uf if setback is not None else None,
+            smooth_radius=smooth_m,
+            main_stop_frac=num(self.MAIN_STOP) / 100.0,
+            submain_frac=num(self.SUBMAIN) / 100.0,
+            tile_raster=bool(raster_path),
+        )
+
+        area_unit_m2 = 4046.8564224 if uf != 1.0 else 1.0e4       # acre or hectare
+        rate_f = 0.0254 if uf != 1.0 else 0.001                     # inch/day or mm/day -> m/day
+        zsb = num(self.ZONE_SETBACK, True)
+        zparams = ZoneParams(
+            interval=num(self.INTERVAL) * uf,
+            min_zone_area=num(self.MIN_ZONE_AREA) * area_unit_m2,
+            zone_setback=zsb * uf if zsb is not None else None,
+            wt_depth=num(self.WT_DEPTH) * uf,
+            control_depth=num(self.CONTROL_DEPTH) * uf,
+            p_low=num(self.P_LOW),
+            supply_rate=num(self.SUPPLY_RATE) * rate_f,
+            zone_submains=self.parameterAsBool(parameters, self.ZONE_SUBMAINS, context))
+
+        def progress(pct, msg):
+            feedback.setProgress(pct)
+            feedback.setProgressText(msg)
+
+        try:
+            res = run_zonal_layout(
+                dem, valid, grid, self._rings(field, xf),
+                None if outlet is None else (outlet.x() * xf, outlet.y() * xf),
+                params, zparams, zones=zone_grid, progress=progress,
+                cancel=feedback.isCanceled,
+                mains=[[(x * xf, y * xf) for x, y in m] for m in mains])
+        except LayoutCancelled:
+            return {}
+        except LayoutError as e:
+            raise QgsProcessingException(str(e))
+
+        # ---------------------------------------------------- outputs
+        lengths = ("length_m", "ground_us", "ground_ds", "invert_us", "invert_ds",
+                   "max_depth_m", "min_depth_m", "depth_ds_m")
+        u_lbl = "m" if uf == 1.0 else "ft"
+
+        def conv(attrs):
+            out = dict(attrs)
+            for k in lengths:
+                out[k] = round(attrs[k] / uf, 3)
+            return out
+
+        def fields(first):
+            fs = QgsFields()
+            for name, typ in first:
+                fs.append(QgsField(name, typ))
+            return fs
+
+        D, I, S = QVariant.Double, QVariant.Int, QVariant.String
+        net_fields = fields([
+            ("id", I), ("pipe_id", I), ("kind", S), ("pipe", S), ("zone", I),
+            ("from_node", I), ("to_node", I),
+            ("ds_link", I), ("length", D), ("TileLength", I), ("ground_us", D), ("ground_ds", D),
+            ("terrain_grade_pct", D), ("invert_us", D), ("invert_ds", D),
+            ("design_grade_pct", D), ("max_depth", D), ("min_depth", D), ("depth_ds", D),
+            ("upstream_length", D), ("drained_area", D),
+            # Routine J (Illini Drainage Tools) fields: 1 = first vertex (upstream end)
+            ("ElevDepth1", D), ("BuryDepth1", D), ("ElevDepth2", D), ("BuryDepth2", D),
+            ("InSlope", D), ("OutSlope", D), ("BURY_CHECK", S),
+            # Routine K (Illini Drainage Tools) fields, in Routine K's US units
+            ("TILE_ORDER", I), ("FLOW_LENGTH", D), ("SIZE_SLOPE", D), ("D_COEFF", D),
+            ("DRAIN_SPACE", I),
+            ("D_AREA", D), ("CUM_SEG_FLOW", D), ("ACTUAL_SIZE", D), ("NOMINAL", I),
+            ("PIPE_TYPE", S),
+            ("flag", S)])
+        area_f = 1.0 if uf == 1.0 else 2.4710538     # ha, or acres in feet mode
+        rename = {"length_m": "length", "max_depth_m": "max_depth", "min_depth_m": "min_depth",
+                  "depth_ds_m": "depth_ds"}
+
+        # the network carries the tile elevation (Z) and ground elevation (M), in
+        # design units, at every vertex, including every Routine J grade break
+        sink, net_id = self.parameterAsSink(parameters, self.NETWORK, context,
+                                            net_fields, QgsWkbTypes.LineStringZM, crs)
+        id_fields = fields([("id", I)])
+        id_sink, ids_id = self.parameterAsSink(parameters, self.SURFACE_LAYOUT, context,
+                                               id_fields, QgsWkbTypes.LineString, crs)
+        if sink is None or id_sink is None:
+            raise QgsProcessingException(self.tr("Could not create the output layers."))
+        for it in res["network"]:
+            a = conv(it["attrs"])
+            a = {rename.get(k, k): v for k, v in a.items()}
+            a["upstream_length"] = round(it["attrs"]["upstream_m"] / uf, 1)
+            a["drained_area"] = round(it["attrs"]["drained_ha"] * area_f, 3)
+            # length rounded to the nearest 5 ft, or the nearest metre
+            step = 5.0 if uf != 1.0 else 1.0
+            a["TileLength"] = int(math.floor(a["length"] / step + 0.5) * step)
+            a["ElevDepth1"] = a["invert_us"]
+            a["BuryDepth1"] = round(a["ground_us"] - a["invert_us"], 3)
+            a["ElevDepth2"] = a["invert_ds"]
+            a["BuryDepth2"] = round(a["ground_ds"] - a["invert_ds"], 3)
+            a["InSlope"] = it["attrs"]["in_slope"]
+            a["OutSlope"] = it["attrs"]["out_slope"]
+            a["BURY_CHECK"] = it["attrs"]["bury_check"]
+            f = QgsFeature(net_fields)
+            f.setGeometry(QgsGeometry(QgsLineString([
+                QgsPoint(x / xf, y / xf, float(zt) / uf, float(gm) / uf)
+                for (x, y), zt, gm in zip(it["coords"], it["tile_z"], it["ground_m"])])))
+            f.setAttributes([a.get(net_fields.at(i).name()) for i in range(net_fields.count())])
+            sink.addFeature(f, QgsFeatureSink.FastInsert)
+            g = QgsFeature(id_fields)          # same line, flat, id only
+            g.setGeometry(QgsGeometry.fromPolylineXY(
+                [QgsPointXY(x / xf, y / xf) for x, y in it["coords"]]))
+            g.setAttributes([a["id"]])
+            id_sink.addFeature(g, QgsFeatureSink.FastInsert)
+
+        if context.willLoadLayerOnCompletion(net_id):
+            _POST[net_id] = _Styler()
+            context.layerToLoadOnCompletionDetails(net_id).setPostProcessor(_POST[net_id])
+
+        # ---------------------------------------------------- zones and structures
+        a_lbl = "ac" if uf != 1.0 else "ha"
+        sup_lbl = "gpm" if uf != 1.0 else "L/s"
+        area_div = area_unit_m2
+        zone_fields = fields([
+            ("zone", I), ("area", D), ("zmin", D), ("p_low", D), ("median", D),
+            ("p_high", D), ("zmax", D), ("range", D), ("board_elev", D), ("structures", I),
+            ("laterals", I), ("lateral_len", D), ("collector_len", D),
+            ("tile_below_board_pct", D), ("pct_controlled", D), ("pct_deep", D),
+            ("pct_wet", D), ("pct_undrained", D), ("supply", D), ("flag", S)])
+        zsink, zones_id = self.parameterAsSink(parameters, self.ZONES_OUT, context,
+                                               zone_fields, QgsWkbTypes.MultiPolygon, crs)
+        polys = self._polygonize(res["zone_grid"], xmin, ymax, cell_map)
+        for zr in res["zones"]:
+            g = polys.get(zr["zone"])
+            if g is None or g.isEmpty():
+                continue
+            clipped = g.intersection(field)
+            if clipped is not None and not clipped.isEmpty():
+                if QgsWkbTypes.flatType(clipped.wkbType()) == QgsWkbTypes.GeometryCollection:
+                    try:
+                        clipped.convertGeometryCollectionToSubclass(
+                            QgsWkbTypes.PolygonGeometry)
+                    except (AttributeError, TypeError):
+                        clipped = None
+                if (clipped is not None and not clipped.isEmpty()
+                        and clipped.type() == QgsWkbTypes.PolygonGeometry):
+                    g = clipped
+            g.convertToMultiType()
+            f = QgsFeature(zone_fields)
+            f.setGeometry(g)
+            supply = zr["supply_gpm"] if uf != 1.0 else zr["supply_lps"]
+            vals = {"zone": zr["zone"], "area": round(zr["area_m2"] / area_div, 3),
+                    "zmin": zr["zmin"] / uf, "p_low": zr["p_low"] / uf,
+                    "median": zr["median"] / uf, "p_high": zr["p_high"] / uf,
+                    "zmax": zr["zmax"] / uf, "range": zr["range"] / uf,
+                    "board_elev": zr["board"] / uf, "structures": zr["structures"],
+                    "laterals": zr["laterals"], "lateral_len": zr["lateral_m"] / uf,
+                    "collector_len": zr["collector_m"] / uf,
+                    "tile_below_board_pct": zr["tile_below_board_pct"],
+                    "pct_controlled": zr["pct_ok"], "pct_deep": zr["pct_deep"],
+                    "pct_wet": zr["pct_wet"], "pct_undrained": zr["pct_undrained"],
+                    "supply": supply, "flag": zr["flag"]}
+            for k, v in list(vals.items()):
+                if isinstance(v, float):
+                    vals[k] = round(v, 3 if k not in ("lateral_len", "collector_len") else 1)
+            f.setAttributes([vals[zone_fields.at(i).name()]
+                             for i in range(zone_fields.count())])
+            zsink.addFeature(f, QgsFeatureSink.FastInsert)
+        if context.willLoadLayerOnCompletion(zones_id):
+            _POST[zones_id] = _ZoneStyler([z["zone"] for z in res["zones"]])
+            context.layerToLoadOnCompletionDetails(zones_id).setPostProcessor(_POST[zones_id])
+
+        col_names = {k: c["attrs"]["name"] for k, c in enumerate(res["collectors"])}
+        st_fields = fields([
+            ("id", I), ("zone", I), ("to_zone", I), ("kind", S), ("pipe", S), ("ground", D),
+            ("invert", D), ("board_elev", D), ("board_height", D), ("board_depth", D),
+            ("flag", S)])
+        ssink, structs_id = self.parameterAsSink(parameters, self.STRUCTURES, context,
+                                                 st_fields, QgsWkbTypes.Point, crs)
+        for st in res["structures"]:
+            f = QgsFeature(st_fields)
+            f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(st["xy"][0] / xf,
+                                                             st["xy"][1] / xf)))
+            vals = {"id": st["id"], "zone": st["zone"], "to_zone": st["to_zone"],
+                    "kind": st["kind"], "pipe": col_names.get(st["col"], ""),
+                    "ground": round(st["ground"] / uf, 3), "invert": round(st["invert"] / uf, 3),
+                    "board_elev": round(st["board"] / uf, 3),
+                    "board_height": round(st["board_height"] / uf, 3),
+                    "board_depth": round(st["board_depth"] / uf, 3), "flag": st["flag"]}
+            f.setAttributes([vals[st_fields.at(i).name()] for i in range(st_fields.count())])
+            ssink.addFeature(f, QgsFeatureSink.FastInsert)
+        if context.willLoadLayerOnCompletion(structs_id):
+            _POST[structs_id] = _StructureStyler()
+            context.layerToLoadOnCompletionDetails(structs_id).setPostProcessor(
+                _POST[structs_id])
+
+        if status_path:
+            sr = res["status_grid"]
+            self._write_status(status_path, sr, xmin, ymax, cell_map, crs)
+            codes = [c for c in (ST_OK, ST_DEEP, ST_WET, ST_UNDRAINED) if (sr == c).any()]
+            if context.willLoadLayerOnCompletion(status_path):
+                _POST[status_path] = _StatusStyler(codes)
+                context.layerToLoadOnCompletionDetails(status_path).setPostProcessor(
+                    _POST[status_path])
+
+        s = res["summary"]
+        feedback.pushInfo("")
+        feedback.pushInfo(self.tr("Field area: {:.2f} ha").format(s["field_area_ha"]))
+        feedback.pushInfo(self.tr("Laterals: {} totalling {:,.0f} {}").format(
+            s["laterals"], s["lateral_length_m"] / uf, u_lbl))
+        feedback.pushInfo(self.tr("Mains/submains: {:,.0f} {}").format(
+            s["collector_length_m"] / uf, u_lbl))
+        feedback.pushInfo(self.tr("Drainable area within half a spacing of a pipe: {:.1f}%")
+                          .format(s["coverage_pct"]))
+        feedback.pushInfo(self.tr("Zones: {}; control structures: {}; zone submains: {}")
+                          .format(s["zones"], s["structures"], s["zone_submains"]))
+        for zr in res["zones"]:
+            feedback.pushInfo(self.tr(
+                "  Zone {}: {:.2f} {}, ground {:.2f}-{:.2f} {}, board {:.2f} {}, "
+                "{} structure(s), tile below board {:.0f}%, controlled {:.0f}%, "
+                "supply {:.1f} {}{}").format(
+                zr["zone"], zr["area_m2"] / area_div, a_lbl, zr["p_low"] / uf,
+                zr["p_high"] / uf, u_lbl, zr["board"] / uf, u_lbl, zr["structures"],
+                zr["tile_below_board_pct"], zr["pct_ok"],
+                zr["supply_gpm"] if uf != 1.0 else zr["supply_lps"], sup_lbl,
+                (" — " + zr["flag"]) if zr["flag"] else ""))
+        feedback.pushInfo(self.tr("Land with the water table within the control depth: "
+                                  "{:.1f}%; water supply for all zones: {:.1f} {}").format(
+            s["pct_ok"], s["supply_gpm"] if uf != 1.0 else s["supply_lps"], sup_lbl))
+        feedback.pushInfo(self.tr("Mean field slope: {:.2f}%; dominant contour bearing "
+                                  "{:.0f} degrees").format(s["mean_slope_pct"],
+                                                           s["contour_azimuth_deg"]))
+        if s.get("outlet_depth_m") is not None:
+            od, sd = s["outlet_depth_m"] / uf, s["outlet_start_depth_m"] / uf
+            if od > sd + 1e-6:
+                feedback.pushInfo(self.tr("Outlet lowered from {:.2f} {} to {:.2f} {} deep to "
+                                          "serve low ground.").format(sd, u_lbl, od, u_lbl))
+            feedback.pushInfo(self.tr("Outlet tile depth: {:.2f} {}{}.").format(
+                od, u_lbl, self.tr(", held at the outlet invert") if params.fix_outlet else ""))
+        if params.bury_method in ("fewest_breaks", "least_cost", "zone_level"):
+            feedback.pushInfo(self.tr("Buried {}: {} straight runs, {} grade breaks.").format(
+                {"fewest_breaks": "with the fewest grade breaks",
+                 "least_cost": "at least cost",
+                 "zone_level": "level within zones"}[params.bury_method],
+                res["summary"]["bury_segments"], res["summary"]["bury_breaks"]))
+        else:
+            feedback.pushInfo(self.tr("Buried {} segments between junctions and grade breaks "
+                                      "({}).").format(res["summary"]["bury_segments"],
+                                                      "Routine J" if params.bury_method ==
+                                                      "routine_j" else "minimum cover"))
+        if s.get("length_by_size_m"):
+            feedback.pushInfo(self.tr("Pipe by nominal size: {}").format("; ".join(
+                "{} in: {:,.0f} {}".format(k, v / uf, u_lbl)
+                for k, v in s["length_by_size_m"].items())))
+        for w in res["warnings"]:
+            feedback.pushWarning(w)
+
+        raster_counts = None
+        if raster_path and res.get("tile_raster") is not None:
+            raster_counts = self._write_tile_raster(
+                raster_path, res["tile_raster"], grid, xf, uf, crs, params, u_lbl, context,
+                feedback)
+
+        report = self.parameterAsFileOutput(parameters, self.REPORT, context)
+        out = {self.NETWORK: net_id, self.SURFACE_LAYOUT: ids_id,
+               self.ZONES_OUT: zones_id, self.STRUCTURES: structs_id,
+               "N_ZONES": s["zones"], "N_STRUCTURES": s["structures"],
+               "CONTROLLED_PCT": s["pct_ok"],
+               "SUPPLY": s["supply_gpm"] if uf != 1.0 else s["supply_lps"],
+               "TOTAL_LENGTH": s["total_length_m"] / uf,
+               "LATERAL_LENGTH": s["lateral_length_m"] / uf,
+               "COLLECTOR_LENGTH": s["collector_length_m"] / uf,
+               "COVERAGE_PCT": s["coverage_pct"],
+               "N_LATERALS": s["laterals"],
+               "OUTLET_DEPTH": (s["outlet_depth_m"] / uf
+                                if s.get("outlet_depth_m") is not None else None),
+               "WARNINGS": "\n".join(res["warnings"])}
+        if raster_path and raster_counts is not None:
+            out[self.TILE_RASTER] = raster_path
+        if status_path:
+            out[self.STATUS] = status_path
+        if report:
+            self._write_report(report, res, params, uf, u_lbl, area_div, a_lbl, sup_lbl)
+            out[self.REPORT] = report
+        return out
+
+    def _write_tile_raster(self, path, tr, grid, xf, uf, crs, params, u_lbl, context,
+                           feedback):
+        """Write the tile raster (3 bands, design units) and style it on loading."""
+        from osgeo import gdal, osr
+        tile = np.where(np.isfinite(tr["tile"]), tr["tile"] / uf, RASTER_NODATA)
+        depth = np.where(np.isfinite(tr["depth"]), tr["depth"] / uf, RASTER_NODATA)
+        code = tr["code"].astype(np.float32)
+        nrows, ncols = tile.shape
+        mem = gdal.GetDriverByName("MEM").Create("", ncols, nrows, 3, gdal.GDT_Float32)
+        cell_map = grid.cell / xf
+        mem.SetGeoTransform((grid.x0 / xf, cell_map, 0.0, grid.y0 / xf, 0.0, -cell_map))
+        srs = osr.SpatialReference()
+        srs.ImportFromWkt(crs.toWkt())
+        mem.SetProjection(srs.ExportToWkt())
+        for b, (arr, desc, nd) in enumerate((
+                (tile, "Tile elevation ({})".format(u_lbl), RASTER_NODATA),
+                (depth, "Tile depth ({})".format(u_lbl), RASTER_NODATA),
+                (code, "Depth check: 1 within limits, 2 shallower than minimum cover, "
+                       "3 deeper than maximum depth", 0.0)), start=1):
+            band = mem.GetRasterBand(b)
+            band.WriteArray(arr.astype(np.float32))
+            band.SetNoDataValue(nd)
+            band.SetDescription(desc)
+        ext = os.path.splitext(path)[1].lstrip(".").lower()
+        driver = None
+        if ext and ext not in ("tif", "tiff"):
+            try:
+                driver = QgsRasterFileWriter.driverForExtension(ext)
+            except Exception:  # noqa: BLE001
+                driver = None
+        drv = gdal.GetDriverByName(driver or "GTiff")
+        opts = ["COMPRESS=DEFLATE"] if (driver or "GTiff") == "GTiff" else []
+        out = drv.CreateCopy(path, mem, 0, opts)
+        if out is None:
+            raise QgsProcessingException(self.tr("Could not write the tile raster to {}.")
+                                         .format(path))
+        out.FlushCache()
+        out = mem = None
+
+        mc, md = params.min_cover / uf, params.max_depth / uf
+        feedback.pushInfo(self.tr(
+            "Tile raster: {:,} cells on the tile; {:,} shallower than the minimum cover "
+            "({:g} {}), {:,} deeper than the maximum depth ({:g} {}).").format(
+            tr["cells"], tr["shallow"], round(mc, 2), u_lbl, tr["deep"], round(md, 2), u_lbl))
+        if context.willLoadLayerOnCompletion(path):
+            vals = tile[tile != RASTER_NODATA]
+            vmin = float(vals.min()) if vals.size else 0.0
+            vmax = float(vals.max()) if vals.size else 1.0
+            _POST[path] = _RasterStyler(
+                vmin, vmax,
+                self.tr("Shallower than minimum cover ({:g} {})").format(round(mc, 2), u_lbl),
+                self.tr("Deeper than maximum depth ({:g} {})").format(round(md, 2), u_lbl))
+            context.layerToLoadOnCompletionDetails(path).setPostProcessor(_POST[path])
+        return tr["shallow"], tr["deep"]
+
+    def _write_report(self, path, res, params, uf, u, area_div, a_lbl, sup_lbl):
+        s = res["summary"]
+        sup_key = "supply_gpm" if uf != 1.0 else "supply_lps"
+        rows = [
+            ("Zones / control structures / zone submains", "{} / {} / {}".format(
+                s["zones"], s["structures"], s["zone_submains"])),
+            ("Land with the water table within the control depth",
+             "{:.1f}%".format(s["pct_ok"])),
+            ("Water supply, all zones", "{:.1f} {}".format(s[sup_key], sup_lbl)),
+            ("Field area", "{:.2f} ha".format(s["field_area_ha"])),
+            ("Pattern / orientation / shape", "{} / {} / {}".format(
+                params.pattern, params.orientation, params.shape)),
+            ("Lateral spacing", "{:.1f} {}".format(params.spacing / uf, u)),
+            ("Laterals", "{} ({:,.0f} {})".format(s["laterals"], s["lateral_length_m"] / uf, u)),
+            ("Mains and submains", "{:,.0f} {}".format(s["collector_length_m"] / uf, u)),
+            ("Total pipe", "{:,.0f} {}".format(s["total_length_m"] / uf, u)),
+            ("Pipe per hectare", "{:,.0f} {}".format(s["length_per_ha_m"] / uf, u)),
+            ("Drainable area within half a spacing of a pipe",
+             "{:.1f}%".format(s["coverage_pct"])),
+            ("Whole field within half a spacing of a pipe",
+             "{:.1f}%".format(s["field_coverage_pct"])),
+            ("Mean field slope", "{:.2f}%".format(s["mean_slope_pct"])),
+            ("Outlet tile depth", "{:.2f} {}".format(s["outlet_depth_m"] / uf, u)
+             if s.get("outlet_depth_m") is not None else "–"),
+            ("Burying method", {"routine_j": "Routine J (target depth band)",
+                                "min_cover": "Minimum cover",
+                                "fewest_breaks": "Fewest grade breaks",
+                                "least_cost": "Least cost",
+                                "zone_level": "Level within zones"}[params.bury_method]),
+            ("Burying segments / flagged in BURY_CHECK",
+             "{} / {}".format(s["bury_segments"], s["bury_flagged"])),
+            ("Dominant contour bearing", "{:.0f}°".format(s["contour_azimuth_deg"])),
+            ("Laterals deeper than the maximum", str(s["deep_laterals"])),
+            ("Pipes with less than the minimum cover", str(s.get("shallow_pipes", 0))),
+            ("Laterals without a collector", str(s["unconnected_laterals"])),
+        ]
+        rows += [("Pipe, {} in nominal".format(k), "{:,.0f} {}".format(v / uf, u))
+                 for k, v in s.get("length_by_size_m", {}).items()]
+        cols = "".join(
+            "<tr><td>{}</td><td>{}</td><td>{:,.0f} {}</td><td>{:.2f}</td><td>{:.2f} {}</td>"
+            "<td>{}</td></tr>".format(
+                html.escape(c["attrs"]["name"]), html.escape(c["attrs"]["flows_to"]),
+                c["attrs"]["length_m"] / uf, u, c["attrs"]["design_grade_pct"],
+                c["attrs"]["max_depth_m"] / uf, u, html.escape(c["attrs"]["flag"]))
+            for c in res["collectors"])
+        zrows = "".join(
+            "<tr><td>{}</td><td>{:.2f} {}</td><td>{:.2f}–{:.2f}</td><td>{:.2f}</td>"
+            "<td>{}</td><td>{:,.0f} {}</td><td>{:.0f}%</td><td>{:.0f}%</td><td>{:.0f}%</td>"
+            "<td>{:.0f}%</td><td>{:.1f} {}</td><td>{}</td></tr>".format(
+                z["zone"], z["area_m2"] / area_div, a_lbl, z["p_low"] / uf, z["p_high"] / uf,
+                z["board"] / uf, z["structures"], z["lateral_m"] / uf, u,
+                z["tile_below_board_pct"], z["pct_ok"], z["pct_deep"], z["pct_wet"],
+                z[sup_key], sup_lbl, html.escape(z["flag"]))
+            for z in res["zones"])
+        srows = "".join(
+            "<tr><td>S{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.2f}</td><td>{:.2f}</td>"
+            "<td>{:.2f}</td><td>{:.2f}</td><td>{}</td></tr>".format(
+                st["id"], st["zone"], st["to_zone"] or "outlet", html.escape(st["kind"]),
+                st["ground"] / uf, st["invert"] / uf, st["board"] / uf,
+                st["board_height"] / uf, html.escape(st["flag"]))
+            for st in res["structures"])
+        warn = "".join("<li>{}</li>".format(html.escape(w)) for w in res["warnings"]) \
+            or "<li>None</li>"
+        css = ("body{font-family:sans-serif;margin:24px;color:#222}"
+               "table{border-collapse:collapse;margin:8px 0 20px}"
+               "td,th{border:1px solid #ccc;padding:4px 10px;text-align:left}"
+               "th{background:#f2f2f2}")
+        summary = "".join("<tr><th>{}</th><td>{}</td></tr>".format(
+            html.escape(a), html.escape(b)) for a, b in rows)
+        doc = (
+            "<html><head><meta charset='utf-8'><title>Illini subirrigation layout report</title>"
+            "<style>" + css + "</style></head><body>"
+            "<h2>Illini subirrigation layout</h2><table>" + summary + "</table>"
+            "<h3>Zones</h3><table><tr><th>Zone</th><th>Area</th><th>Low–high ground ("
+            + u + ")</th><th>Board (" + u + ")</th><th>Structures</th><th>Laterals</th>"
+            "<th>Tile below board</th><th>Controlled</th><th>Too deep</th><th>Too wet</th>"
+            "<th>Supply</th><th>Flag</th></tr>" + zrows + "</table>"
+            "<h3>Control structures</h3><table><tr><th>Structure</th><th>Zone</th>"
+            "<th>Flows to zone</th><th>Where</th><th>Ground (" + u + ")</th><th>Invert ("
+            + u + ")</th><th>Board (" + u + ")</th><th>Board height (" + u + ")</th>"
+            "<th>Flag</th></tr>" + srows + "</table>"
+            "<h3>Mains and submains</h3><table><tr><th>Name</th><th>Flows to</th>"
+            "<th>Length</th><th>Design grade %</th><th>Max depth</th><th>Flag</th></tr>"
+            + cols + "</table><h3>Warnings</h3><ul>" + warn + "</ul></body></html>")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(doc)

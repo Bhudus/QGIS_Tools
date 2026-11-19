@@ -1,0 +1,22 @@
+[general]
+name=Illini Subirrigation Layout
+qgisMinimumVersion=3.34
+description=Zonal subirrigation (controlled drainage) tile layout from a DEM, field boundary and outlet: every drainage subsystem is contained within its own elevation zone and held by its own control structure.
+about=Cuts the field into zones (elevation bands one interval high, or zone polygons you supply, e.g. from the Water Management Zones plugin) and lays out a tile system in which each zone is one subsystem. Laterals stay inside their zone, keep a setback from every zone boundary and join only their own zone's collectors; a zone no collector reaches gets its own submain with an unperforated connector to a lower zone. Control structures are placed wherever a collector carries water out of a zone, with board (stop-log) elevations that hold the managed water table a set depth below each zone's low ground. Reports, per zone, the share of land with the water table within the control depth, the share of tile below the board, and the water supply rate. Tile burying with Routine J, Minimum cover, Fewest grade breaks, Least cost, or Level within zones (the tile of each zone near level below its board). The layout, tile burying and pipe sizing (Routine K, with the Strahler order of Routine G) are those of the Illini Subsurface Drain Layout plugin, ported from the Illini Drainage Tools by Anamelechi Falasy and Richard Cooke, University of Illinois Urbana-Champaign (GPL v3). Uses only QGIS, GDAL and numpy.
+version=0.2.0
+author=Richard Cooke and Anamelechi Falasy
+email=raccooke@gmail.com
+
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+
+changelog=0.2.0 - Built on the Illini Subsurface Drain Layout engine 0.20.0: one drainage coefficient for every line (default 0.375 inch/day) with D_COEFF, DRAIN_SPACE and PIPE_TYPE fields; burying methods Routine J, Minimum cover, Fewest grade breaks and Least cost, with the shortest run and largest change of grade at a break; Bury from the outlet invert; layout problems only in flag. New burying method Level within zones: the tile of each zone near level and at or below the zone's board, with few grade breaks, so all of it can take water in from the structure.
+    0.1.0 - First release. Zonal subirrigation layout built on the Illini Subsurface Drain Layout engine (0.15.1): elevation-band or supplied zones, laterals contained within their zone, zone submains and connectors, control structures at every zone exit with board elevations, per-zone water-table control, tile below the board and water supply, a Subirrigation zones layer, a Control structures layer and an optional Water-table status raster.
+tags=drainage,tile,subsurface,subirrigation,controlled drainage,drainage water management,zones,control structure,agriculture,layout,dem,illini
+category=Analysis
+experimental=True
+deprecated=False
+hasProcessingProvider=yes
+icon=icon.png
+license=GPL-3.0-or-later

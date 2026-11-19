@@ -49,7 +49,11 @@ The plugin is also listed under **Raster → Tile Drainage**, a menu shared by t
 | Lateral shape | *Straight* (default) or *Contour-following*. |
 | Straight laterals: bearing | *Follow the terrain* (default: set by the lateral orientation), *North-south*, *East-west*, *Northwest-southeast* or *Northeast-southwest*, on the map grid of the DEM's CRS. Straight laterals only. |
 | Parallelism | Contour-following laterals only, 0–1 (default 0.9). Steers each lateral to run parallel to its neighbour at exactly one spacing; 0 follows the terrain freely, 1 makes every lateral an offset of its neighbour. |
-| Burying method | *Routine J* (default): the Illini target depth band, below. *Minimum cover*: as shallow as the minimum cover and minimum grade allow (see How the layout is built, step 5). |
+| Burying method | *Routine J* (default): the Illini target depth band, below. *Minimum cover*: as shallow as the minimum cover and minimum grade allow. *Fewest grade breaks*: each pipe in as few straight runs as the depth and slope limits allow. *Least cost*: grade breaks balanced against distance from the target depth (see How the layout is built, step 5). |
+| Fewest breaks / least cost: shortest run between grade breaks | Advanced. No straight run shorter than this, except at the top of a pipe. Default 20 ft. |
+| Fewest breaks / least cost: largest change of grade at a break | Advanced, percent. The grade may change by no more than this at a grade break, for plows and laser grade control. Default 0 (any change). |
+| Least cost: cost of a grade break | Advanced. A grade break costs as much as this length of tile 1 ft (1 m in metres) off the target depth. Default 100 ft. |
+| Least cost: excavation weight | Advanced. Adds a cost for depth, pulling the tile shallower: 1 makes a foot more depth cost as much as being a foot off the target. Default 0. |
 | Burying: upper and lower tile depth | The target depth band (Routine J). Tile aims for the middle of it. Defaults 3.25 ft and 4.25 ft. |
 | Burying: absolute upper and lower tile depth | Tile is never shallower or deeper than these (minimum cover, maximum depth). Defaults 2.5 ft and 6 ft. |
 | Burying: maximum slope; minimum slope for laterals and for mains | Percent. Defaults 5%, 0.1% and 0.1%. |
@@ -60,6 +64,7 @@ The plugin is also listed under **Raster → Tile Drainage**, a menu shared by t
 | Sizing: pipe material | Single Wall (default), Smooth Wall, or Clay or Concrete. |
 | Sizing: drainage coefficient | inch/day, for every line (default 0.375). To use other coefficients by tile order or pipe by pipe, resize afterwards with the Tile Size Calculator plugin. |
 | Outlet invert elevation | Optional, in DEM elevation units. Flags the main if it arrives below the outlet. |
+| Bury from the outlet invert | Holds the outlet tile at the outlet invert elevation and buries the network upstream from it, with any burying method. Needs the outlet invert. Off by default. |
 
 Advanced: DEM elevation units (m / ft / US survey ft; default US survey ft), target grade for
 contour-following laterals (default 0.1%), sharpest bend (default 120°),
@@ -134,6 +139,13 @@ grade breaks (default 50 ft); and, for sizing, whether to size with InSlope
      downstream junction and on to the outlet, which may go down to the lower
      tile depth; the network is then buried again until nothing changes.
 
+   **Bury from the outlet invert** (any burying method) holds the outlet
+   tile at the outlet invert elevation instead: enter the tile invert wanted
+   at the outlet, for example the ditch's normal water level plus a
+   clearance. Routine J then starts its outlet segment there (the offset and
+   *lower the outlet* do not apply); Minimum cover takes its last segment
+   down to it; Fewest grade breaks and Least cost start the main there.
+
    Between grade breaks the tile runs at a constant grade. The port reproduces
    Routine J exactly: run on the same segments, the original Illini code and
    this plugin give the same tile elevations and BURY_CHECK notes.
@@ -152,6 +164,61 @@ grade breaks (default 50 ft); and, for sizing, whether to size with InSlope
    may go deeper than the maximum depth through knolls, which the Tile depth
    check layer and the log show. This replaces the separate Subsurface
    Drainage Layout plugin, which buried tile this way.
+
+   **Fewest grade breaks** lays each pipe as a chain of straight runs with as
+   few grade breaks as the limits allow, for laser-graded installation:
+   - The tile stays between the absolute upper and lower depths (minimum
+     cover, maximum depth) at every point, every run falls at a grade between
+     the minimum and maximum slope, and no run is shorter than the *shortest
+     run between grade breaks* (the run at the top of a pipe may be).
+   - Of the profiles with the fewest breaks, the one closest to the middle of
+     the target band (over the length of the pipe) is used. Breaks can fall
+     at points about 10 ft apart, and break elevations are searched in steps
+     of 0.02 m (about 0.07 ft); within those steps the number of breaks is the
+     true minimum, not an estimate.
+   - Pipes are buried from the outlet upstream, each starting at the tile of
+     the pipe it joins. The outlet tile can be anywhere between the absolute
+     depths, and not below the outlet invert when one is given (or at the
+     outlet invert, with *bury from the outlet invert*). Where a pipe joins,
+     the pipe it joins is kept deep enough for the joining pipe to be buried
+     within the limits, as far as its own maximum depth allows (below).
+   - Where no profile fits the limits, the maximum depth and then the minimum
+     cover are eased a step at a time (BURY_CHECK: "No profile within the
+     depth limits"), and failing that the minimum grade ("No profile within
+     the depth and slope limits", with "Grade below minimum" or "Reverse or
+     zero grade" on the runs concerned).
+   - The grade-break spacing, offset, constant slope and lower-the-outlet
+     settings do not apply.
+
+   The tile can vary in depth more than with Routine J: anywhere between the
+   absolute depths rather than near the target band. On the test fields it
+   needed 1 to 52 grade breaks where Routine J used 200 to 500, and on the
+   Site 3 field none, with the tile within the depth limits throughout.
+
+   **Least cost** uses the same search and limits, but instead of taking the
+   fewest breaks first, it minimizes one total: every grade break costs the
+   *cost of a grade break* (default 100 ft: a break is worth 100 ft of tile
+   1 ft off the target depth), and every foot of tile costs the square of its
+   distance from the middle of the target band in feet (1 ft off costs 1,
+   2 ft off costs 4). A high break cost gives the fewest breaks; a low one a
+   profile that follows the target band closely, like Routine J's but with
+   straight runs. The *excavation weight* (default 0) adds a cost for every
+   foot of depth along the tile, which pulls it shallower: with 1, a foot more
+   depth costs as much as being a foot off the target.
+
+   **Largest change of grade at a break** (both methods; default 0, any
+   change) limits how much the grade may change at a break, for example 0.3%,
+   since plows and laser grade control follow gentle changes better. It
+   usually needs a few more breaks, stepping the grade down gradually. Where a
+   pipe cannot keep it, it is eased for that pipe (BURY_CHECK: "Change-of-slope
+   limit eased"); a pipe that joins another is served first. The search takes
+   several times longer with a limit set.
+
+   The pipe a lateral or submain joins is kept low enough at the junction for
+   that pipe to be buried within the limits (worked out exactly, with the same
+   search run down the joining pipe). Where a main cannot meet every junction,
+   it keeps as many as it can, from the outlet up, and eases only those in
+   conflict; the pipes joining there are then noted in BURY_CHECK.
 6. **Pipe sizing (Routines G and K).** Each line of the network is a sizing
    segment:
    - `TILE_ORDER` is its Strahler order: the highest inflowing order, plus one
@@ -222,7 +289,9 @@ Where to look for problems:
 - **Layout** — `flag`, drawn orange:
 
 - `invert … below outlet` — the main reaches the outlet lower than the
-  outlet invert you gave.
+  outlet invert you gave. With *bury from the outlet invert* the outlet is
+  held at it instead, and the pipes that then cannot keep the cover or grade
+  are noted in BURY_CHECK.
 - `connector …` — reaches a collector or another lateral through a straight
   connector.
 - `unconnected: needs its own collector` — the low ground this lateral drains
@@ -274,6 +343,43 @@ out, or **Save to file** to keep it.
 The log and the optional HTML report give the pipe length by nominal size.
 The report also summarises totals, pipe per hectare, coverage and warnings. Coverage is the share of the drainable area (inside the setback)
 within half a spacing of a pipe.
+
+## Import a LANDRAIN network
+
+**Processing ▸ Toolbox ▸ Illini subsurface drain layout ▸ Import LANDRAIN network**
+reads a network saved by LANDRAIN (the DOS drainage design program of the
+LANDIMPROVE package; a `.NET` file) and writes it as an Illini network layer,
+with the same fields, so a LANDRAIN design can be checked in Tile Profile and
+sized and priced in the Tile Size Calculator.
+
+- **LANDRAIN network file**: the `.NET` file.
+- **Coordinate system**, **Origin easting / northing**: LANDRAIN works in feet
+  from its own origin; give the map position of that origin in a projected
+  coordinate system, for example the zero point the field survey was tied to
+  (State Plane Illinois East, EPSG:3435, by default). Advanced: **Local
+  origin** (the LANDRAIN x, y at that point, if it was not 0, 0) and
+  **Rotation** of the survey grid, degrees counterclockwise.
+- **Pipe sizes**: the inches of LANDRAIN's size classes 1, 2, 3 …
+  (default 3, 4, 5, 6, 8, 10, 12, 15, 18, 24, 36).
+- **Outlet** (optional): the pipe end nearest the point is the outlet;
+  by default the lowest pipe end.
+- **Depth for undesigned systems**: a system LANDRAIN had not yet designed
+  has its tile at the ground; the tile is put this far below the ground
+  (default the file's lower depth limit) and sized here.
+- **Pipe type** and **Design units** of the output fields.
+
+The pipes are traced from the outlet into a main, submains and laterals (each
+pipe carries on up its longest branch) and cut at junctions and size changes.
+The tile (Z) and ground (M) elevations of every point, and the pipe sizes, come
+from the file; the drainage coefficient and drain spacing are the file's, and
+TILE_ORDER, FLOW_LENGTH, ACTUAL_SIZE and the other sizing fields are worked out
+as in the layout tool. BURY_CHECK reads "Imported from LANDRAIN", with any
+reverse grades; LR_FLAG keeps LANDRAIN's link flag. Parts of the file not joined
+to the main system are imported as systems of their own. The log gives the
+counts, the file's design settings and any such notes.
+
+LANDRAIN has 3 in pipe; the Tile Size Calculator sizes from 4 in up, so any
+line it resizes becomes at least 4 in.
 
 ## Choosing settings
 

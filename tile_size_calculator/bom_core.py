@@ -207,6 +207,31 @@ def quantities(lines, sizes=None, waste_pct=0.0, outlet_length=20.0, rodent_guar
     return {"items": out, "fittings": fittings, "outlet": out_info}
 
 
+# ---------------------------------------------------------------- structures from a layer
+STRUCTURE_LAYERS = ("Control structures",)     # Illini Subirrigation Layout, Water
+                                               # Management Zones
+
+
+def structures_near(points, lines, margin):
+    """How many of `points` [(x, y)] lie within `margin` of the network's extent
+    (lines: records with "xy" vertex lists) - the control structures of this
+    network, not those of another field in the same project."""
+    xs = [x for r in lines for x, _ in (r.get("xy") or [])]
+    ys = [y for r in lines for _, y in (r.get("xy") or [])]
+    if not xs:
+        return 0
+    x0, x1, y0, y1 = min(xs) - margin, max(xs) + margin, min(ys) - margin, max(ys) + margin
+    kept = []
+    for x, y in points:
+        if not (x0 <= x <= x1 and y0 <= y <= y1):
+            continue
+        # the same structure in two layers (both plugins run) counts once
+        if any(abs(x - a) <= 1.0 and abs(y - b) <= 1.0 for a, b in kept):
+            continue
+        kept.append((x, y))
+    return len(kept)
+
+
 # ---------------------------------------------------------------- prices
 def lookup(prices, category, item, size):
     """The price row for an item: same category and item (any case), and size

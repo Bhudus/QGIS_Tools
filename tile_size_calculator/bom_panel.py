@@ -25,6 +25,8 @@ from qgis.PyQt.QtWidgets import (
 )
 
 from .bom_core import (
+    STRUCTURE_LAYERS,
+    structures_near,
     DEFAULT_STRUCTURES,
     PRICE_FIELDS,
     bill_csv,
@@ -116,6 +118,12 @@ class BomPanel(QWidget):
             row.addWidget(QLabel(name))
             row.addWidget(b)
             self.struct[name] = b
+        self.from_map_btn = QPushButton("From map")
+        self.from_map_btn.setToolTip(
+            "Count the water control structures from a Control structures layer in the "
+            "project (Illini Subirrigation Layout or Water Management Zones) that lie on "
+            "this network")
+        row.addWidget(self.from_map_btn)
         row.addStretch(1)
         v.addLayout(row)
 
@@ -194,6 +202,52 @@ class BomPanel(QWidget):
         self.csv_btn.clicked.connect(self._save_bill)
         self.template_btn.clicked.connect(self._choose_template)
         self.print_btn.clicked.connect(self.print_layout)
+        self.from_map_btn.clicked.connect(self.structures_from_map)
+
+    # ------------------------------------------------------------ structures
+    def structures_from_map(self):
+        """Water control structures = the points of the project's Control structures
+        layer(s) on this network."""
+        from qgis.core import Qgis, QgsCoordinateTransform
+        lines, _ = self.dock.bom_input()
+        net = getattr(self.dock, "layer", None)
+
+        def say(text, level=Qgis.Info):
+            try:
+                self.dock.iface.messageBar().pushMessage("Tile Size Calculator", text,
+                                                         level=level, duration=6)
+            except AttributeError:
+                pass
+
+        pts = []
+        found = 0
+        for lyr in QgsProject.instance().mapLayers().values():
+            if lyr.name() not in STRUCTURE_LAYERS or not hasattr(lyr, "getFeatures"):
+                continue
+            found += 1
+            tr = None
+            if net is not None and lyr.crs() != net.crs():
+                tr = QgsCoordinateTransform(lyr.crs(), net.crs(), QgsProject.instance())
+            for f in lyr.getFeatures():
+                g = f.geometry()
+                if g is None or g.isEmpty():
+                    continue
+                if tr is not None:
+                    g.transform(tr)
+                for p in (g.asMultiPoint() if g.isMultipart() else [g.asPoint()]):
+                    pts.append((p.x(), p.y()))
+        if not found:
+            say("No Control structures layer in the project: run Illini Subirrigation Layout "
+                "or Water Management Zones first.", Qgis.Warning)
+            return
+        spacing = 0.0
+        try:
+            spacing = float(self.dock.spacing.value())
+        except (AttributeError, TypeError, ValueError):
+            pass
+        n = structures_near(pts, lines, max(spacing, 1.0))
+        self.struct["Water control structure"].setValue(n)
+        say("{} water control structure(s) from the Control structures layer.".format(n))
 
     # ------------------------------------------------------------ settings
     def _save(self, *args):

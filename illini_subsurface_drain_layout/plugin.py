@@ -9,6 +9,7 @@ from .provider import IlliniDrainLayoutProvider
 TILE_DRAINAGE_MENU = "&Tile Drainage"  # submenu shared by the QGIS_Tools drainage plugins
 
 ALGORITHM_ID = "illinidrainlayout:illinisubsurfacedrainlayout"
+IMPORT_ID = "illinidrainlayout:importlandrainnetwork"
 
 
 class IlliniDrainLayoutPlugin:
@@ -32,11 +33,19 @@ class IlliniDrainLayoutPlugin:
         self.iface.addPluginToMenu("&Illini Subsurface Drain Layout", self.action)
         self.iface.addPluginToRasterMenu(TILE_DRAINAGE_MENU, self.action)
         self.iface.addToolBarIcon(self.action)
+        self.import_action = QAction("Import LANDRAIN network…", self.iface.mainWindow())
+        self.import_action.triggered.connect(self.run_import)
+        self.iface.addPluginToMenu("&Illini Subsurface Drain Layout", self.import_action)
+        self.iface.addPluginToRasterMenu(TILE_DRAINAGE_MENU, self.import_action)
         self.reset_action = QAction("Reset saved settings to defaults", self.iface.mainWindow())
         self.reset_action.triggered.connect(self.reset_settings)
         self.iface.addPluginToMenu("&Illini Subsurface Drain Layout", self.reset_action)
 
     def unload(self):
+        if getattr(self, "import_action", None) is not None:
+            self.iface.removePluginMenu("&Illini Subsurface Drain Layout", self.import_action)
+            self.iface.removePluginRasterMenu(TILE_DRAINAGE_MENU, self.import_action)
+            self.import_action = None
         if self.reset_action is not None:
             self.iface.removePluginMenu("&Illini Subsurface Drain Layout", self.reset_action)
             self.reset_action = None
@@ -61,3 +70,7 @@ class IlliniDrainLayoutPlugin:
     def run(self):
         import processing
         processing.execAlgorithmDialog(ALGORITHM_ID, {})
+
+    def run_import(self):
+        import processing
+        processing.execAlgorithmDialog(IMPORT_ID, {})

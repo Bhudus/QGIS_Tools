@@ -22,6 +22,7 @@ from typing import Optional
 import numpy as np
 
 from .bury import BuryParams, Segment, bury_network
+from . import fewest_breaks as FBK
 from . import sizing as K
 from .geometry import (
     SegmentHash,
@@ -93,7 +94,13 @@ class LayoutParams:
     submain_frac: float = 0.10           # branches above this share become submains (0 = none)
     min_lateral_length: Optional[float] = None  # default: spacing
     max_connector: Optional[float] = None       # default: 2.5 * spacing
-    bury_method: str = "routine_j"       # "routine_j" target band, or "min_cover"
+    bury_method: str = "routine_j"       # "routine_j" target band, "min_cover" or "fewest_breaks"
+    min_break_run: float = 20 * 0.3048   # m, shortest run between grade breaks (fewest/least cost)
+    break_cost: float = 100 * 0.3048     # m, least cost: a grade break costs as much as this
+                                         # length of tile 1 ft (1 m in metres) off the target
+    excavation_weight: float = 0.0       # least cost: cost of each ft (m) of depth per length
+    max_grade_change: float = 0.0        # m/m, largest change of grade at a break (0 = any)
+    fix_outlet: bool = False             # hold the outlet tile at outlet_invert (all methods)
     min_bend_angle: float = 120.0        # degrees between tile legs at a bend; 0 = no limit
     tile_raster: bool = False            # also return a raster of tile elevation and depth
 
@@ -1160,6 +1167,9 @@ class DrainageLayout:
         if p.bury_method == "min_cover":
             self._bury_min_cover(pipes, nc)
             return
+        if p.bury_method in ("fewest_breaks", "least_cost", "zone_level"):
+            self._bury_fewest_breaks(pipes, nc)
+            return
 
         # BURY_ORDER: breadth first from the outlet, then any disconnected parts
         roots = [canon((0, len(pipes[0]["pts"]) - 1))]
@@ -1185,7 +1195,8 @@ class DrainageLayout:
                         abs_upper=p.min_cover, abs_lower=p.max_depth,
                         max_slope=p.max_grade, offset=p.outlet_offset,
                         use_constant=p.use_constant, constant_slope=p.constant_grade,
-                        lower_outlet=p.lower_outlet)
+                        lower_outlet=p.lower_outlet,
+                        fixed_outlet=(p.outlet_invert if p.fix_outlet else None))
         results, flagged, outlet_depth, start_depth, tiles = bury_network(
             rows, bp, cancel=self._cancel_cb)
         mid = 0.5 * (p.target_upper + p.target_lower)
@@ -1303,6 +1314,15 @@ class DrainageLayout:
                 nseg += 1
             pp["tB"] = np.array(tB, dtype=float)
             pp["steps"] = steps
+            if (P == 0 and p.fix_outlet and p.outlet_invert is not None and steps
+                    and pp["tB"][-1] > p.outlet_invert + 1e-9):
+                # outlet held at the outlet invert: take the last segment down to it
+                u, d = steps[-1][0], steps[-1][1]
+                L = float(s[d] - s[u])
+                pp["tB"][-1] = float(p.outlet_invert)
+                sl = (pp["tB"][-2] - pp["tB"][-1]) / L if L > 0 else 0.0
+                steps[-1][3] = steps[-1][4] = sl
+                steps[-1][2].append("Dropped to the outlet invert")
             # a tributary whose host lies lower drops its last segment to it
             for T, idx in joining.get(P, ()):
                 tp = pipes[T]
@@ -1330,6 +1350,329 @@ class DrainageLayout:
         out_depth = float(root["z"][-1] - root["tB"][-1])
         self.bury = {"segments": nseg, "flagged": 0, "outlet_depth": out_depth,
                      "start_depth": out_depth}
+
+    # depth limits relaxed in turn (extra depth, extra shallowness, m) when no
+    # profile fits a pipe
+    RELAX = ((0.3, 0.0), (1.0, 0.0), (1.0, 0.3))
+    # break points considered along a pipe: about every 3 m, but no more than this
+    # many on a long pipe (the search time grows with their square)
+    MAX_CANDIDATES = 80
+
+    def _bury_targets(self, P, pp):
+        """Per-vertex burying aims for pipe P (fewest breaks / least cost).
+
+        Returns (mid, ceiling): the tile elevation to aim for at every vertex
+        (default: the middle of the target depth band below the ground) and a
+        preferred highest tile elevation (None for none), kept where the
+        limits allow and dropped, with a note, where they do not. Subclasses
+        (the zonal subirrigation layout) aim for their own targets.
+        """
+        p = self.p
+        return pp["z"] - 0.5 * (p.target_upper + p.target_lower), None
+
+    def _fit_caps(self, P, caps, hi_for, lo, s, mid, gmin, gmax, start, cand):
+        """The junction caps of pipe P that can be kept together.
+
+        Caps are added from the downstream end up: the first one that cannot
+        be kept with those before it (found by bisection) is eased in steps
+        and dropped if that does not help; then the search goes on above it.
+        Feasibility only, so without the grade-change limit and in fewest mode.
+        """
+        p = self.p
+        keys = sorted(caps, reverse=True)              # downstream first
+        n_p = len(self._fb_pipes)
+
+        def ok(cd):
+            hi = hi_for(P, [cd if Q == P else {} for Q in range(n_p)])
+            return FBK.solve(s, lo, hi, mid, gmin, gmax, start, cand,
+                             min_run=float(p.min_break_run)) is not None
+
+        if not ok({}):
+            return {}                                  # it cannot fit even without caps
+        kept = {}
+        i = 0
+        while i < len(keys):
+            trial = dict(kept)
+            trial.update({k: caps[k] for k in keys[i:]})
+            if ok(trial):
+                return trial
+            # the longest run of further caps that still fits
+            a, b = i, len(keys)                        # keys[i:a] fit, keys[i:b] do not
+            while b - a > 1:
+                m = (a + b) // 2
+                t2 = dict(kept)
+                t2.update({k: caps[k] for k in keys[i:m]})
+                if ok(t2):
+                    a = m
+                else:
+                    b = m
+            kept.update({k: caps[k] for k in keys[i:a]})
+            bad = keys[a]                              # keys[a] is in conflict
+            for rise in (0.05, 0.1, 0.2, 0.4):
+                t3 = dict(kept)
+                t3[bad] = caps[bad] + rise
+                if ok(t3):
+                    kept[bad] = caps[bad] + rise
+                    break
+            i = a + 1
+        return kept
+
+    def _bury_fewest_breaks(self, pipes, nc):
+        """Bury every pipe with the fewest grade breaks the limits allow.
+
+        Pipes are buried from the outlet upstream, each starting at the tile
+        elevation of the pipe it joins (the outlet anywhere between the minimum
+        cover and the maximum depth, and not below the outlet invert when one
+        is given). Along each pipe the tile is a chain of straight runs, at
+        least min_break_run long, that keeps between the minimum cover and the
+        maximum depth at every vertex and rises upstream at a grade between the
+        minimum and maximum slope; of the profiles with the fewest runs, the one
+        closest to the middle of the target depth band is used (core/
+        fewest_breaks.py). Where no profile fits, the depth limits are eased a
+        step at a time and the pipe is noted in BURY_CHECK.
+        """
+        p = self.p
+        mid_d = 0.5 * (p.target_upper + p.target_lower)
+        step = max(1.0, min(3.0, float(p.min_break_run) or 3.0))
+        mode = "cost" if p.bury_method in ("least_cost", "zone_level") else "fewest"
+        targets = {P: self._bury_targets(P, pp) for P, pp in enumerate(pipes)}
+        soft = [True]
+        unit = 0.3048 if p.units == "ft" else 1.0
+        limit = float(p.max_grade_change) if p.max_grade_change else None
+        fixed_out = (float(p.outlet_invert) if p.fix_outlet and p.outlet_invert is not None
+                     else None)
+        joining = {}
+        for P, pp in enumerate(pipes):
+            if pp["end"] is not None:
+                joining.setdefault(pp["end"][0], []).append(P)
+        order, seen = [], set()
+        roots = [0] + [P for P, pp in enumerate(pipes) if P > 0 and pp["root"]]
+        for r in roots + list(range(len(pipes))):
+            if r in seen:
+                continue
+            queue = deque([r])
+            seen.add(r)
+            while queue:
+                P = queue.popleft()
+                order.append(P)
+                for T in joining.get(P, ()):
+                    if T not in seen:
+                        seen.add(T)
+                        queue.append(T)
+        # the highest tile elevation each pipe can have where it joins its host
+        # and still be buried within the limits upstream (tributaries first,
+        # exactly, with the same search run down the pipe); the host's tile is
+        # kept no higher than that at the junction. One set with the grade-change
+        # limit and one without it.
+
+        def hi_for(P, capset, rise=0.0):
+            pp = pipes[P]
+            z = pp["z"]
+            hi = z - p.min_cover
+            ceil = targets[P][1]
+            if ceil is not None and soft[0]:
+                # the preferred ceiling, but never below the maximum depth
+                c_ = np.where(np.isfinite(ceil), ceil, np.inf)
+                hi = np.minimum(hi, np.maximum(c_, z - p.max_depth))
+            fl = floors.get(P)
+            for idx, c in (capset[P].items() if capset is not None else ()):
+                # never asks the host to go below its maximum depth, nor below the
+                # lowest it can reach there, rising from its start at the minimum grade
+                c2 = max(c + rise, float(z[idx]) - p.max_depth)
+                if fl is not None:
+                    c2 = max(c2, float(fl[idx]) + 0.005)
+                hi[idx] = min(hi[idx], c2)
+            return hi
+
+        floors = {}
+
+        def cap_set(lim):
+            caps = [dict() for _ in pipes]
+            for P in reversed(order):
+                pp = pipes[P]
+                if pp["end"] is None:
+                    continue
+                s, z = pp["s"], pp["z"]
+                hi = hi_for(P, caps)
+                t = FBK.highest_end(s, z - p.max_depth, hi, pp["min"], p.max_grade,
+                                    FBK.candidates(s, max(step, float(s[-1]) / self.MAX_CANDIDATES),
+                                    keep=pp["fixed"]),
+                                    min_run=float(p.min_break_run), max_change=lim)
+                if t is None:                     # cannot fit anyway: the cover estimate
+                    t = float(hi[0])
+                    for i in range(1, len(s)):
+                        t = min(float(hi[i]), t - pp["min"] * float(s[i] - s[i - 1]))
+                H, idx = pp["end"]
+                c = t - 0.005
+                caps[H][idx] = min(caps[H].get(idx, c), c)
+            return caps
+
+        self._fb_pipes = pipes
+        caps_u = cap_set(None)
+        caps_l = cap_set(limit) if limit else None
+
+        nseg = nbreak = flagged = 0
+        for P in order:
+            if self._cancel_cb is not None and self._cancel_cb():
+                raise LayoutCancelled()
+            pp = pipes[P]
+            s, z = pp["s"], pp["z"]
+            n = len(s)
+            gmin, gmax = pp["min"], p.max_grade
+            lo, mid = z - p.max_depth, targets[P][0]
+            host = pipes[pp["end"][0]] if pp["end"] is not None else None
+            if host is not None and "tB_full" in host:
+                start = ("fixed", float(host["tB_full"][pp["end"][1]]))
+            elif P == 0 and fixed_out is not None:
+                start = ("fixed", fixed_out)
+            else:
+                a, b = float(lo[-1]), float(z[-1] - p.min_cover)
+                if P == 0 and p.outlet_invert is not None and a < p.outlet_invert <= b:
+                    a = float(p.outlet_invert)
+                start = ("window", a, b)
+            cand = FBK.candidates(s, max(step, float(s[-1]) / self.MAX_CANDIDATES),
+                                    keep=pp["fixed"])
+            # the lowest the tile can be at each vertex: from the start, rising at
+            # the minimum grade, and never below the maximum depth
+            a_k = lo + gmin * s
+            reach = np.maximum.accumulate(a_k[::-1])[::-1] - gmin * s
+            floors[P] = np.maximum(reach, float(start[1]) + gmin * (float(s[-1]) - s))
+            notes = []
+            use_limit = [limit]
+
+            def run(lo_, hi_, g_low):
+                return FBK.solve(s, lo_, hi_, mid, g_low, gmax, start, cand,
+                                 min_run=float(p.min_break_run), mode=mode,
+                                 break_cost=float(p.break_cost), unit=unit,
+                                 excavation=float(p.excavation_weight), z=z,
+                                 max_change=limit if use_limit[0] else None)
+
+            def attempt():
+                # serve the pipes joining it first, then the grade-change limit
+                res, hi = None, z - p.min_cover
+                tries = []
+                if caps_u[P]:
+                    if limit:
+                        tries += [(caps_l, True), (caps_u, True)]
+                    tries += [(caps_u, False)]
+                for capset, with_lim in tries:
+                    use_limit[0] = limit if with_lim else None
+                    hi_try = hi_for(P, capset)
+                    res = run(lo, hi_try, gmin)
+                    if res is not None:
+                        hi = hi_try
+                        if limit and not with_lim:
+                            notes.append("Change-of-slope limit eased")
+                        break
+                if res is None and caps_u[P]:
+                    # not every junction can be served: keep as many caps as possible,
+                    # from the outlet end up, easing (or dropping) only those in conflict
+                    fitted = self._fit_caps(P, caps_u[P], hi_for, lo, s, mid, gmin, gmax,
+                                            start, cand)
+                    for with_lim in ((True, False) if limit else (False,)):
+                        use_limit[0] = limit if with_lim else None
+                        hi_try = hi_for(P, [fitted if Q == P else {} for Q in range(len(pipes))])
+                        res = run(lo, hi_try, gmin)
+                        if res is not None:
+                            hi = hi_try
+                            if limit and not with_lim:
+                                notes.append("Change-of-slope limit eased")
+                            break
+                if res is None:
+                    for with_lim in ((True, False) if limit else (False,)):
+                        use_limit[0] = limit if with_lim else None
+                        hi_try = hi_for(P, None)
+                        res = run(lo, hi_try, gmin)
+                        if res is not None:
+                            hi = hi_try
+                            if limit and not with_lim:
+                                notes.append("Change-of-slope limit eased")
+                            break
+                return res, hi
+
+            res, hi = attempt()
+            if res is None and targets[P][1] is not None:
+                soft[0] = False
+                res, hi = attempt()
+                soft[0] = True
+                if res is not None:
+                    notes.append("Tile above the board in places")
+            use_limit[0] = False
+            if res is None:
+                for deep, shallow in self.RELAX:
+                    lo2 = z - p.max_depth - deep
+                    hi2 = np.minimum(hi + shallow, z)
+                    res = run(lo2, hi2, gmin)
+                    if res is not None:
+                        break
+                if res is not None:
+                    notes.append("No profile within the depth limits; see min_depth "
+                                 "and max_depth")
+            if res is None:
+                # within the depth limits, with the grade allowed below the minimum
+                # (flat or reverse where the ground leaves no choice)
+                for g_low in (0.0, -gmax):
+                    res = run(lo, np.minimum(hi + 0.3, z), g_low)
+                    if res is not None:
+                        notes.append("No profile within the depth and slope limits")
+                        break
+            if res is None:
+                # follow the target depth up the pipe, within the slope limits
+                t_end = start[1] if start[0] == "fixed" else \
+                    min(max(float(mid[-1]), start[1]), start[2])
+                tt = np.empty(n)
+                tt[-1] = t_end
+                for i in range(n - 2, -1, -1):
+                    ds_ = float(s[i + 1] - s[i])
+                    want = min(float(mid[i]), float(hi[i]))
+                    t_i = min(max(want, tt[i + 1] + gmin * ds_), tt[i + 1] + gmax * ds_)
+                    tt[i] = min(t_i, float(hi[i]))     # keep the cover, even below min grade
+                br = FBK.candidates(s, max(step, float(s[-1]) / self.MAX_CANDIDATES),
+                                    keep=pp["fixed"])
+                res = {"breaks": br, "tile": [float(tt[i]) for i in br], "runs": len(br) - 1}
+                notes.append("No profile within the depth and slope limits; tile follows the "
+                             "target depth")
+            if notes:
+                flagged += 1
+            br = list(res["breaks"])
+            inv = np.interp(s, s[br], res["tile"])
+            pp["tB_full"] = inv
+            cuts = {0, n - 1} | {int(v) for v in pp["fixed"] if 0 < int(v) < n - 1}
+            B = sorted(set(br) | cuts)
+            steps = []
+            for u, d in zip(B[:-1], B[1:]):
+                L = float(s[d] - s[u])
+                if L <= 1e-9:
+                    continue
+                sl = float(inv[u] - inv[d]) / L
+                nn = list(notes)
+                if sl <= 1e-9:
+                    nn.append("Reverse or zero grade: tile cannot drain")
+                elif sl < gmin - 1e-6:
+                    nn.append("Grade below minimum")
+                steps.append((u, d, nn, sl, min(max(sl, gmin), gmax)))
+            nseg += res["runs"]
+            nbreak += res["runs"] - 1
+            o = pp["obj"]
+            o["z"], o["s"] = z, s
+            o["inv"] = inv
+            o["B"] = B
+            o["bury_steps"] = steps
+        nlat = [0] * nc
+        for L_ in self.lats:
+            if L_["conn"] and L_["conn"][0] == "collector":
+                nlat[L_["conn"][1]] += 1
+        for k, c in enumerate(self.cols):
+            c["nlat"] = nlat[k]
+        root = pipes[0]
+        out_depth = float(root["z"][-1] - root["tB_full"][-1])
+        self.bury = {"segments": nseg, "flagged": flagged, "outlet_depth": out_depth,
+                     "start_depth": out_depth, "breaks": nbreak}
+        if flagged:
+            self._warn("{} pipe(s) could not be buried {} within the limits; see the "
+                       "BURY_CHECK field.".format(
+                           flagged, "at least cost" if mode == "cost"
+                           else "with the fewest grade breaks"))
 
     # ------------------------------------------------------------ tile raster
     DEPTH_OK, DEPTH_SHALLOW, DEPTH_DEEP = 1, 2, 3
@@ -1532,6 +1875,7 @@ class DrainageLayout:
                                      if self.bury.get("start_depth") is not None else None),
             "bury_segments": self.bury["segments"],
             "bury_flagged": self.bury["flagged"],
+            "bury_breaks": self.bury.get("breaks"),
         }
         network = self._network(names, col_fixed, lat_fixed,
                                 [c["attrs"]["flag"] for c in collectors],

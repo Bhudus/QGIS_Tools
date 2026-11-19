@@ -120,7 +120,7 @@ class _Styler(QgsProcessingLayerPostProcessorInterface):
             sym = QgsLineSymbol.createSimple({"color": color, "width": width})
             root.appendChild(QgsRuleBasedRenderer.Rule(
                 sym, 0, 0, "\"kind\" = '{}' AND (\"flag\" IS NULL OR \"flag\" = '') AND NOT "
-                "(\"BURY_CHECK\" LIKE '%grade%' OR \"BURY_CHECK\" LIKE '%Not connected%')"
+                "(\"BURY_CHECK\" ILIKE '%grade%' OR \"BURY_CHECK\" LIKE '%Not connected%')"
                 .format(kind), label))
         flagged = QgsLineSymbol.createSimple({"color": "217,119,6", "width": "0.5"})
         root.appendChild(QgsRuleBasedRenderer.Rule(
@@ -128,7 +128,7 @@ class _Styler(QgsProcessingLayerPostProcessorInterface):
         grade = QgsLineSymbol.createSimple({"color": "147,51,234", "width": "0.6"})
         root.appendChild(QgsRuleBasedRenderer.Rule(
             grade, 0, 0, "(\"flag\" IS NULL OR \"flag\" = '') AND "
-            "(\"BURY_CHECK\" LIKE '%grade%' OR \"BURY_CHECK\" LIKE '%Not connected%')",
+            "(\"BURY_CHECK\" ILIKE '%grade%' OR \"BURY_CHECK\" LIKE '%Not connected%')",
             "Grade problem (see BURY_CHECK)"))
         layer.setRenderer(QgsRuleBasedRenderer(root))
         layer.triggerRepaint()
@@ -234,6 +234,11 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
     LOWER_OUTLET = "LOWER_OUTLET"
     GRADE_BREAK = "GRADE_BREAK"
     BURY_METHOD = "BURY_METHOD"
+    MIN_BREAK_RUN = "MIN_BREAK_RUN"
+    BREAK_COST = "BREAK_COST"
+    EXCAVATION = "EXCAVATION"
+    MAX_GRADE_CHANGE = "MAX_GRADE_CHANGE"
+    FIX_OUTLET = "FIX_OUTLET"
     SIZE_PIPES = "SIZE_PIPES"
     PIPE_MATERIAL = "PIPE_MATERIAL"
     DRAINAGE_COEFF = "DRAINAGE_COEFF"
@@ -380,7 +385,35 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             "pipes that join lower down are taken down to meet it. It uses the minimum "
             "cover, maximum depth, minimum grades and grade-break spacing, and ignores the "
             "target band, maximum slope, offset, constant slope and lower-the-outlet "
-            "settings.</p>"
+            "settings. <i>Fewest grade breaks</i> lays each pipe as a chain of straight "
+            "runs with as few grade breaks as possible: the tile stays between the "
+            "absolute upper and lower depths at every point, every run falls at a grade "
+            "between the minimum and maximum slope, and no run is shorter than the "
+            "<i>shortest run between grade breaks</i> (default 20 ft; the run at the top "
+            "of a pipe may be shorter). Of the profiles with that fewest number of breaks, "
+            "the one closest to the middle of the target band is used. Pipes are buried "
+            "from the outlet upstream, each from the tile of the pipe it joins; the outlet "
+            "can be anywhere between the absolute depths (not below the outlet invert, if "
+            "given), and a pipe is kept deep enough where others join it that they can "
+            "keep the minimum cover. Where no profile fits, the depth limits, then the "
+            "minimum grade, are eased and BURY_CHECK says so. It ignores the grade-break "
+            "spacing, offset, constant slope and lower-the-outlet settings. "
+            "<i>Least cost</i> uses the same search but balances the number of grade "
+            "breaks against how far the tile strays from the middle of the target band: "
+            "each break costs as much as the <i>cost of a grade break</i> (default 100 ft) "
+            "of tile 1 ft off the target, and being 2 ft off costs four times as much. A "
+            "high cost gives the fewest breaks, a low one a profile close to Routine J's. "
+            "The <i>excavation weight</i> (default 0) adds a cost for every foot of depth, "
+            "which pulls the tile shallower. For both, <i>largest change of grade at a "
+            "break</i> (default 0 = any) limits how sharply the grade may change, for plows "
+            "and laser grade control; where that limit cannot be kept, it is eased and "
+            "BURY_CHECK says so.</p>"
+            "<p><b>Bury from the outlet invert</b> holds the outlet tile at the outlet "
+            "invert elevation (enter the tile invert wanted at the outlet, for example the "
+            "ditch's normal water level plus a clearance) and buries the network upstream "
+            "from it, with any burying method; pipes that cannot then keep the minimum "
+            "cover or grade are noted in BURY_CHECK. Without it the outlet invert is only "
+            "checked. Lower the outlet and the offset do not apply.</p>"
             "<p><b>Sharpest bend</b>: no tile line turns more sharply than this angle "
             "between its legs (120 degrees = a change of direction of at most 60 degrees). "
             "Sharper corners in laterals, connectors and generated mains and submains are "
@@ -510,6 +543,10 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             self.OUTLET_INVERT,
             self.tr("Outlet invert elevation, in DEM elevation units [optional]"),
             QgsProcessingParameterNumber.Double, optional=True))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.FIX_OUTLET,
+            self.tr("Bury from the outlet invert (hold the outlet tile at it)"),
+            defaultValue=False))
 
         self.addParameter(_advanced(QgsProcessingParameterEnum(
             self.Z_UNITS, self.tr("DEM elevation units"),
@@ -532,8 +569,33 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterEnum(
             self.BURY_METHOD, self.tr("Burying method"),
             options=[self.tr("Routine J: target depth band (Illini Drainage Tools)"),
-                     self.tr("Minimum cover: as shallow as the minimum cover and grade allow")],
+                     self.tr("Minimum cover: as shallow as the minimum cover and grade allow"),
+                     self.tr("Fewest grade breaks: straight runs within the depth and "
+                             "slope limits"),
+                     self.tr("Least cost: balance grade breaks against distance from the "
+                             "target depth")],
             defaultValue=0))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.MIN_BREAK_RUN,
+            self.tr("Fewest breaks / least cost: shortest run between grade breaks"),
+            QgsProcessingParameterNumber.Double, defaultValue=20.0, minValue=0.0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.MAX_GRADE_CHANGE,
+            self.tr("Fewest breaks / least cost: largest change of grade at a break [%, "
+                    "0 = any]"),
+            QgsProcessingParameterNumber.Double, defaultValue=0.0, minValue=0.0,
+            maxValue=10.0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.BREAK_COST,
+            self.tr("Least cost: cost of a grade break, as a length of tile 1 ft (1 m) "
+                    "off the target depth"),
+            QgsProcessingParameterNumber.Double, defaultValue=100.0, minValue=0.0)))
+        self.addParameter(_advanced(QgsProcessingParameterNumber(
+            self.EXCAVATION,
+            self.tr("Least cost: excavation weight (cost of 1 ft (1 m) more depth, relative "
+                    "to being 1 ft (1 m) off the target)"),
+            QgsProcessingParameterNumber.Double, defaultValue=0.0, minValue=0.0,
+            maxValue=100.0)))
         self.addParameter(_advanced(QgsProcessingParameterNumber(
             self.GRADE_BREAK, self.tr("Burying: longest segment between grade breaks"),
             QgsProcessingParameterNumber.Double, defaultValue=50.0, minValue=0.1)))
@@ -664,6 +726,9 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
         smooth_r = num(self.SMOOTH, True)
         cell_in = num(self.CELL_SIZE, True)
         outlet_inv = num(self.OUTLET_INVERT, True)
+        if self.parameterAsBool(parameters, self.FIX_OUTLET, context) and outlet_inv is None:
+            raise QgsProcessingException(self.tr(
+                "Bury from the outlet invert needs the Outlet invert elevation."))
 
         # field geometry, in the DEM CRS
         source = self.parameterAsSource(parameters, self.FIELD, context)
@@ -777,8 +842,13 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             constant_grade=num(self.CONST_GRADE) / 100.0,
             lower_outlet=self.parameterAsBool(parameters, self.LOWER_OUTLET, context),
             grade_break=num(self.GRADE_BREAK) * uf,
-            bury_method=("routine_j", "min_cover")[
+            bury_method=("routine_j", "min_cover", "fewest_breaks", "least_cost")[
                 self.parameterAsEnum(parameters, self.BURY_METHOD, context)],
+            min_break_run=num(self.MIN_BREAK_RUN) * uf,
+            break_cost=num(self.BREAK_COST) * uf,
+            excavation_weight=num(self.EXCAVATION),
+            max_grade_change=num(self.MAX_GRADE_CHANGE) / 100.0,
+            fix_outlet=self.parameterAsBool(parameters, self.FIX_OUTLET, context),
             size_pipes=self.parameterAsBool(parameters, self.SIZE_PIPES, context),
             pipe_material=self.parameterAsEnum(parameters, self.PIPE_MATERIAL, context),
             drainage_coeff=num(self.DRAINAGE_COEFF),
@@ -900,11 +970,18 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             if od > sd + 1e-6:
                 feedback.pushInfo(self.tr("Outlet lowered from {:.2f} {} to {:.2f} {} deep to "
                                           "serve low ground.").format(sd, u_lbl, od, u_lbl))
-            feedback.pushInfo(self.tr("Outlet tile depth: {:.2f} {}.").format(od, u_lbl))
-        feedback.pushInfo(self.tr("Buried {} segments between junctions and grade breaks "
-                                  "({}).").format(res["summary"]["bury_segments"],
-                                                  "Routine J" if params.bury_method ==
-                                                  "routine_j" else "minimum cover"))
+            feedback.pushInfo(self.tr("Outlet tile depth: {:.2f} {}{}.").format(
+                od, u_lbl, self.tr(", held at the outlet invert") if params.fix_outlet else ""))
+        if params.bury_method in ("fewest_breaks", "least_cost"):
+            feedback.pushInfo(self.tr("Buried {}: {} straight runs, {} grade breaks.").format(
+                "with the fewest grade breaks" if params.bury_method == "fewest_breaks"
+                else "at least cost",
+                res["summary"]["bury_segments"], res["summary"]["bury_breaks"]))
+        else:
+            feedback.pushInfo(self.tr("Buried {} segments between junctions and grade breaks "
+                                      "({}).").format(res["summary"]["bury_segments"],
+                                                      "Routine J" if params.bury_method ==
+                                                      "routine_j" else "minimum cover"))
         if s.get("length_by_size_m"):
             feedback.pushInfo(self.tr("Pipe by nominal size: {}").format("; ".join(
                 "{} in: {:,.0f} {}".format(k, v / uf, u_lbl)
@@ -1008,8 +1085,10 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             ("Mean field slope", "{:.2f}%".format(s["mean_slope_pct"])),
             ("Outlet tile depth", "{:.2f} {}".format(s["outlet_depth_m"] / uf, u)
              if s.get("outlet_depth_m") is not None else "–"),
-            ("Burying method", "Routine J (target depth band)" if params.bury_method ==
-             "routine_j" else "Minimum cover"),
+            ("Burying method", {"routine_j": "Routine J (target depth band)",
+                                "min_cover": "Minimum cover",
+                                "fewest_breaks": "Fewest grade breaks",
+                                "least_cost": "Least cost"}[params.bury_method]),
             ("Burying segments / flagged in BURY_CHECK",
              "{} / {}".format(s["bury_segments"], s["bury_flagged"])),
             ("Dominant contour bearing", "{:.0f}°".format(s["contour_azimuth_deg"])),

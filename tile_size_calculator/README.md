@@ -86,7 +86,7 @@ shown on the Pipe sizes tab (applied or not), and prices it.
 | Outlet pipe (rigid) | **Outlet pipe** length (default 20 ft; 0 for none) of the outlet size. |
 | Rodent guard | One of the outlet size, if ticked. |
 | Installation | Length of tile of each size, if **Installation** is ticked, priced per length. |
-| Structures, mobilization | The numbers you enter: inspection ports, water control structures, surface inlets, mobilization. |
+| Structures, mobilization | The numbers you enter: inspection ports, water control structures, surface inlets, mobilization. **From map** counts the water control structures from a *Control structures* layer in the project (made by [Illini Subirrigation Layout](../illini_subirrigation_layout/) or [Water Management Zones](../water_management_zones/)), taking only those on this network and counting a structure in both layers once. |
 
 Lengths are in the units of the layer's length field (**Lengths in**: ft or m).
 

@@ -4,6 +4,7 @@ from qgis.core import QgsProcessingProvider
 from qgis.PyQt.QtGui import QIcon
 
 from .algorithm import IlliniSubsurfaceDrainLayoutAlgorithm
+from .algorithm_landrain import ImportLandrainAlgorithm
 
 
 class IlliniDrainLayoutProvider(QgsProcessingProvider):
@@ -21,3 +22,4 @@ class IlliniDrainLayoutProvider(QgsProcessingProvider):
 
     def loadAlgorithms(self):
         self.addAlgorithm(IlliniSubsurfaceDrainLayoutAlgorithm())
+        self.addAlgorithm(ImportLandrainAlgorithm())
