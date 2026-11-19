@@ -2,10 +2,11 @@
 name=Drainage outlet
 qgisMinimumVersion=3.16
 qgisMaximumVersion=3.99
-description=Traces the natural downhill path from a field boundary or drainage system outlet point to the nearest downstream stream within its StreamStats watershed.
-about=Given drainage system outlet point(s) (tile outlets, culverts, ditch ends) or a field boundary and the USGS StreamStats watershed that contains them, the plugin fills depressions in a DEM, computes D8 flow directions and traces the steepest-descent path to the first stream (mapped NHD lines and/or DEM-derived channels). A DEM can be supplied or downloaded from USGS 3DEP. Pure Python/NumPy/GDAL - no GRASS, SAGA or WhiteboxTools required.
-version=2.5.0
-changelog=2.5.0 - Downloaded 3DEP DEM is saved as an output (feet in US mode)
+description=Traces the natural downhill path from a field boundary or drainage system outlet point to the nearest downstream stream within its StreamStats watershed, and optionally to a district drain or district tile.
+about=Given drainage system outlet point(s) (tile outlets, culverts, ditch ends) or a field boundary and the USGS StreamStats watershed that contains them, the plugin fills depressions in a DEM, computes D8 flow directions and traces the steepest-descent path to the first stream (mapped NHD lines and/or DEM-derived channels). If a district drain line layer is given, it also traces a path from each start to the district drain: natural downhill flow where it gets there, otherwise a route along the lowest ground. A DEM can be supplied or downloaded from USGS 3DEP. Pure Python/NumPy/GDAL - no GRASS, SAGA or WhiteboxTools required.
+version=2.6.0
+changelog=2.6.0 - Optional district drain: second output with a path from each start to the district drain (natural flow, or routed over the lowest ground when flow misses it), with climb and max cut
+    2.5.0 - Downloaded 3DEP DEM is saved as an output (feet in US mode)
     2.4.0 - Runs as a background task (status-bar progress and cancel); results load when finished
     2.3.0 - Single toolbar button opens the tool window directly (map-pick buttons removed; pick a point from inside the window)
     2.2.1 - Field mode: path always starts on the field boundary (fixes lines inside the field when a stream buffer overlaps it or flow re-enters a concave field)
@@ -18,7 +19,7 @@ email=raccooke@gmail.com
 tracker=https://github.com/Bhudus/QGIS_Tools/issues
 repository=https://github.com/Bhudus/QGIS_Tools
 homepage=https://bhudus.github.io/QGIS_Tools/
-tags=hydrology,drainage,tile drainage,outlet,streamstats,flow path,watershed,dem,agriculture
+tags=hydrology,drainage,district drain,district tile,legal drain,tile drainage,outlet,streamstats,flow path,watershed,dem,agriculture
 category=Analysis
 icon=icon.png
 experimental=False
