@@ -42,8 +42,13 @@ irrigation coefficient (in/day).
   Laylines), drawn on the topographic map.
 * **Depth limits**: entered, or from the design — upper/lower limit = shallowest/deepest
   lateral, absolute = shallowest/deepest tile anywhere.
-* **Pipe labels and schedule**: size, length to the nearest 10 ft, slope to the nearest
-  0.05 % (end tile elevations over length), depth range.
+* **Pipe labels**: size, length to the nearest 10 ft, slope to the nearest 0.05 % (end
+  tile elevations over length).
+* **Pipe table** (after the components; *Pipe table after the components*): by default a
+  **pipe summary**, the total length and number of pipes of each pipe size and material,
+  with a total. Or the **full schedule** (size, length, slope and depth range of every
+  pipe), both, or none. Materials come from a `material`, `pipe_material` or `pipe_type`
+  field of the network when it has one, otherwise from *Pipe material(s)*.
 * **Irrigated area** (subirrigation): tile buffered by half the lateral spacing, or by a
   third of the recommended spacing when the laterals are more than two thirds of the
   recommended spacing apart (dominant soil under the tile, `spacing_ft`).

@@ -79,7 +79,10 @@ common = dict(
     soils=soils, dep_table=dep_rows,
     dep_note="Depressions deeper than 0.5 ft below the filled surface; run-on = land outside the field draining into it (LiDAR DEM).",
     components=[["Main (8 in)", "Corrugated polyethylene (HDPE)"], ["Laterals (4 in)", "Corrugated polyethylene (HDPE)"]],
-    schedule=sched[:25],
+    schedule=[],
+    pipe_summary=__import__("core.design", fromlist=["x"]).pipe_summary(
+        [(p["size"], "Corrugated polyethylene (HDPE)", r["length_exact"]) for p, r in
+         zip(sorted(pipes, key=lambda p: ({"main": 0, "submain": 1, "lateral": 2}[p["kind"]], p["id"])), sched)]),
 )
 imgs = dict(location=fig("Location", 5), background=fig("Field", 5, lambda ax: tile(ax)), soils=fig("Soils", 6),
             watershed=fig("Watershed", 5), depressions=fig("Depressions and run-on", 6.5, deps),

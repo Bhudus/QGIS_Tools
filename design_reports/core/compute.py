@@ -180,26 +180,28 @@ def lateral_spacing(lines, step=None):
 
 
 def component_rows(items, material):
-    """items: (kind, size_text, length). Rows [component, material] sorted main ->
-    submain -> lateral, then by size."""
+    """items: (kind, size_text, length[, material]). Rows [component, material, length]
+    sorted main -> submain -> lateral, then by size; `material` where an item has none."""
     order = {"main": 0, "submain": 1, "lateral": 2}
     names = {"main": "Main", "submain": "Submain", "lateral": "Laterals"}
     agg = {}
-    for kind, size, length in items:
+    for it in items:
+        kind, size, length = it[:3]
+        mat = (it[3] if len(it) > 3 else "") or material
         k = (kind or "tile").lower()
-        key = (k, size or "")
+        key = (k, size or "", mat)
         agg[key] = agg.get(key, 0.0) + (length or 0.0)
 
     def size_val(s):
         m = re.search(r"[\d.]+", s or "")
         return float(m.group(0)) if m else 0.0
     rows = []
-    for (k, size), length in sorted(agg.items(), key=lambda kv: (
-            order.get(kv[0][0], 3), -size_val(kv[0][1]))):
+    for (k, size, mat), length in sorted(agg.items(), key=lambda kv: (
+            order.get(kv[0][0], 3), -size_val(kv[0][1]), kv[0][2])):
         label = names.get(k, k.capitalize())
         if size:
             label += " ({})".format(size)
-        rows.append([label, material, length])
+        rows.append([label, mat, length])
     return rows
 
 

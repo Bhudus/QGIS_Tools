@@ -188,7 +188,7 @@ def strip_drawings(block):
 
 
 def simple_table(headers, rows, widths, size=10, font="Arial Narrow", head_color="0000FF",
-                 align=None):
+                 align=None, bold_last=False):
     """A bordered table: blue bold header row, plain rows. widths in twips (dxa)."""
     align = align or ["center"] * len(headers)
 
@@ -212,9 +212,10 @@ def simple_table(headers, rows, widths, size=10, font="Arial Narrow", head_color
     out.append("".join('<w:gridCol w:w="{}"/>'.format(w) for w in widths) + "</w:tblGrid>")
     out.append('<w:tr><w:trPr><w:tblHeader/></w:trPr>' + "".join(
         cell(h, w, True, head_color) for h, w in zip(headers, widths)) + "</w:tr>")
-    for r in rows:
+    for k, r in enumerate(rows):
+        b = bold_last and k == len(rows) - 1
         out.append("<w:tr><w:trPr><w:cantSplit/></w:trPr>" + "".join(
-            cell(v, w, jc=a) for v, w, a in zip(r, widths, align)) + "</w:tr>")
+            cell(v, w, bold=b, jc=a) for v, w, a in zip(r, widths, align)) + "</w:tr>")
     out.append("</w:tbl>")
     return "".join(out)
 

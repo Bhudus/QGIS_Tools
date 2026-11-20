@@ -208,6 +208,15 @@ def _system(d, data, start, heading):
     i_ctbl = d.idx("Component", i_pic, kind="w:tbl")
     comps = data.get("components") or [["", ""]]
     d.set(i_ctbl, set_rows(t.blocks[i_ctbl], 1, 1, comps))
+    summ = data.get("pipe_summary") or []
+    if summ:
+        d.after(i_ctbl, para(""), _subhead("Pipe summary"), simple_table(
+            ["Pipe size", "Material", "Total length (ft)", "Pipes"],
+            [[r[0], r[1], "{:,.0f}".format(r[2]), "{:,d}".format(r[3])] for r in summ],
+            [1500, 3700, 1900, 1100], align=["center", "left", "right", "center"],
+            bold_last=True),
+            _caption("Lengths measured along the pipes in the design layer, to the nearest "
+                     "foot."))
     sched = data.get("schedule") or []
     if sched:
         d.after(i_ctbl, para(""), _subhead("Pipe schedule"), simple_table(

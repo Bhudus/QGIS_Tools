@@ -218,3 +218,25 @@ def sheet_scale_for_pages(count_at, max_scale, fit_scale, max_pages, scales=None
         if n <= max_pages:
             return s, n
     return fit_scale, None
+
+
+def pipe_summary(items):
+    """items: (size_text, material, length ft). Rows [size, material, total length ft,
+    number of pipes], smallest size first, then a Total row."""
+    import re as _re
+    agg = {}
+    for size, mat, length in items:
+        key = (size or "unknown size", mat or "")
+        a = agg.setdefault(key, [0.0, 0])
+        a[0] += length or 0.0
+        a[1] += 1
+
+    def size_val(t):
+        m = _re.search(r"[\d.]+", t or "")
+        return float(m.group(0)) if m else 1e9
+    rows = [[size, mat, round(v[0]), v[1]]
+            for (size, mat), v in sorted(agg.items(), key=lambda kv: (size_val(kv[0][0]),
+                                                                       kv[0][0], kv[0][1]))]
+    if rows:
+        rows.append(["Total", "", sum(r[2] for r in rows), sum(r[3] for r in rows)])
+    return rows

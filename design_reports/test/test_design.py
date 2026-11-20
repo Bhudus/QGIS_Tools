@@ -55,3 +55,18 @@ assert all(pages(x) > 4 for x in prev if x > 2400)                            # 
 assert sheet_scale_for_pages(pages, 2400, fit, 1) == (fit, None)              # one page
 assert sheet_scale_for_pages(pages, 2400, fit, 100) == (2400, pages(2400))    # already fits
 print("page limit ok", s, n, pages(2400))
+
+# pipe summary: total length by size and material, smallest size first, then a total
+from core.design import pipe_summary
+rows = pipe_summary([("4 in", "HDPE", 455.4), ("4 in", "HDPE", 300.2), ("8 in", "HDPE", 1200.0),
+                     ("6 in", "Dual wall", 410.0), ("4 in", "Dual wall", 50.0)])
+assert rows[0] == ["4 in", "Dual wall", 50, 1] and rows[1] == ["4 in", "HDPE", 756, 2], rows
+assert [r[0] for r in rows] == ["4 in", "4 in", "6 in", "8 in", "Total"], rows
+assert rows[-1] == ["Total", "", 50 + 756 + 410 + 1200, 5], rows[-1]
+assert pipe_summary([]) == []
+from core.compute import component_rows
+cr = component_rows([("lateral", "4 in", 100, ""), ("lateral", "4 in", 50, "Dual wall"),
+                     ("main", "8 in", 20)], "HDPE")
+assert cr == [["Main (8 in)", "HDPE", 20], ["Laterals (4 in)", "Dual wall", 50],
+              ["Laterals (4 in)", "HDPE", 100]], cr
+print("pipe summary ok")

@@ -35,7 +35,7 @@ from . import maps
 from .core.compute import (component_rows, crop_text, fmt_latlon, lateral_spacing,
                            polygon_mask, scale_text, series_name, smooth, soil_rows)
 from .core.design import (coarsen, depressions_and_runon, depth_range, pipe_schedule,
-                          sheet_centers, sheet_scale_for_pages)
+                          pipe_summary, sheet_centers, sheet_scale_for_pages)
 from .core import terrain
 
 PLUGIN_DIR = os.path.dirname(__file__)
@@ -235,9 +235,11 @@ class ReportAlgorithm(QgsProcessingAlgorithm):
             "MAX_PAGES", self.tr("Maximum pages for the system (tile) and topographic maps "
                                  "(0 = no limit; fewer pages = smaller scale)"),
             QgsProcessingParameterNumber.Integer, defaultValue=0, minValue=0))
-        self.addParameter(advanced(QgsProcessingParameterBoolean(
-            "SCHEDULE", self.tr("Add a pipe schedule (size, length, slope of every pipe)"),
-            defaultValue=True)))
+        self.addParameter(QgsProcessingParameterEnum(
+            "PIPE_TABLE", self.tr("Pipe table after the components"),
+            options=[self.tr("Summary: total length by pipe size and material"),
+                     self.tr("Full schedule: size, length, slope and depth of every pipe"),
+                     self.tr("Both"), self.tr("None")], defaultValue=0))
         self.addParameter(advanced(QgsProcessingParameterNumber(
             "CONTOUR", self.tr("Contour interval (ft)"), dbl,
             defaultValue=self.CONTOUR_DEFAULT, minValue=0.1)))
@@ -464,6 +466,8 @@ class ReportAlgorithm(QgsProcessingAlgorithm):
             size_f = next((low[k] for k in ("nominal", "actual_size") if k in low), None)
             id_f = next((low[k] for k in ("pipe_id", "pipe", "name", "id") if k in low), None)
             dc_f = low.get("d_coeff")
+            mat_f = next((low[k] for k in ("material", "pipe_material", "pipe_type",
+                                           "pipe_mat") if k in low), None)
             for g, f in geoms_of(nsrc):
                 kind = sval(f[kind_f]).lower() if kind_f else ""
                 size = sval(f[size_f]) if size_f else ""
@@ -489,7 +493,8 @@ class ReportAlgorithm(QgsProcessingAlgorithm):
                     continue
                 a = np.vstack(arrs)
                 pipes.append({"id": pid or str(f.id()), "kind": kind or "tile",
-                              "size": size, "a": a, "geom": g})
+                              "size": size, "a": a, "geom": g,
+                              "material": sval(f[mat_f]) if mat_f else ""})
             # flowline elevations where tile crosses the field boundary
             boundary = QgsGeometry(field.constGet().boundary())
             for p in pipes:
@@ -548,8 +553,11 @@ class ReportAlgorithm(QgsProcessingAlgorithm):
         material = self.s("MATERIAL") or "Corrugated polyethylene (HDPE)"
         c["material"] = material
         comps = component_rows([(p["kind"], p["size"],
-                                 by_id.get(p["id"], {}).get("length_exact", 0))
-                                for p in pipes], material)
+                                 by_id.get(p["id"], {}).get("length_exact", 0),
+                                 p["material"]) for p in pipes], material)
+        c["pipe_summary"] = pipe_summary([
+            (p["size"], p["material"] or material,
+             by_id.get(p["id"], {}).get("length_exact", 0)) for p in pipes])
         c["components"] = comps
         c["tile_note"] = "; ".join("{} {:,.0f} ft".format(r[0], r[2]) for r in comps)
         if pipes:
@@ -840,7 +848,9 @@ class ReportAlgorithm(QgsProcessingAlgorithm):
         return {"upper": pick("UPPER", dl[0]), "lower": pick("LOWER", dl[1]),
                 "abs_upper": pick("ABS_UPPER", da[0]), "abs_lower": pick("ABS_LOWER", da[1]),
                 "spacing": "" if not c["spacing"] else "{:.0f}{}".format(c["spacing"], unit),
-                "dc": dc, "materials": c["material"], "other": " ".join(other),
+                "dc": dc, "materials": ", ".join(sorted({p["material"] or c["material"]
+                                                         for p in c["pipes"]}))
+                or c["material"], "other": " ".join(other),
                 "_dc_value": (float(self.s("DC")) if _isnum(self.s("DC")) else
                               (min(c["dcs"]) if c["dcs"] else None))}
 
@@ -1014,8 +1024,11 @@ class ReportAlgorithm(QgsProcessingAlgorithm):
                 "latlon": c["latlon"](c["center"].x(), c["center"].y()),
                 "crops": c["crops"], "total_acres": "{:.1f} acres".format(c["field_ac"])}
 
-    def schedule_rows(self, c):
-        return c["schedule"] if self.parameterAsBool(self.P, "SCHEDULE", self.context) else []
+    def pipe_tables(self, c):
+        """(summary rows, schedule rows) as chosen in Pipe table."""
+        k = self.parameterAsEnum(self.P, "PIPE_TABLE", self.context)
+        return (c["pipe_summary"] if k in (0, 2) else [],
+                c["schedule"] if k in (1, 2) else [])
 
 
 def _isnum(s):

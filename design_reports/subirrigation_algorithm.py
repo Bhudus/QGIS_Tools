@@ -50,7 +50,8 @@ class SubirrigationReportAlgorithm(ReportAlgorithm):
             "coefficient (entered) and drainage coefficient, with a check that the drainage "
             "coefficient is at least the irrigation coefficient.</p>"
             "<p><b>Subirrigation system maps</b>: pipes labeled with size, length and slope, "
-            "components and pipe schedule. <b>Irrigated area</b>: tile buffered by half the "
+            "components and a pipe summary (total length by size and material; or the full "
+            "pipe schedule). <b>Irrigated area</b>: tile buffered by half the "
             "lateral spacing, or by a third of the recommended spacing when the laterals are "
             "more than two thirds of the recommended spacing apart. <b>Topographic map</b>: "
             "6-inch contours at 1:2,400 or closer, the same sheets as the system map. <b>Maximum pages</b> caps the number of sheets of both (at a smaller scale, with a warning).</p>"
@@ -266,7 +267,8 @@ class SubirrigationReportAlgorithm(ReportAlgorithm):
             "zones_table": zone_rows,
             "design": dv,
             "components": [r[:2] for r in c["components"]],
-            "schedule": self.schedule_rows(c),
+            "pipe_summary": self.pipe_tables(c)[0],
+            "schedule": self.pipe_tables(c)[1],
             "irrigated": irrigated,
             "systems": systems,
             "images": img, "captions": cap,
