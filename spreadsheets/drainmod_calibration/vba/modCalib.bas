@@ -908,6 +908,7 @@ Private Sub LoadSelectedParams()
         If pMin(iH) <= DrainField(genLines, 1) Then Err.Raise vbObjectError + 727, "Parameters", "The minimum depth to the impermeable layer (" & _
             pMin(iH) & " cm) must be greater than the drain depth (" & DrainField(genLines, 1) & " cm)."
     End If
+    CheckKirkRange
 End Sub
 
 Private Function TargetMode() As Integer
@@ -1104,11 +1105,52 @@ Private Function KeyValue(ByVal key As String, x() As Double, ByRef v As Double)
     Next i
 End Function
 
+' Kirkham's depth for flow to drains (surface depth that must be ponded before
+' surface water flows to the drains) cannot exceed the maximum surface storage.
+' Brings x() (natural units) inside that limit: with both calibrated the
+' Kirkham depth is held at or below the surface storage; with only one of them
+' calibrated it is kept on the right side of the project's value of the other.
+Private Function LimitKirk(x() As Double) As Boolean
+    Dim iK As Integer, iSm As Integer, i As Integer
+    For i = 1 To pN
+        If pKey(i) = "KIRK" Then iK = i
+        If pKey(i) = "SMAX" Then iSm = i
+    Next i
+    If iK > 0 And iSm > 0 Then
+        If x(iK) > x(iSm) Then x(iK) = x(iSm): LimitKirk = True
+    ElseIf iK > 0 Then
+        If x(iK) > DrainField(genLines, 4) Then x(iK) = DrainField(genLines, 4): LimitKirk = True
+    ElseIf iSm > 0 Then
+        If x(iSm) < DrainField(genLines, 6) Then x(iSm) = DrainField(genLines, 6): LimitKirk = True
+    End If
+End Function
+
+' error if no value in the ranges can meet Kirkham depth <= surface storage
+Private Sub CheckKirkRange()
+    Dim iK As Integer, iSm As Integer, i As Integer
+    For i = 1 To pN
+        If pKey(i) = "KIRK" Then iK = i
+        If pKey(i) = "SMAX" Then iSm = i
+    Next i
+    If iK > 0 And iSm > 0 Then
+        If pMin(iK) > pMax(iSm) Then Err.Raise vbObjectError + 737, "Parameters", "The minimum Kirkham depth (" & pMin(iK) & _
+            " cm) is above the maximum surface storage (" & pMax(iSm) & " cm); the Kirkham depth cannot exceed the surface storage."
+    ElseIf iK > 0 Then
+        If pMin(iK) > DrainField(genLines, 4) Then Err.Raise vbObjectError + 737, "Parameters", "The minimum Kirkham depth (" & pMin(iK) & _
+            " cm) is above the project's maximum surface storage (" & DrainField(genLines, 4) & " cm); lower it or calibrate the surface storage too."
+    ElseIf iSm > 0 Then
+        If pMax(iSm) < DrainField(genLines, 6) Then Err.Raise vbObjectError + 737, "Parameters", "The maximum surface storage (" & pMax(iSm) & _
+            " cm) is below the project's Kirkham depth (" & DrainField(genLines, 6) & " cm); raise it or calibrate the Kirkham depth too."
+    End If
+End Sub
+
 ' write a .gen/.prj pair with parameter values x() (natural units)
-Private Sub WriteProject(x() As Double, ByVal genOut As String, ByVal prjOut As String, ByVal shorten As Boolean)
+Private Sub WriteProject(xIn() As Double, ByVal genOut As String, ByVal prjOut As String, ByVal shorten As Boolean)
     Dim g() As String, i As Long, k0() As Double, n As Integer, nl As Integer, lines As Variant, txt As String
     Dim y1 As Long, m1 As Long, y2 As Long, m2 As Long, cy1 As Long, cy2 As Long
-    Dim l As String, v As Double, parts As Variant
+    Dim l As String, v As Double, parts As Variant, x() As Double
+    x = xIn
+    LimitKirk x
     ReDim g(0 To nGen - 1)
     For i = 0 To nGen - 1
         g(i) = genLines(i)
@@ -1641,6 +1683,7 @@ End Function
 ' one model evaluation in run slot 1 (waits for DRAINMOD; errors are raised)
 Private Function Evaluate(x() As Double) As Double
     lastX = x
+    LimitKirk lastX
     LaunchRun 1, x
     WaitRuns 1
     If wFail(1) <> "" Then Err.Raise vbObjectError + 749, "DRAINMOD", wFail(1)
@@ -1907,6 +1950,7 @@ Public Sub RunCalibration()
 Finish:
     On Error GoTo Failed2
     KillRuns
+    LimitKirk xb
     For i = 1 To pN
         Cfg("ParamTable").Cells(pRow(i), 8).Value = xb(i)
     Next i
@@ -1953,9 +1997,11 @@ Failed2:
     MsgBox "Could not finish: " & Err.Description, vbExclamation
 End Sub
 
-Private Sub WriteBestColumn(xb() As Double)
-    Dim i As Integer
+Private Sub WriteBestColumn(xIn() As Double)
+    Dim i As Integer, xb() As Double
     On Error Resume Next
+    xb = xIn
+    LimitKirk xb
     For i = 1 To pN
         Cfg("ParamTable").Cells(pRow(i), 8).Value = xb(i)
     Next i
@@ -2069,6 +2115,7 @@ Private Sub LoadSensParams(skipRow() As Long, skipWhy() As String, ByRef nSkip A
         If pMax(iD) >= pMin(iH) Then Err.Raise vbObjectError + 729, "Sensitivity", "The maximum drain depth (" & pMax(iD) & _
             " cm) must be less than the minimum depth to the impermeable layer (" & pMin(iH) & " cm)."
     End If
+    CheckKirkRange
 End Sub
 
 Private Function MorrisShape(ByVal muStar As Double, ByVal sigma As Double) As String

@@ -1,6 +1,6 @@
 # DRAINMOD Calibration
 
-**Workbook:** `DRAINMOD_Calibration.xlsm` · Version 1 ·
+**Workbook:** `DRAINMOD_Calibration.xlsm` · Version 1.1 ·
 [download zip](https://github.com/Bhudus/QGIS_Tools/raw/main/spreadsheets/drainmod_calibration/drainmod_calibration.zip)
 
 Calibrates a DRAINMOD project to measured daily drain flow, water table depth or both,
@@ -36,6 +36,9 @@ On the **Setup** sheet:
    multiplier, root depth multiplier, drain depth, depth to the impermeable layer,
    lateral seepage layer thickness, initial water table depth and drain spacing. The
    equivalent depth and Kirkham's G are recomputed whenever the drain geometry changes.
+   The Kirkham depth for flow to drains is kept at or below the maximum surface storage
+   in every run (with only one of the two calibrated, the project's value of the other is
+   the limit), and a range that cannot meet this is reported before the runs start.
 5. **2. Evaluate current values** runs DRAINMOD once and shows the fit on the
    **Results** sheet.
 6. **3. Sensitivity analysis** (optional) tests every parameter with a range that applies
@@ -63,4 +66,6 @@ workbook opens).
 
 ## Versions
 
+* **1.1** – The Kirkham depth for flow to drains is kept at or below the maximum surface
+  storage.
 * **1** – First published version.
