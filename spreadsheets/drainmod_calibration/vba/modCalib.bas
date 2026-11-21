@@ -22,6 +22,7 @@ Private Const NWMAX As Integer = 16            ' most DRAINMOD runs side by side
 Private Const SYNC_TERMINATE As Long = &H100001 ' SYNCHRONIZE Or PROCESS_TERMINATE
 Private Const WAIT_TIMEOUT As Long = &H102
 Private Const MAXNAME As Integer = 48         ' longest file name DRAINMOD reads for crops
+Private Const ZEROQ As Double = 0.0001       ' drain flows below this (cm/day) count as zero
 
 ' running DRAINMOD without blocking Excel, so several runs can go side by side
 #If VBA7 Then
@@ -1580,12 +1581,19 @@ End Function
 
 '=============================================================== KGE ====
 ' st(): 1 KGE, 2 r, 3 alpha (or gamma), 4 beta, 5 NSE, 6 PBIAS %, 7 RMSE, 8 n, 9 valid(1/0)
+' Setup: leave out days when measured and simulated drain flow are both zero
+Private Function ZeroFlowSkip() As Boolean
+    On Error Resume Next
+    ZeroFlowSkip = IsYes(ThisWorkbook.Names("ZeroFlowSkip").RefersToRange.Value)
+End Function
+
 Private Sub Stats(ByVal useW As Boolean, st() As Double)
     Dim i As Long, j As Long, n As Long, so As Double, ss As Double, soo As Double, sss As Double, sos As Double
     Dim mo As Double, ms As Double, vo As Double, vs As Double, cov As Double, r As Double, a As Double, b As Double
-    Dim o As Double, sim As Double, sse As Double, sst As Double, ver As String
+    Dim o As Double, sim As Double, sse As Double, sst As Double, ver As String, skipZero As Boolean
     j = 1
     For i = 1 To 9: st(i) = 0: Next i
+    If Not useW Then skipZero = ZeroFlowSkip()
     For i = 1 To nObs
         If (useW And oHasW(i)) Or (Not useW And oHasQ(i)) Then
             Do While j < sN And sDate(j) < oDate(i)
@@ -1593,9 +1601,12 @@ Private Sub Stats(ByVal useW As Boolean, st() As Double)
             Loop
             If sDate(j) = oDate(i) Then
                 If useW Then o = oW(i): sim = sW(j) Else o = oQ(i): sim = sQ(j)
-                n = n + 1
-                so = so + o: ss = ss + sim: soo = soo + o * o: sss = sss + sim * sim: sos = sos + o * sim
-                sse = sse + (sim - o) ^ 2
+                ' optionally leave out days with no measured and no simulated drain flow
+                If Not (skipZero And Abs(o) < ZEROQ And Abs(sim) < ZEROQ) Then
+                    n = n + 1
+                    so = so + o: ss = ss + sim: soo = soo + o * o: sss = sss + sim * sim: sos = sos + o * sim
+                    sse = sse + (sim - o) ^ 2
+                End If
             End If
         End If
     Next i
@@ -2472,7 +2483,7 @@ End Sub
 '=========================================================== results ====
 Private Sub WriteResults()
     Dim ws As Worksheet, i As Long, j As Long, r As Long, labels As Variant, nrow As Long, data() As Variant
-    Dim ver As String
+    Dim ver As String, cumO As Double, cumS As Double
     Set ws = ThisWorkbook.Worksheets("Results")
     ws.Cells.Clear
     Do While ws.ChartObjects.Count > 0
@@ -2490,6 +2501,7 @@ Private Sub WriteResults()
         If stW(9) = 1 Or i = 7 Then ws.Cells(3 + i, 3).Value = stW(i + 1)
     Next i
     ws.Range("B3:C9").NumberFormat = "0.000"
+    If ZeroFlowSkip() Then ws.Range("A11").Value = "Drain flow: days when measured and simulated flow are both zero are left out."
     ws.Range("A12").Value = "Parameter values used"
     ws.Range("A12").Font.Bold = True
     For i = 1 To pN
@@ -2499,10 +2511,11 @@ Private Sub WriteResults()
 
     ' daily table
     r = 14 + pN
-    ws.Cells(r, 1).Resize(1, 5).Value = Array("Date", "Measured drain flow (cm/day)", "Simulated drain flow (cm/day)", _
-        "Measured water table depth (cm)", "Simulated water table depth (cm)")
-    ws.Cells(r, 1).Resize(1, 5).Font.Bold = True
-    ReDim data(1 To nObs, 1 To 5)
+    ws.Cells(r, 1).Resize(1, 7).Value = Array("Date", "Measured drain flow (cm/day)", "Simulated drain flow (cm/day)", _
+        "Measured water table depth (cm)", "Simulated water table depth (cm)", _
+        "Cumulative measured drain flow (cm)", "Cumulative simulated drain flow (cm)")
+    ws.Cells(r, 1).Resize(1, 7).Font.Bold = True
+    ReDim data(1 To nObs, 1 To 7)
     j = 1: nrow = 0
     For i = 1 To nObs
         Do While j < sN And sDate(j) < oDate(i)
@@ -2515,16 +2528,24 @@ Private Sub WriteResults()
         If sDate(j) = oDate(i) Then
             data(nrow, 3) = sQ(j): data(nrow, 5) = sW(j)
         End If
+        ' cumulative flows add only the days with both a measured and a simulated flow
+        If oHasQ(i) And sDate(j) = oDate(i) Then
+            cumO = cumO + oQ(i): cumS = cumS + sQ(j)
+        End If
+        data(nrow, 6) = cumO: data(nrow, 7) = cumS
     Next i
     If nrow > 0 Then
-        ws.Cells(r + 1, 1).Resize(nrow, 5).Value = data
+        ws.Cells(r + 1, 1).Resize(nrow, 7).Value = data
         ws.Cells(r + 1, 1).Resize(nrow, 1).NumberFormat = "yyyy-mm-dd"
+        ws.Cells(r + 1, 6).Resize(nrow, 2).NumberFormat = "0.00"
         AddChart ws, "Drain flow", ws.Cells(r + 1, 1).Resize(nrow, 1), ws.Cells(r + 1, 2).Resize(nrow, 1), _
             ws.Cells(r + 1, 3).Resize(nrow, 1), "Drain flow (cm/day)", 0, False
+        If cumO > 0 Or cumS > 0 Then AddCumulative ws.ChartObjects(ws.ChartObjects.Count).Chart, ws.Cells(r + 1, 1).Resize(nrow, 1), _
+            ws.Cells(r + 1, 6).Resize(nrow, 1), ws.Cells(r + 1, 7).Resize(nrow, 1)
         AddChart ws, "Water table depth", ws.Cells(r + 1, 1).Resize(nrow, 1), ws.Cells(r + 1, 4).Resize(nrow, 1), _
             ws.Cells(r + 1, 5).Resize(nrow, 1), "Water table depth (cm)", 1, True
     End If
-    ws.Columns("A:E").AutoFit
+    ws.Columns("A:G").AutoFit
     UpdateGraphs
 End Sub
 
@@ -2588,6 +2609,44 @@ Private Sub UpdateGraphs()
     On Error GoTo 0
 End Sub
 
+
+' cumulative measured and simulated drain flow on a secondary axis of the
+' drain flow chart (dashed lines in the colors of the daily series)
+Private Sub AddCumulative(ch As Chart, xr As Range, obsR As Range, simR As Range)
+    Dim sr As Series
+    On Error Resume Next
+    ch.SeriesCollection(1).MarkerBackgroundColor = RGB(68, 114, 196)
+    ch.SeriesCollection(1).MarkerForegroundColor = RGB(68, 114, 196)
+    ch.SeriesCollection(2).Format.Line.ForeColor.RGB = RGB(237, 125, 49)
+    Set sr = ch.SeriesCollection.NewSeries
+    sr.Name = "Cumulative measured"
+    sr.ChartType = xlXYScatterLinesNoMarkers
+    sr.XValues = xr
+    sr.Values = obsR
+    sr.AxisGroup = xlSecondary
+    sr.Format.Line.ForeColor.RGB = RGB(31, 56, 100)
+    sr.Format.Line.Weight = 2
+    sr.Format.Line.DashStyle = 4   ' msoLineDash
+    Set sr = ch.SeriesCollection.NewSeries
+    sr.Name = "Cumulative simulated"
+    sr.ChartType = xlXYScatterLinesNoMarkers
+    sr.XValues = xr
+    sr.Values = simR
+    sr.AxisGroup = xlSecondary
+    sr.Format.Line.ForeColor.RGB = RGB(197, 90, 17)
+    sr.Format.Line.Weight = 2
+    sr.Format.Line.DashStyle = 4   ' msoLineDash
+    ' one date axis for both groups
+    ch.HasAxis(xlCategory, xlSecondary) = False
+    ch.HasAxis(xlValue, xlSecondary) = True
+    With ch.Axes(xlValue, xlSecondary)
+        .MinimumScale = 0
+        .HasTitle = True
+        .AxisTitle.Text = "Cumulative drain flow (cm)"
+        .HasMajorGridlines = False
+    End With
+    ch.Axes(xlValue, xlPrimary).MinimumScale = 0
+End Sub
 
 Private Sub AddChart(ws As Worksheet, ByVal title As String, xr As Range, obsR As Range, simR As Range, _
         ByVal yTitle As String, ByVal slot As Integer, ByVal reverseY As Boolean)

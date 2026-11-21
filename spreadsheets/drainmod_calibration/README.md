@@ -1,6 +1,6 @@
 # DRAINMOD Calibration
 
-**Workbook:** `DRAINMOD_Calibration.xlsm` · Version 1.1 ·
+**Workbook:** `DRAINMOD_Calibration.xlsm` · Version 1.2 ·
 [download zip](https://github.com/Bhudus/QGIS_Tools/raw/main/spreadsheets/drainmod_calibration/drainmod_calibration.zip)
 
 Calibrates a DRAINMOD project to measured daily drain flow, water table depth or both,
@@ -26,7 +26,9 @@ On the **Setup** sheet:
    paths in the project files themselves (keeping each original as .bak).
 2. Paste the measured data on the **Measured** sheet: date, daily drain flow, daily water
    table depth (blank where not measured). Set the units, sign and what to calibrate to
-   on the Setup sheet; KGE 2012 is the default, 2009 can be chosen.
+   on the Setup sheet (drain flow in cm/day by default); KGE 2012 is the default, 2009
+   can be chosen. Optionally, days when measured and simulated drain flow are both zero
+   can be left out of the drain-flow statistics.
 3. **1. Read project parameters** fills the current value of each parameter on the
    **Parameters** sheet and sets the calibration period to the simulation period.
 4. On the Parameters sheet, give each parameter a minimum and maximum and set
@@ -40,7 +42,8 @@ On the **Setup** sheet:
    in every run (with only one of the two calibrated, the project's value of the other is
    the limit), and a range that cannot meet this is reported before the runs start.
 5. **2. Evaluate current values** runs DRAINMOD once and shows the fit on the
-   **Results** sheet.
+   **Results** sheet: the statistics, the daily values and charts of drain flow (with
+   cumulative measured and simulated drain flow on a second axis) and water table depth.
 6. **3. Sensitivity analysis** (optional) tests every parameter with a range that applies
    to the project, ticked or not. The **Sensitivity** sheet ranks them (1 = most
    sensitive) by mu\*, the mean absolute change in the objective when a parameter moves
@@ -66,6 +69,9 @@ workbook opens).
 
 ## Versions
 
+* **1.2** – Cumulative drain flow curves on a second axis of the Results drain flow
+  chart; option to leave out days when measured and simulated drain flow are both zero;
+  drain flow in cm/day and a depth to the impermeable layer of 120 to 250 cm by default.
 * **1.1** – The Kirkham depth for flow to drains is kept at or below the maximum surface
   storage.
 * **1** – First published version.
