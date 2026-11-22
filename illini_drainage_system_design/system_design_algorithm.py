@@ -43,7 +43,9 @@ __revision__ = '$Format:%H$'
 
 import os
 import inspect
+import math
 
+import numpy as np
 import processing
 
 from qgis.PyQt.QtGui import QIcon
@@ -65,7 +67,14 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterVectorDestination,
                        QgsProcessingParameterFeatureSink,
                        QgsProcessingUtils,
-                       QgsGeometry)
+                       QgsCoordinateReferenceSystem,
+                       QgsCoordinateTransform,
+                       QgsFeature,
+                       QgsFeatureSink,
+                       QgsGeometry,
+                       QgsLineString,
+                       QgsPoint,
+                       QgsWkbTypes)
 
 from .geometrically_fixed_algorithm import GeometricallyFixedAlgorithm
 from .network_generator_algorithm import NetworkGeneratorAlgorithm
@@ -73,7 +82,16 @@ from .network_flow_ordering_algorithm import NetworkFlowOrderingAlgorithm
 from .network_elevation_algorithm import NetworkElevationAlgorithm
 from .flow_lengths_algorithm import FlowLengthsAlgorithm
 from .bury_algorithm import BuryAlgorithm
-from .benefits_algorithm import BenefitsAlgorithm
+from .core.design import run_design
+from .core.geometry import Grid
+from .core.layout import LayoutCancelled, LayoutError, LayoutParams
+from .network_output import (Z_FACTORS, _meters_factor, _read_dem, _Styler,
+                             network_attrs, network_fields)
+
+FT = 0.3048
+INTENSITIES = [0.375, 0.5, 0.75, 1.0]
+BURY_METHODS = ["routine_j", "min_cover", "fewest_breaks", "least_cost"]
+_POST = {}          # keep layer post-processors alive until QGIS has used them
 
 
 class SystemDesignAlgorithm(QgsProcessingAlgorithm):
@@ -102,6 +120,15 @@ class SystemDesignAlgorithm(QgsProcessingAlgorithm):
     CONST_SLOPE = 'CONST_SLOPE'
     USE_CONST = 'USE_CONST'
     LOWER_OUTLET = 'LOWER_OUTLET'
+    BURY_METHOD = 'BURY_METHOD'
+    GRADE_BREAK = 'GRADE_BREAK'
+    MIN_BREAK_RUN = 'MIN_BREAK_RUN'
+    MAX_GRADE_CHANGE = 'MAX_GRADE_CHANGE'
+    BREAK_COST = 'BREAK_COST'
+    EXCAVATION = 'EXCAVATION'
+    OUTLET_INVERT = 'OUTLET_INVERT'
+    FIX_OUTLET = 'FIX_OUTLET'
+    Z_UNITS = 'Z_UNITS'
 
     # k. Network Pipe Sizing
     SIZING_SLOPE = 'SIZING_SLOPE'
@@ -147,25 +174,31 @@ class SystemDesignAlgorithm(QgsProcessingAlgorithm):
         return QIcon(os.path.join(cmd_folder, 'icon.svg'))
 
     def shortHelpString(self):
-        return self.tr("""This tool designs a complete tile drainage system in one run. It performs, in order, the routines previously run separately as tools E through K:
+        return self.tr("""This tool designs a complete tile drainage system in one run, from the mains and submains you draw:
 
         e. Hydraulic Network Fixer -- cleans the proposed lines into topologically-sound, exploded segments
         f. Network Flow-Path Generator -- connects the segments into a network flowing to the outlet
-        g. Tile Network Ordering -- assigns flow, burying and Strahler orders
-        h. Network Elevation Exports -- samples the DEM and calculates segment lengths and slopes
-        i. Network Flow Lengths -- accumulates segment lengths downstream
-        j. Tile Burying System -- calculates buried elevations, depths and slopes
-        k. Network Pipe Sizing -- calculates drainage areas, flows and pipe sizes
+        g-k. With the Illini Subsurface Drain Layout engine: orders the network (Strahler, Routine G), samples the DEM along every pipe, buries the tile (Routine J or one of the other burying methods) and sizes the pipes (Routine K)
+
+        Burying Method:
+        - Routine J: the target depth band (Upper and Lower Tile Depth), with the offset, constant slope and lower-the-outlet options; grade breaks at most the Routine J grade break spacing apart (advanced, default 50 ft).
+        - Minimum cover: as shallow as the Absolute Upper Tile Depth and the minimum slope allow.
+        - Fewest grade breaks: each pipe as a chain of straight runs with as few grade breaks as possible, between the absolute depths and the slope limits, closest to the target band.
+        - Least cost: grade breaks balanced against distance from the target depth; each break costs as much as the cost of a grade break (advanced, default 100 ft) of tile 1 ft off the target.
+        Fewest breaks and least cost also take a shortest run between breaks and an optional largest change of grade at a break (advanced).
+        Bury from the Outlet Invert holds the outlet tile at the Outlet Invert Elevation, with any method; without it the outlet invert is only checked.
+
+        Pipe sizing: every drawn line drains its Drain Spacing, so a line is sized for the tile length upstream of it (FLOW_LENGTH) times the spacing, with the drainage intensity (or a coefficient for each tile order).
+
+        Output: the Drainage Network, in the same form as Illini Subsurface Drain Layout: a line from node to node for every pipe between junctions, with the tile elevation (Z) and ground elevation (M) at every vertex, in feet, and the fields kind, pipe, from_node, to_node, ds_link, length, ground and invert elevations, depths, grades, InSlope, OutSlope, BURY_CHECK, TILE_ORDER, FLOW_LENGTH, D_COEFF, DRAIN_SPACE, D_AREA, CUM_SEG_FLOW, ACTUAL_SIZE, NOMINAL, PIPE_TYPE and flag. Tile Profile, the Tile Size Calculator and its bill of materials read it directly.
 
         Workflow:
         1. Select the Vector Line layer of the proposed Mains and Submains
         2. Click on the map near the outlet end of the main to set the Outlet Location (the segment closest to this point becomes the outlet)
-        3. Select the field DEM
-        4. Set the burying and pipe sizing parameters (defaults are the same as the individual tools)
-        5. Optionally, under Advanced Parameters, adjust line extension and segment length, and choose which intermediate layers (E to J) to save or load
+        3. Select the field DEM (its elevation units are set under Advanced Parameters; US survey feet by default)
+        4. Set the burying and pipe sizing parameters
+        5. Optionally, under Advanced Parameters, adjust line extension and the burying settings, and choose which intermediate layers (E to J) to save
         6. Click on \"Run\"
-
-        The main output is \"Network Pipe Sizings\". Field names are passed between the steps automatically.
 
         The help link in the Graphical User Interface (GUI) provides more information about the plugin.
         """)
@@ -201,6 +234,19 @@ class SystemDesignAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterNumber(self.CONST_SLOPE, self.tr('Constant Slope Depth [percentage]'), type=QgsProcessingParameterNumber.Double, maxValue=100.0, defaultValue=0.50, optional=True))
         self.addParameter(QgsProcessingParameterBoolean(self.USE_CONST, self.tr('Include Constant Slope [For Flat Terrain Only]'), defaultValue=False))
         self.addParameter(QgsProcessingParameterBoolean(self.LOWER_OUTLET, self.tr('Lower the Outlet for Low Ground [down to Lower Tile Depth]'), defaultValue=False))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.BURY_METHOD, self.tr('Burying Method'),
+            options=[self.tr('Routine J: target depth band'),
+                     self.tr('Minimum cover: as shallow as the absolute upper depth and minimum slope allow'),
+                     self.tr('Fewest grade breaks: straight runs within the depth and slope limits'),
+                     self.tr('Least cost: balance grade breaks against distance from the target depth')],
+            defaultValue=0))
+        self.addParameter(QgsProcessingParameterNumber(
+            self.OUTLET_INVERT, self.tr('Outlet Invert Elevation [DEM elevation units] (optional)'),
+            type=QgsProcessingParameterNumber.Double, optional=True))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.FIX_OUTLET, self.tr('Bury from the Outlet Invert [hold the outlet tile at it]'),
+            defaultValue=False))
 
         # --- k. Pipe sizing parameters ---
         self.addParameter(QgsProcessingParameterEnum(self.SIZING_SLOPE, self.tr('Burying Slope used for Pipe Sizing'), options=[self.tr('InSlope'), self.tr('OutSlope')], defaultValue=0))
@@ -214,11 +260,17 @@ class SystemDesignAlgorithm(QgsProcessingAlgorithm):
         self._advanced(QgsProcessingParameterNumber(self.START_EXT, self.tr('E: Extend Starting Lines'), type=QgsProcessingParameterNumber.Double, maxValue=100.0, defaultValue=5.00))
         self._advanced(QgsProcessingParameterNumber(self.END_EXT, self.tr('E: Extend Ending Lines'), type=QgsProcessingParameterNumber.Double, maxValue=100.0, defaultValue=5.00))
         self._advanced(QgsProcessingParameterNumber(self.SEGMENT_LENGTH, self.tr('H: Line Segment (=> 5 times pixel size)'), type=QgsProcessingParameterNumber.Double, maxValue=1.79769e+308, defaultValue=5000))
+        self._advanced(QgsProcessingParameterNumber(self.GRADE_BREAK, self.tr('J: Routine J grade break spacing [ft]'), type=QgsProcessingParameterNumber.Double, minValue=1.0, defaultValue=50.0))
+        self._advanced(QgsProcessingParameterNumber(self.MIN_BREAK_RUN, self.tr('J: Fewest breaks / least cost: shortest run between grade breaks [ft]'), type=QgsProcessingParameterNumber.Double, minValue=0.0, defaultValue=20.0))
+        self._advanced(QgsProcessingParameterNumber(self.MAX_GRADE_CHANGE, self.tr('J: Fewest breaks / least cost: largest change of grade at a break [%, 0 = any]'), type=QgsProcessingParameterNumber.Double, minValue=0.0, maxValue=10.0, defaultValue=0.0))
+        self._advanced(QgsProcessingParameterNumber(self.BREAK_COST, self.tr('J: Least cost: cost of a grade break, as a length of tile 1 ft off the target depth [ft]'), type=QgsProcessingParameterNumber.Double, minValue=0.0, defaultValue=100.0))
+        self._advanced(QgsProcessingParameterNumber(self.EXCAVATION, self.tr('J: Least cost: excavation weight (cost of 1 ft more depth, relative to being 1 ft off the target)'), type=QgsProcessingParameterNumber.Double, minValue=0.0, maxValue=100.0, defaultValue=0.0))
+        self._advanced(QgsProcessingParameterEnum(self.Z_UNITS, self.tr('DEM elevation units'), options=[self.tr('Metres'), self.tr('International feet'), self.tr('US survey feet')], defaultValue=2))
         self._advanced(QgsProcessingParameterEnum(self.COEFF_METHOD, self.tr('K: Assign Drainage Coefficient [inch/day]'), options=[self.tr("By System [internal]"), self.tr("By Tile Orders [self]")], defaultValue=0))
         self._advanced(QgsProcessingParameterString(self.ORDER_COEFFS, self.tr("K: Order Coefficients separated by ',' (if \"By Tile Orders [self]\" selected)"), optional=True))
 
         # --- Outputs ---
-        self.addParameter(QgsProcessingParameterFeatureSink(self.OUT_PIPES, self.tr('Network Pipe Sizings'), createByDefault=True, defaultValue=None))
+        self.addParameter(QgsProcessingParameterFeatureSink(self.OUT_PIPES, self.tr('Drainage Network'), createByDefault=True, defaultValue=None))
 
         intermediates = [
             (self.OUT_FIXED, 'E: Topologically-Sound Network'),
@@ -269,12 +321,177 @@ class SystemDesignAlgorithm(QgsProcessingAlgorithm):
         alg.initAlgorithm({})
         return alg
 
+    # -----------------------------------------------------------------------
+    def _design_network(self, parameters, context, feedback, fixed_layer):
+        """Bury and size the cleaned network with the Illini Subsurface Drain Layout
+        engine and write it as an Illini drainage network. Returns the output id."""
+        dem_layer = self.parameterAsRasterLayer(parameters, self.DEM, context)
+        if dem_layer is None:
+            raise QgsProcessingException(self.tr('Could not load the DEM.'))
+        dcrs = dem_layer.crs()
+        if not dcrs.isValid() or dcrs.isGeographic():
+            raise QgsProcessingException(self.tr(
+                'The DEM must be in a projected coordinate system (feet or metres).'))
+        xf = _meters_factor(dcrs)                      # DEM map units -> m
+        zf = Z_FACTORS[self.parameterAsEnum(parameters, self.Z_UNITS, context)]
+        out_crs = self.parameterAsCrs(parameters, self.CRS, context)
+        if out_crs is None or not out_crs.isValid():
+            out_crs = fixed_layer.crs()
+
+        def num(key):
+            return self.parameterAsDouble(parameters, key, context)
+
+        # the cleaned segments, in metres on the DEM's grid
+        tr_in = QgsCoordinateTransform(fixed_layer.crs(), dcrs, context.transformContext())
+        segments = []
+        for f in fixed_layer.getFeatures():
+            g = QgsGeometry(f.geometry())
+            if g.isEmpty():
+                continue
+            g.transform(tr_in)
+            parts = g.asMultiPolyline() if g.isMultipart() else [g.asPolyline()]
+            for part in parts:
+                if len(part) >= 2:
+                    segments.append([(q.x() * xf, q.y() * xf) for q in part])
+        if not segments:
+            raise QgsProcessingException(self.tr('The tile lines have no segments.'))
+        opt = self.parameterAsPoint(parameters, self.OUTLET, context, dcrs)
+        outlet = (opt.x() * xf, opt.y() * xf)
+
+        # the DEM on a grid round the network
+        spacing = num(self.SPACING) * FT
+        allp = np.array([q for sgm in segments for q in sgm])
+        dem_res_m = abs(dem_layer.rasterUnitsPerPixelX()) * xf
+        cell_m = max(dem_res_m, 0.5)
+        margin = 2.0 * spacing + 10.0
+        x0, y0 = allp.min(axis=0) - margin
+        x1, y1 = allp.max(axis=0) + margin
+        while (x1 - x0) * (y1 - y0) / cell_m ** 2 > 12.0e6:
+            cell_m *= 1.5
+        cell_map = cell_m / xf
+        xmin = math.floor(x0 / xf / cell_map) * cell_map
+        ymin = math.floor(y0 / xf / cell_map) * cell_map
+        xmax = math.ceil(x1 / xf / cell_map) * cell_map
+        ymax = math.ceil(y1 / xf / cell_map) * cell_map
+        ncols = int(round((xmax - xmin) / cell_map))
+        nrows = int(round((ymax - ymin) / cell_map))
+        dem, valid = _read_dem(dem_layer, (xmin, ymin, xmax, ymax), cell_map, nrows, ncols,
+                               feedback)
+        if not valid.any():
+            raise QgsProcessingException(self.tr('The DEM has no data under the tile lines.'))
+        grid = Grid(xmin * xf, ymax * xf, cell_m, nrows, ncols)
+
+        # drainage coefficient(s)
+        if self.parameterAsBoolean(parameters, self.USE_ASS, context):
+            dc = self.parameterAsDouble(parameters, self.ASS_INTENSITY, context)
+        else:
+            dc = INTENSITIES[self.parameterAsEnum(parameters, self.INTENSITY, context)]
+        order_coeffs = None
+        if self.parameterAsEnum(parameters, self.COEFF_METHOD, context) == 1:
+            try:
+                order_coeffs = [float(t) for t in self.parameterAsString(
+                    parameters, self.ORDER_COEFFS, context).replace(';', ',').split(',')
+                    if t.strip()]
+            except ValueError:
+                raise QgsProcessingException(self.tr(
+                    'Order Coefficients must be numbers separated by commas.'))
+        inv = parameters.get(self.OUTLET_INVERT)
+        outlet_inv = None if inv in (None, '') else num(self.OUTLET_INVERT)
+        fix_outlet = self.parameterAsBoolean(parameters, self.FIX_OUTLET, context)
+        if fix_outlet and outlet_inv is None:
+            raise QgsProcessingException(self.tr(
+                'Bury from the Outlet Invert needs the Outlet Invert Elevation.'))
+        method = BURY_METHODS[self.parameterAsEnum(parameters, self.BURY_METHOD, context)]
+        params = LayoutParams(
+            spacing=spacing, units="ft", setback=0.0,
+            min_cover=num(self.ABS_UPPER) * FT, max_depth=num(self.ABS_LOWER) * FT,
+            target_upper=num(self.UPPER) * FT, target_lower=num(self.LOWER) * FT,
+            max_grade=num(self.MAX_SLOPE) / 100.0,
+            min_main_grade=num(self.MIN_SLOPE) / 100.0,
+            min_lateral_grade=num(self.MIN_SLOPE) / 100.0,
+            outlet_offset=num(self.OFFSET) * FT,
+            use_constant=self.parameterAsBoolean(parameters, self.USE_CONST, context),
+            constant_grade=self.parameterAsDouble(parameters, self.CONST_SLOPE, context) / 100.0,
+            lower_outlet=self.parameterAsBoolean(parameters, self.LOWER_OUTLET, context),
+            grade_break=num(self.GRADE_BREAK) * FT,
+            bury_method=method,
+            min_break_run=num(self.MIN_BREAK_RUN) * FT,
+            break_cost=num(self.BREAK_COST) * FT,
+            excavation_weight=num(self.EXCAVATION),
+            max_grade_change=num(self.MAX_GRADE_CHANGE) / 100.0,
+            fix_outlet=fix_outlet,
+            outlet_invert=outlet_inv * zf if outlet_inv is not None else None,
+            size_pipes=True,
+            pipe_material=self.parameterAsEnum(parameters, self.PIPE, context),
+            drainage_coeff=dc,
+            sizing_slope="in" if self.parameterAsEnum(
+                parameters, self.SIZING_SLOPE, context) == 0 else "out")
+        try:
+            res = run_design(dem * zf, valid, grid, segments, outlet, params,
+                             cancel=feedback.isCanceled, order_coeffs=order_coeffs)
+        except LayoutCancelled:
+            return None
+        except LayoutError as e:
+            raise QgsProcessingException(str(e))
+
+        # the Illini drainage network: tile (Z) and ground (M) at every vertex, in feet
+        fields = network_fields()
+        sink, net_id = self.parameterAsSink(parameters, self.OUT_PIPES, context, fields,
+                                            QgsWkbTypes.LineStringZM, out_crs)
+        if sink is None:
+            raise QgsProcessingException(self.tr('Could not create the Drainage Network.'))
+        tr_out = None
+        if out_crs != dcrs:
+            tr_out = QgsCoordinateTransform(dcrs, out_crs, context.transformContext())
+        for it in res["network"]:
+            a = network_attrs(it, FT)
+            pts = []
+            for (x, y), zt, gm in zip(it["coords"], it["tile_z"], it["ground_m"]):
+                px, py = x / xf, y / xf
+                if tr_out is not None:
+                    q = tr_out.transform(px, py)
+                    px, py = q.x(), q.y()
+                pts.append(QgsPoint(px, py, float(zt) / FT, float(gm) / FT))
+            f = QgsFeature(fields)
+            f.setGeometry(QgsGeometry(QgsLineString(pts)))
+            f.setAttributes([a.get(fields.at(i).name()) for i in range(fields.count())])
+            sink.addFeature(f, QgsFeatureSink.FastInsert)
+        if context.willLoadLayerOnCompletion(net_id):
+            _POST[net_id] = _Styler()
+            context.layerToLoadOnCompletionDetails(net_id).setPostProcessor(_POST[net_id])
+
+        s = res["summary"]
+        feedback.pushInfo(self.tr('Drainage network: {} pipes (1 main, {} submains), {} lines, '
+                                  '{:,.0f} ft of tile').format(
+            res["pipes"], res["pipes"] - 1, len(res["network"]), s["total_length_m"] / FT))
+        if s.get("outlet_depth_m") is not None:
+            feedback.pushInfo(self.tr('Outlet tile depth: {:.2f} ft{}.').format(
+                s["outlet_depth_m"] / FT,
+                self.tr(', held at the outlet invert') if fix_outlet else ''))
+        label = {"routine_j": "Routine J", "min_cover": "minimum cover",
+                 "fewest_breaks": "the fewest grade breaks", "least_cost": "least cost"}[method]
+        if method in ("fewest_breaks", "least_cost"):
+            feedback.pushInfo(self.tr('Buried with {}: {} straight runs, {} grade breaks.')
+                              .format(label, s["bury_segments"], s["bury_breaks"]))
+        else:
+            feedback.pushInfo(self.tr('Buried with {}: {} segments between junctions and '
+                                      'grade breaks.').format(label, s["bury_segments"]))
+        if s.get("length_by_size_m"):
+            feedback.pushInfo(self.tr('Pipe by nominal size: {}').format('; '.join(
+                '{} in: {:,.0f} ft'.format(k, v / FT) for k, v in s["length_by_size_m"].items())))
+        for w in res["warnings"]:
+            if hasattr(feedback, "pushWarning"):
+                feedback.pushWarning(w)
+            else:                                   # QGIS before 3.20
+                feedback.reportError(w, False)
+        return net_id
+
     def processAlgorithm(self, parameters, context, feedback):
         if (self.parameterAsEnum(parameters, self.COEFF_METHOD, context) == 1
                 and not self.parameterAsString(parameters, self.ORDER_COEFFS, context).strip()):
             raise QgsProcessingException(self.tr('"By Tile Orders [self]" was selected, but no Order Coefficients were entered (e.g. 0.375, 0.47, 0.5).'))
 
-        steps = QgsProcessingMultiStepFeedback(7, feedback)
+        steps = QgsProcessingMultiStepFeedback(4, feedback)
         results = {}
 
         # ---------------- e. Hydraulic Network Fixer ----------------------
@@ -319,8 +536,22 @@ class SystemDesignAlgorithm(QgsProcessingAlgorithm):
         if self._wanted(parameters, self.OUT_NETWORK):
             results[self.OUT_NETWORK] = out_f
 
-        # ---------------- g. Tile Network Ordering ------------------------
+        # ---------------- j, k. Bury and size: the Illini layout engine ----
         steps.setCurrentStep(2)
+        steps.pushInfo(self.tr('Steps G-K: ordering, elevations, burying and pipe sizing'))
+        net_id = self._design_network(parameters, context, steps, fixed_layer)
+        if net_id is None:
+            return {}
+        results[self.OUT_PIPES] = net_id
+
+        # ---------------- optional intermediate layers (routines G to J) ----
+        later = (self.OUT_ORDERING, self.OUT_ELEV_FIELDS, self.OUT_ENDPOINTS,
+                 self.OUT_PROFILES, self.OUT_FLOW_LENGTHS, self.OUT_BURIED)
+        if not any(self._wanted(parameters, k) for k in later):
+            return results
+        steps.setCurrentStep(3)
+        steps.pushInfo(self.tr('Intermediate layers (routines G to J)'))
+        # ---------------- g. Tile Network Ordering ------------------------
         steps.pushInfo(self.tr('Step G: Tile Network Ordering'))
         layer_f = self._layer(out_f, context)
         out_g = processing.run(self._child(NetworkFlowOrderingAlgorithm), {
@@ -360,7 +591,6 @@ class SystemDesignAlgorithm(QgsProcessingAlgorithm):
             results[self.OUT_PROFILES] = res_h['TerrainProfiles']
 
         # ---------------- i. Network Flow Lengths -------------------------
-        steps.setCurrentStep(4)
         steps.pushInfo(self.tr('Step I: Network Flow Lengths'))
         layer_h = self._layer(out_h, context)
         length_field = self._field(layer_h, 'LENGTH')
@@ -377,8 +607,9 @@ class SystemDesignAlgorithm(QgsProcessingAlgorithm):
         if self._wanted(parameters, self.OUT_FLOW_LENGTHS):
             results[self.OUT_FLOW_LENGTHS] = out_i
 
-        # ---------------- j. Tile Burying System --------------------------
-        steps.setCurrentStep(5)
+        # ---------------- j. Tile Burying System (Routine J layer) -----------
+        if not self._wanted(parameters, self.OUT_BURIED):
+            return results
         steps.pushInfo(self.tr('Step J: Tile Burying System'))
         layer_i = self._layer(out_i, context)
         out_j = processing.run(self._child(BuryAlgorithm), {
@@ -404,28 +635,5 @@ class SystemDesignAlgorithm(QgsProcessingAlgorithm):
         if self._wanted(parameters, self.OUT_BURIED):
             results[self.OUT_BURIED] = out_j
 
-        # ---------------- k. Network Pipe Sizing --------------------------
-        steps.setCurrentStep(6)
-        steps.pushInfo(self.tr('Step K: Network Pipe Sizing'))
-        layer_j = self._layer(out_j, context)
-        slope_name = ['InSlope', 'OutSlope'][self.parameterAsEnum(parameters, self.SIZING_SLOPE, context)]
-        out_k = processing.run(self._child(BenefitsAlgorithm), {
-            BenefitsAlgorithm.INPUT_LAYER: layer_j,
-            BenefitsAlgorithm.SEGMENT_KEY: self._field(layer_j, 'TILE_ID'),
-            BenefitsAlgorithm.TILE_TO_KEY: self._field(layer_j, 'TILE_TO'),
-            BenefitsAlgorithm.ORDER_KEY: self._field(layer_j, 'TILE_ORDER'),
-            BenefitsAlgorithm.LENGTH_KEY: self._field(layer_j, 'FLOW_' + length_field),
-            BenefitsAlgorithm.SLOPE_KEY: self._field(layer_j, slope_name),
-            BenefitsAlgorithm.SPACING_KEY: 0,  # single spacing value
-            BenefitsAlgorithm.SINGLE_KEY: parameters[self.SPACING],
-            BenefitsAlgorithm.PIPE_KEY: self.parameterAsEnum(parameters, self.PIPE, context),
-            BenefitsAlgorithm.INTENS_KEY: self.parameterAsEnum(parameters, self.INTENSITY, context),
-            BenefitsAlgorithm.ASS_INTENS_KEY: self.parameterAsDouble(parameters, self.ASS_INTENSITY, context),
-            BenefitsAlgorithm.USE_ASS_KEY: self.parameterAsBoolean(parameters, self.USE_ASS, context),
-            BenefitsAlgorithm.COFF_KEY: self.parameterAsEnum(parameters, self.COEFF_METHOD, context),
-            BenefitsAlgorithm.ORDER_COFF_KEY: self.parameterAsString(parameters, self.ORDER_COEFFS, context),
-            BenefitsAlgorithm.OUTPUT: parameters[self.OUT_PIPES],
-        }, context=context, feedback=steps, is_child_algorithm=True)[BenefitsAlgorithm.OUTPUT]
-
-        results[self.OUT_PIPES] = out_k
         return results
+

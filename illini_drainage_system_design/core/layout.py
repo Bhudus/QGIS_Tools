@@ -1,0 +1,2149 @@
+"""Automated subsurface (tile) drainage layout.
+
+Pure numpy engine: no QGIS imports, so it can be tested on its own.
+
+Inputs are a DEM grid, the field boundary rings, an outlet point and a set of
+design parameters. All lengths and elevations are in metres. The engine:
+
+1. smooths the DEM and derives the fall-line and contour directions;
+2. routes collectors (main, submains or a header) from the outlet;
+3. builds a lateral direction field for the chosen pattern, orientation and
+   shape, and places evenly spaced laterals in it (Jobard-Lefer style
+   streamline seeding, so spacing holds even where laterals curve);
+4. designs pipe inverts from the upstream ends down to the outlet at the
+   minimum grade and cover, and flags anything too deep or unconnected.
+"""
+import heapq
+import math
+from collections import deque
+from dataclasses import dataclass
+from typing import Optional
+
+import numpy as np
+
+from .bury import BuryParams, Segment, bury_network
+from . import fewest_breaks as FBK
+from . import sizing as K
+from .geometry import (
+    SegmentHash,
+    limit_bends,
+    cumulative_length,
+    densify,
+    dist_to_segments,
+    label_regions,
+    moving_average,
+    nearest_vertex,
+    polyline_length,
+    rasterize_rings,
+    resample,
+    refine_turns,
+    ring_segments,
+    segments_cross,
+    simplify,
+    smooth,
+    tangents,
+)
+
+PATTERN_PARALLEL = "parallel"
+PATTERN_HERRINGBONE = "herringbone"
+ORIENT_ACROSS = "across"  # laterals roughly parallel to the contours
+ORIENT_ALONG = "along"    # laterals roughly perpendicular to the contours
+SHAPE_STRAIGHT = "straight"
+SHAPE_CONTOUR = "contour"  # laterals bend with the terrain
+SHAPE_EIGHT = "eight"      # laterals bend with the terrain, in the 8 compass directions
+
+
+class LayoutError(Exception):
+    pass
+
+
+class LayoutCancelled(Exception):
+    pass
+
+
+@dataclass
+class LayoutParams:
+    spacing: float = 15.0
+    pattern: str = PATTERN_PARALLEL
+    orientation: str = ORIENT_ACROSS
+    shape: str = SHAPE_CONTOUR
+    herringbone_angle: float = 60.0      # degrees between lateral and main
+    contour_grade: float = 0.001         # target lateral grade, contour-following (m/m)
+    min_lateral_grade: float = 0.001     # m/m
+    min_main_grade: float = 0.001        # m/m
+    min_cover: float = 0.75              # m, absolute upper tile depth (Routine J)
+    max_depth: float = 1.5               # m, absolute lower tile depth (Routine J)
+    target_upper: float = 3.25 * 0.3048  # m, upper tile depth of the target band (Routine J)
+    target_lower: float = 4.25 * 0.3048  # m, lower tile depth of the target band (Routine J)
+    max_grade: float = 0.05              # m/m, maximum slope (Routine J)
+    outlet_offset: float = 0.0           # m, + lowers the outlet (Routine J)
+    use_constant: bool = False           # constant slope, for flat terrain (Routine J)
+    constant_grade: float = 0.005        # m/m
+    lower_outlet: bool = False           # lower the outlet for low ground (Routine J)
+    grade_break: float = 50 * 0.3048     # m, longest burying segment between grade breaks
+    size_pipes: bool = True              # pipe sizing (Routine K)
+    pipe_material: int = 0               # 0 single wall, 1 smooth wall, 2 clay or concrete
+    drainage_coeff: float = 0.375        # drainage coefficient, inch/day (Routine K)
+    sizing_slope: str = "in"             # "in" (InSlope) or "out" (OutSlope)
+    outlet_invert: Optional[float] = None
+    setback: Optional[float] = None      # default: spacing / 2
+    smooth_radius: Optional[float] = None  # default: spacing
+    units: str = "m"                     # design units for messages: "m" or "ft"
+    lateral_bearing: str = "terrain"     # straight laterals: "terrain", "ns", "ew", "nwse", "nesw"
+    parallelism: float = 0.9            # curved laterals: 0 = follow terrain, 1 = offset of neighbour
+    main_stop_frac: float = 0.02         # main ends where contributing area < this share of field
+    submain_frac: float = 0.10           # branches above this share become submains (0 = none)
+    min_lateral_length: Optional[float] = None  # default: spacing
+    max_connector: Optional[float] = None       # default: 2.5 * spacing
+    bury_method: str = "routine_j"       # "routine_j" target band, "min_cover" or "fewest_breaks"
+    min_break_run: float = 20 * 0.3048   # m, shortest run between grade breaks (fewest/least cost)
+    break_cost: float = 100 * 0.3048     # m, least cost: a grade break costs as much as this
+                                         # length of tile 1 ft (1 m in metres) off the target
+    excavation_weight: float = 0.0       # least cost: cost of each ft (m) of depth per length
+    max_grade_change: float = 0.0        # m/m, largest change of grade at a break (0 = any)
+    fix_outlet: bool = False             # hold the outlet tile at outlet_invert (all methods)
+    min_bend_angle: float = 120.0        # degrees between tile legs at a bend; 0 = no limit
+    tile_raster: bool = False            # also return a raster of tile elevation and depth
+
+
+# ====================================================================== engine
+
+class DrainageLayout:
+    def __init__(self, dem, valid, grid, rings, outlet, params,
+                 progress=None, cancel=None, mains=None):
+        self.dem = np.asarray(dem, dtype=float)
+        self.valid = np.asarray(valid, dtype=bool) & np.isfinite(self.dem)
+        self.g = grid
+        self.rings = rings
+        self.outlet = None if outlet is None else (float(outlet[0]), float(outlet[1]))
+        self.user_mains = []
+        for line in mains or []:
+            a = np.asarray(line, dtype=float)
+            if a.ndim == 2 and len(a) >= 2 and polyline_length(a) > 0:
+                self.user_mains.append(a)
+        if self.outlet is None and not self.user_mains:
+            raise LayoutError("Give an outlet location, a main line, or both.")
+        self.p = params
+        self._progress_cb = progress
+        self._cancel_cb = cancel
+        self.warnings = []
+
+    # ------------------------------------------------------------ utilities
+    def _progress(self, pct, msg):
+        if self._cancel_cb is not None and self._cancel_cb():
+            raise LayoutCancelled()
+        if self._progress_cb is not None:
+            self._progress_cb(pct, msg)
+
+    def _warn(self, msg):
+        self.warnings.append(msg)
+
+    def _fmt(self, metres, decimals):
+        """A length in the design units, with its unit, for flags and warnings."""
+        if self.p.units == "ft":
+            return "{:.{}f} ft".format(metres / 0.3048, decimals)
+        return "{:.{}f} m".format(metres, decimals)
+
+    def inside(self, x, y):
+        return bool(self.g.lookup(self.inner, x, y, False))
+
+    def region_at(self, x, y):
+        r = self.g.lookup(self.region, x, y, -1)
+        return int(r)
+
+    def _vec(self, ax, ay, x, y):
+        u = self.g.bilinear(ax, x, y)
+        v = self.g.bilinear(ay, x, y)
+        n = math.hypot(u, v)
+        if not (n == n) or n < 0.5:
+            return None
+        return (u / n, v / n)
+
+    def D(self, x, y):
+        return self._vec(self.Dx, self.Dy, x, y)
+
+    def dcoll(self, x, y):
+        d = self.g.bilinear(self.dcoll_r, x, y)
+        return d if d == d else 1e9
+
+    def ground(self, pts):
+        z = np.array([self.g.bilinear(self.zfill, x, y) for x, y in pts], dtype=float)
+        bad = ~np.isfinite(z)
+        if bad.any():
+            # outside the DEM (e.g. a user main running out to a ditch): carry the
+            # nearest known ground along the line
+            if bad.all():
+                raise LayoutError("A pipe lies entirely outside the DEM.")
+            s = cumulative_length(pts)
+            z[bad] = np.interp(s[bad], s[~bad], z[~bad])
+            self.off_dem = True
+        return z
+
+    # ------------------------------------------------------------ pipeline
+    def run(self):
+        self._progress(2, "Preparing terrain")
+        self._prepare()
+        self._progress(15, "Routing collectors")
+        self._build_collectors()
+        self._progress(30, "Building lateral direction field")
+        self._collector_rasters()
+        self._direction_field()
+        self._progress(40, "Placing laterals")
+        self._place_laterals()
+        self._limit_bends()
+        self._progress(85, "Designing inverts")
+        self._design()
+        self._progress(95, "Summarising")
+        res = self._results()
+        if self.p.tile_raster:
+            res["tile_raster"] = self.tile_raster()
+        return res
+
+    # ------------------------------------------------------------ prepare
+    def _prepare(self):
+        g, p = self.g, self.p
+        S = float(p.spacing)
+        if S <= 0:
+            raise LayoutError("Lateral spacing must be positive.")
+        self.S = S
+        self.h = min(g.cell, S / 6.0)          # tracing step
+        self.hc = g.cell / 2.0                 # collector vertex spacing
+        self.d_sep = S
+        self.d_test = 0.5 * S
+        self.setback = p.setback if p.setback is not None else 0.5 * S
+        self.lmin = p.min_lateral_length if p.min_lateral_length is not None else S
+        self.max_conn = p.max_connector if p.max_connector is not None else 2.5 * S
+
+        X, Y = g.centers()
+        self.X, self.Y = X, Y
+        field = rasterize_rings(g, self.rings)
+        self.field_full = field
+        self.field = field & self.valid
+        nf = int(field.sum())
+        if nf == 0:
+            raise LayoutError("The field boundary does not overlap the DEM grid.")
+        if self.field.sum() < 0.95 * nf:
+            self._warn("The DEM has no data over {:.0f}% of the field; those parts are "
+                       "left undrained.".format(100 * (1 - self.field.sum() / nf)))
+        segs = ring_segments(self.rings)
+        fi = np.nonzero(self.field)
+        db = dist_to_segments(X[fi], Y[fi], segs)
+        self.inner = np.zeros(g.shape, dtype=bool)
+        self.inner[fi] = db >= self.setback
+        if self.inner.sum() < 20:
+            raise LayoutError("Nothing is left of the field after the boundary setback.")
+        self.field_area = float(self.field_full.sum()) * g.cell ** 2
+
+        sigma = (p.smooth_radius if p.smooth_radius is not None else S) / 2.0 / g.cell
+        self.zs = smooth(self.dem, self.valid, sigma)
+        self.zfill = np.where(self.valid, self.dem, self.zs)
+        gr, gc = np.gradient(self.zs)
+        gx = gc / g.cell
+        gy = -gr / g.cell
+        slope = np.hypot(gx, gy)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            fx = np.where(slope > 1e-9, -gx / slope, 0.0)
+            fy = np.where(slope > 1e-9, -gy / slope, 0.0)
+        self.slope = np.nan_to_num(slope)
+        self.fx = np.nan_to_num(fx)
+        self.fy = np.nan_to_num(fy)
+
+        # dominant (axial) contour direction, slope weighted
+        m = self.inner & (self.slope > 1e-6)
+        if m.sum() < 10:
+            m = self.inner
+        cx, cy = -self.fy[m], self.fx[m]
+        th = np.arctan2(cy, cx)
+        w = self.slope[m] + 1e-12
+        th0 = 0.5 * math.atan2(float((w * np.sin(2 * th)).sum()),
+                               float((w * np.cos(2 * th)).sum()))
+        uc = (math.cos(th0), math.sin(th0))
+        uf = (uc[1], -uc[0])
+        if float((gx[m] * uf[0] + gy[m] * uf[1]).sum()) > 0:
+            uf = (-uf[0], -uf[1])
+        self.uc, self.uf = uc, uf
+        # straight laterals on a fixed map bearing (grid north of the CRS)
+        r2 = math.sqrt(0.5)
+        bearings = {"ns": (0.0, 1.0), "ew": (1.0, 0.0),
+                    "nwse": (r2, -r2), "nesw": (r2, r2)}
+        self.fixed_b = None
+        if p.shape == SHAPE_STRAIGHT and p.lateral_bearing in bearings:
+            self.fixed_b = bearings[p.lateral_bearing]
+        self.mean_slope = float(self.slope[self.inner].mean())
+
+        if self.outlet is None:
+            # no outlet given: the lowest end of the supplied main line(s)
+            ends = [tuple(a[k]) for a in self.user_mains for k in (0, -1)]
+            zs = [g.bilinear(self.zfill, x, y) for x, y in ends]
+            zs = [z if z == z else float("inf") for z in zs]
+            self.outlet = ends[int(np.argmin(zs))]
+            self.outlet_from_main = True
+
+        # snap the outlet to the drainable area
+        ii, jj = np.nonzero(self.inner)
+        d = np.hypot(X[ii, jj] - self.outlet[0], Y[ii, jj] - self.outlet[1])
+        k = int(np.argmin(d))
+        self.o_cell = (int(ii[k]), int(jj[k]))
+        self.o_snap = (float(X[ii[k], jj[k]]), float(Y[ii[k], jj[k]]))
+        if d[k] > 3 * S and not self.user_mains:
+            self._warn("The outlet is {} from the drainable part of the field; "
+                       "the main is extended to reach it.".format(self._fmt(d[k], 0)))
+
+    # ------------------------------------------------------------ collectors
+    def _flood_tree(self):
+        """Priority-flood from the outlet over the drainable area.
+
+        Every cell gets a parent along the lowest spill route to the outlet,
+        which yields a drainage tree that passes through depressions.
+        """
+        g = self.g
+        nr, nc = g.shape
+        P = nc + 2
+        zp = np.full((nr + 2, nc + 2), np.inf)
+        zp[1:-1, 1:-1] = np.where(np.isfinite(self.zs), self.zs, np.inf)
+        mp = np.zeros((nr + 2, nc + 2), dtype=bool)
+        mp[1:-1, 1:-1] = self.inner
+        zl = zp.ravel().tolist()
+        ml = mp.ravel().tolist()
+        visited = [False] * len(zl)
+        parent = [-1] * len(zl)
+        offs = (-P - 1, -P, -P + 1, -1, 1, P - 1, P, P + 1)
+        start = (self.o_cell[0] + 1) * P + (self.o_cell[1] + 1)
+        heap = [(zl[start], 0, start)]
+        visited[start] = True
+        order = []
+        cnt = 1
+        while heap:
+            pr, _, c = heapq.heappop(heap)
+            order.append(c)
+            for o in offs:
+                n = c + o
+                if ml[n] and not visited[n]:
+                    visited[n] = True
+                    parent[n] = c
+                    zn = zl[n]
+                    heapq.heappush(heap, (zn if zn > pr else pr, cnt, n))
+                    cnt += 1
+        acc = [0] * len(zl)
+        for c in order:
+            acc[c] = 1
+        for c in reversed(order):
+            pa = parent[c]
+            if pa >= 0:
+                acc[pa] += acc[c]
+        return order, parent, acc, P, start
+
+    def _thalweg_collectors(self):
+        order, parent, acc, P, start = self._flood_tree()
+        nreach = len(order)
+        if nreach < 0.9 * self.inner.sum():
+            self._warn("{:.0f}% of the field cannot drain to this outlet without "
+                       "crossing the setback zone and gets no main."
+                       .format(100 * (1 - nreach / self.inner.sum())))
+        stop = max(3.0, self.p.main_stop_frac * nreach)
+        sub = self.p.submain_frac * nreach if self.p.submain_frac > 0 else float("inf")
+        children = {}
+        for c in order[1:]:
+            children.setdefault(parent[c], []).append(c)
+        best = {pa: max(chs, key=lambda q: acc[q]) for pa, chs in children.items()}
+
+        def up(c):
+            path = [c]
+            while c in best and acc[best[c]] >= stop:
+                c = best[c]
+                path.append(c)
+            return path
+
+        def to_xy(path):
+            pts = []
+            for n in path:
+                i, j = divmod(n, P)
+                pts.append(self.g.center_of(i - 1, j - 1))
+            return np.array(pts[::-1])  # upstream -> downstream
+
+        paths = [(up(start), None)]
+        q = deque([0])
+        while q:
+            k = q.popleft()
+            path = paths[k][0]
+            first = 0 if k == 0 else 1          # path[0] of a branch is its junction
+            for idx in range(first, len(path) - 1):
+                node, nxt = path[idx], path[idx + 1]
+                for ch in children.get(node, []):
+                    if ch == nxt or acc[ch] < sub:
+                        continue
+                    br = [node] + up(ch)
+                    if (len(br) - 1) * self.g.cell < 2 * self.S:
+                        continue
+                    paths.append((br, k))
+                    q.append(len(paths) - 1)
+
+        win = max(3, int(round(self.S / self.g.cell)) | 1)
+        cols = []
+        for k, (path, host) in enumerate(paths):
+            pts = moving_average(to_xy(path), win)
+            if polyline_length(pts) < self.S and k > 0:
+                continue
+            cols.append({"pts": resample(pts, self.hc),
+                         "kind": "main" if host is None else "submain",
+                         "to": None if host is None else (host, None),
+                         "src": k})
+        # re-index hosts after any dropped branches
+        remap = {c["src"]: i for i, c in enumerate(cols)}
+        out = []
+        for c in cols:
+            if c["to"] is not None:
+                if c["to"][0] not in remap:
+                    continue
+                c["to"] = (remap[c["to"][0]], None)
+            out.append(c)
+        if not out or polyline_length(out[0]["pts"]) < 0.5 * self.S:
+            raise LayoutError("Could not route a main from the outlet; check that the "
+                              "outlet lies at or near a low point of the field.")
+        return out
+
+    def _trace_field(self, p0, ax, ay, max_len=1e6, slide=60.0, kink=0.5,
+                     min_progress=None):
+        """Trace a collector through a direction field.
+
+        Where the ideal direction would leave the drainable area the collector
+        slides along the edge, turning by up to `slide` degrees from the ideal
+        direction and changing direction by no more than acos(`kink`) a step.
+        With `min_progress`, the trace stops once its mean progress in the ideal
+        direction over one lateral spacing drops below that fraction (it is
+        running along a side edge, not across the field), and any sideways
+        steps at its end are trimmed.
+        """
+        pts = [p0]
+        x, y = p0
+        prev_ideal = None
+        prev_step = None
+        L = 0.0
+        cos_turn = math.cos(math.radians(40))
+        h = self.h
+        turns = [0.0]
+        for a in range(10, int(slide) + 1, 10):
+            turns += [math.radians(a), -math.radians(a)]
+        progress = []
+        window = max(3, int(math.ceil(self.S / h)))
+        while L < max_len:
+            v = self._vec(ax, ay, x, y)
+            if v is None:
+                break
+            if prev_ideal is not None and v[0] * prev_ideal[0] + v[1] * prev_ideal[1] < cos_turn:
+                break
+            v2 = self._vec(ax, ay, x + 0.5 * h * v[0], y + 0.5 * h * v[1]) or v
+            step = None
+            for a in turns:
+                ca, sa = math.cos(a), math.sin(a)
+                dx = ca * v2[0] - sa * v2[1]
+                dy = sa * v2[0] + ca * v2[1]
+                if prev_step is not None and dx * prev_step[0] + dy * prev_step[1] < kink:
+                    continue
+                if self.inside(x + h * dx, y + h * dy):
+                    step = (dx, dy)
+                    break
+            if step is None:
+                break
+            x, y = x + h * step[0], y + h * step[1]
+            pts.append((x, y))
+            prev_ideal = v2
+            prev_step = step
+            L += h
+            if min_progress is not None:
+                progress.append(step[0] * v2[0] + step[1] * v2[1])
+                if (len(progress) >= window
+                        and sum(progress[-window:]) / window < min_progress):
+                    while len(progress) > 0 and progress[-1] < 0.5 and len(pts) > 1:
+                        progress.pop()
+                        pts.pop()
+                    break
+        return np.array(pts)
+
+    def _parallel_collectors(self):
+        p = self.p
+        curved = p.shape in (SHAPE_CONTOUR, SHAPE_EIGHT)
+        shp = self.g.shape
+        upx, upy = -self.fx, -self.fy                 # uphill fall line
+        cx, cy = -self.fy, self.fx                    # contour tangent
+        arms = []
+        if self.fixed_b is not None:
+            # laterals on a fixed bearing: the main runs at right angles to them,
+            # both ways from the outlet (one arm ends at once if the outlet is at an edge)
+            px_, py_ = -self.fixed_b[1], self.fixed_b[0]
+            for sgn in (1.0, -1.0):
+                arms.append(self._trace_field(self.o_snap, np.full(shp, sgn * px_),
+                                              np.full(shp, sgn * py_), slide=135.0,
+                                              kink=0.0, min_progress=0.35))
+        elif p.orientation == ORIENT_ACROSS:
+            # main runs up the slope; laterals cross it along the contours
+            if curved:
+                ax, ay = upx, upy
+            else:
+                ax, ay = np.full(shp, -self.uf[0]), np.full(shp, -self.uf[1])
+            arms.append(self._trace_field(self.o_snap, ax, ay))
+        else:
+            # header runs across the slope, rising gently away from the outlet
+            for sgn in (1.0, -1.0):
+                if curved:
+                    with np.errstate(invalid="ignore", divide="ignore"):
+                        a = np.arcsin(np.clip(1.25 * p.min_main_grade /
+                                              np.maximum(self.slope, 1e-9), 0, 1))
+                    ax = np.cos(a) * sgn * cx + np.sin(a) * upx
+                    ay = np.cos(a) * sgn * cy + np.sin(a) * upy
+                else:
+                    ax = np.full(shp, sgn * self.uc[0])
+                    ay = np.full(shp, sgn * self.uc[1])
+                arms.append(self._trace_field(self.o_snap, ax, ay))
+        arms = [a for a in arms if polyline_length(a) >= self.S]
+        if not arms:
+            return []
+        arms.sort(key=polyline_length, reverse=True)
+        cols = []
+        for k, a in enumerate(arms):
+            pts = a[::-1]
+            if curved:
+                pts = moving_average(resample(pts, self.g.cell),
+                                     max(3, int(round(self.S / self.g.cell)) | 1))
+            cols.append({"pts": resample(pts, self.hc), "kind": "main",
+                         "to": None if k == 0 else (0, None)})
+        return cols
+
+    def _user_collectors(self):
+        """Collectors from user-supplied line(s).
+
+        The line with an end nearest the outlet is the main, flowing to that
+        end. Every other line becomes a submain flowing from its far end to its
+        end nearest an existing collector, which it joins.
+        """
+        S = self.S
+        ox, oy = self.outlet
+        lines = list(self.user_mains)
+        dists = []
+        for a in lines:
+            d0 = math.hypot(a[0][0] - ox, a[0][1] - oy)
+            d1 = math.hypot(a[-1][0] - ox, a[-1][1] - oy)
+            dists.append((min(d0, d1), d0 < d1))
+        k = int(np.argmin([d for d, _ in dists]))
+        main = lines.pop(k)
+        if dists[k][1]:
+            main = main[::-1]                      # flow toward the outlet end
+        if dists[k][0] > 2 * S:
+            self._warn("The main line ends {} from the outlet; a straight pipe "
+                       "joins it to the outlet.".format(self._fmt(dists[k][0], 0)))
+        cols = [{"pts": resample(main, self.hc), "kind": "main", "to": None, "user": True}]
+        while lines:
+            best = None
+            for i, a in enumerate(lines):
+                for flip in (False, True):
+                    end = a[0] if flip else a[-1]
+                    for h, c in enumerate(cols):
+                        d = float(np.min(np.hypot(c["pts"][:, 0] - end[0],
+                                                  c["pts"][:, 1] - end[1])))
+                        if best is None or d < best[0]:
+                            best = (d, i, flip, h)
+            d, i, flip, h = best
+            a = lines.pop(i)
+            if flip:
+                a = a[::-1]
+            if d > 2 * S:
+                self._warn("Submain {} ends {} from the main; a straight pipe joins "
+                           "them.".format(len(cols), self._fmt(d, 0)))
+            cols.append({"pts": resample(a, self.hc), "kind": "submain", "to": (h, None),
+                         "user": True})
+        return cols
+
+    def _build_collectors(self):
+        p = self.p
+        cols = []
+        if self.user_mains:
+            cols = self._user_collectors()
+        elif p.pattern == PATTERN_PARALLEL:
+            cols = self._parallel_collectors()
+            if not cols:
+                self._warn("A parallel main could not be run from this outlet into the "
+                           "field; the main follows the low ground instead.")
+        if not cols:
+            cols = self._thalweg_collectors()
+        if self.user_mains and getattr(self, "outlet_from_main", False):
+            self.outlet = tuple(cols[0]["pts"][-1])
+        # outlet connector on the main
+        main = cols[0]
+        if math.hypot(main["pts"][-1][0] - self.outlet[0],
+                      main["pts"][-1][1] - self.outlet[1]) > 0.25 * self.g.cell:
+            main["pts"] = resample(np.vstack([main["pts"], [self.outlet]]), self.hc) \
+                if len(main["pts"]) > 1 else np.array([main["pts"][0], self.outlet])
+            main["pts"][-1] = self.outlet
+        # resolve junction vertices
+        for c in cols[1:]:
+            host = cols[c["to"][0]]["pts"]
+            end = c["pts"][-1]
+            d = np.hypot(host[:, 0] - end[0], host[:, 1] - end[1])
+            if c["kind"] == "main":
+                # second header arm joins at the snapped outlet, not the connector
+                d = np.hypot(host[:, 0] - self.o_snap[0], host[:, 1] - self.o_snap[1])
+            v = int(np.argmin(d))
+            c["pts"] = resample(np.vstack([c["pts"][:-1], host[v]]), self.hc)
+            c["pts"][-1] = host[v]
+            c["to"] = (c["to"][0], v)
+        self.cols = cols
+
+    def _collector_rasters(self):
+        allx, ally, cid, vid, tx, ty = [], [], [], [], [], []
+        for k, c in enumerate(self.cols):
+            pts = c["pts"]
+            t = tangents(pts)
+            allx.append(pts[:, 0])
+            ally.append(pts[:, 1])
+            tx.append(t[:, 0])
+            ty.append(t[:, 1])
+            cid.append(np.full(len(pts), k))
+            vid.append(np.arange(len(pts)))
+        self.cv_x = np.concatenate(allx)
+        self.cv_y = np.concatenate(ally)
+        self.cv_c = np.concatenate(cid)
+        self.cv_v = np.concatenate(vid)
+        self.cv_tx = np.concatenate(tx)
+        self.cv_ty = np.concatenate(ty)
+        cs = []
+        for c in self.cols:
+            pts = c["pts"]
+            if len(pts) > 1:
+                cs.append(np.hstack([pts[:-1], pts[1:]]))
+        self.cseg = np.vstack(cs) if cs else np.zeros((0, 4))
+        sub = np.arange(0, len(self.cv_x), 2)
+        fi = np.nonzero(self.field)
+        idx, d = nearest_vertex(self.X[fi], self.Y[fi], self.cv_x[sub], self.cv_y[sub])
+        self.dcoll_r = np.full(self.g.shape, np.nan)
+        self.dcoll_r[fi] = d
+        self.near = np.full(self.g.shape, -1, dtype=np.int64)
+        self.near[fi] = sub[idx]
+        free = self.inner & (np.nan_to_num(self.dcoll_r, nan=0) >= 0.8 * self.g.cell)
+        self.region = label_regions(free)
+
+    def snap_collector(self, x, y):
+        d = np.hypot(self.cv_x - x, self.cv_y - y)
+        k = int(np.argmin(d))
+        return float(d[k]), (float(self.cv_x[k]), float(self.cv_y[k])), \
+            int(self.cv_c[k]), int(self.cv_v[k])
+
+    # ------------------------------------------------------------ direction field
+    def _direction_field(self):
+        p = self.p
+        fi = np.nonzero(self.field)
+        px, py = self.X[fi], self.Y[fi]
+        nidx = self.near[fi]
+        vx = self.cv_x[nidx] - px
+        vy = self.cv_y[nidx] - py
+        vn = np.hypot(vx, vy)
+        vn[vn < 1e-9] = 1.0
+        vx, vy = vx / vn, vy / vn
+        mx, my = self.cv_tx[nidx], self.cv_ty[nidx]
+        fx, fy = self.fx[fi], self.fy[fi]
+        cx, cy = -fy, fx
+        S = self.slope[fi]
+        w = np.clip(S / 0.002, 0.0, 1.0)
+
+        if self.fixed_b is not None:
+            u = self.fixed_b
+            s = np.sign(u[0] * vx + u[1] * vy)
+            s[s == 0] = 1.0
+            dx, dy = s * u[0], s * u[1]
+        elif p.pattern == PATTERN_HERRINGBONE and p.shape == SHAPE_STRAIGHT:
+            b = math.radians(min(max(p.herringbone_angle, 15.0), 90.0))
+            dx = math.sin(b) * vx + math.cos(b) * mx
+            dy = math.sin(b) * vy + math.cos(b) * my
+        elif p.shape == SHAPE_STRAIGHT:
+            u = self.uc if p.orientation == ORIENT_ACROSS else self.uf
+            s = np.sign(u[0] * vx + u[1] * vy)
+            s[s == 0] = 1.0
+            dx, dy = s * u[0], s * u[1]
+        elif p.orientation == ORIENT_ACROSS:
+            s = np.sign(cx * vx + cy * vy)
+            s[s == 0] = 1.0
+            with np.errstate(invalid="ignore", divide="ignore"):
+                a = np.arcsin(np.clip(p.contour_grade / np.maximum(S, 1e-9), 0.0, 1.0))
+            dx = np.cos(a) * s * cx + np.sin(a) * fx
+            dy = np.cos(a) * s * cy + np.sin(a) * fy
+            dx, dy = w * dx + (1 - w) * vx, w * dy + (1 - w) * vy
+        else:
+            dx, dy = w * fx + (1 - w) * vx, w * fy + (1 - w) * vy
+        n = np.hypot(dx, dy)
+        n[n < 1e-9] = 1.0
+        self.Dx = np.zeros(self.g.shape)
+        self.Dy = np.zeros(self.g.shape)
+        self.Dx[fi] = dx / n
+        self.Dy[fi] = dy / n
+
+    # ------------------------------------------------------------ laterals
+    def _guide_geom(self, guide):
+        if guide is None or self.parallel <= 0:
+            return None
+        G = np.asarray(self.lats[guide]["pts"], dtype=float)
+        if len(G) < 2:
+            return None
+        A = G[:-1]
+        B = G[1:]
+        AB = B - A
+        L2 = (AB * AB).sum(axis=1)
+        L2[L2 == 0] = 1e-12
+        return A, AB, L2, len(A)
+
+    def _steer(self, x, y, step, geom):
+        """Blend a step direction toward running parallel to the guide lateral at one spacing."""
+        A, AB, L2, n = geom
+        t = ((x - A[:, 0]) * AB[:, 0] + (y - A[:, 1]) * AB[:, 1]) / L2
+        tc = np.clip(t, 0.0, 1.0)
+        qx = A[:, 0] + tc * AB[:, 0]
+        qy = A[:, 1] + tc * AB[:, 1]
+        d2 = (x - qx) ** 2 + (y - qy) ** 2
+        k = int(np.argmin(d2))
+        # beyond either end of the guide: no reference, follow the terrain
+        if (k == 0 and t[k] < 0) or (k == n - 1 and t[k] > 1):
+            return step
+        dist = math.sqrt(float(d2[k]))
+        S = self.S
+        if dist > 2.5 * S or dist < 1e-9:
+            return step
+        w = self.parallel * (1.0 if dist <= 1.5 * S else (2.5 * S - dist) / S)
+        tl = math.sqrt(float(L2[k]))
+        tx, ty = AB[k, 0] / tl, AB[k, 1] / tl
+        if tx * step[0] + ty * step[1] < 0:
+            tx, ty = -tx, -ty
+        nx, ny = (x - qx[k]) / dist, (y - qy[k]) / dist
+        corr = max(-0.5, min(0.5, (S - dist) / S))
+        gx, gy = tx + corr * nx, ty + corr * ny
+        sx, sy = (1 - w) * step[0] + w * gx, (1 - w) * step[1] + w * gy
+        sn = math.hypot(sx, sy)
+        if sn < 1e-9:
+            return step
+        return (sx / sn, sy / sn)
+
+    def _guide_dir(self, x, y, step, geom):
+        """Direction of the guide lateral's segment nearest (x, y), turned to run
+        with `step`, or None beyond its ends or more than 1.5 spacings away. The
+        nearest segment changes on the bisector of each of the guide's corners,
+        so following it turns a lateral where a mitred offset of the guide would."""
+        A, AB, L2, n = geom
+        t = ((x - A[:, 0]) * AB[:, 0] + (y - A[:, 1]) * AB[:, 1]) / L2
+        tc = np.clip(t, 0.0, 1.0)
+        qx = A[:, 0] + tc * AB[:, 0]
+        qy = A[:, 1] + tc * AB[:, 1]
+        d2 = (x - qx) ** 2 + (y - qy) ** 2
+        k = int(np.argmin(d2))
+        if (k == 0 and t[k] < 0) or (k == n - 1 and t[k] > 1):
+            return None
+        if math.sqrt(float(d2[k])) > 1.5 * self.S:
+            return None
+        tl = math.sqrt(float(L2[k]))
+        tx, ty = AB[k, 0] / tl, AB[k, 1] / tl
+        if tx * step[0] + ty * step[1] < 0:
+            tx, ty = -tx, -ty
+        return tx, ty
+
+    def _trace(self, p0, sigma, reg, fixed=None, guide=None):
+        """Trace a lateral through D (or along a fixed bearing for straight laterals).
+
+        sigma=+1 traces downstream, -1 upstream. With a guide lateral, curved
+        laterals are steered to run parallel to it at one spacing.
+        """
+        geom = self._guide_geom(guide) if fixed is None else None
+        pts = [p0]
+        x, y = p0
+        prev = None
+        h = self.h
+        cos_turn = math.cos(math.radians(50))
+        dc_prev = self.dcoll(x, y)
+        L = 0.0
+        turned = 0.0
+        prev_step = None
+        # 8-point laterals: legs in the compass direction (a multiple of 45 degrees)
+        # nearest the contour-following direction, turning 45 degrees at a time and
+        # only once the direction is well past halfway to the next one
+        eight = fixed is None and self.p.shape == SHAPE_EIGHT
+        leg, leg_len = None, 0.0
+        while L < 20000:
+            if fixed is not None:
+                k2 = fixed
+            else:
+                k1 = self.D(x, y)
+                if k1 is None:
+                    return pts, "singular", None
+                if prev is not None and k1[0] * prev[0] + k1[1] * prev[1] < cos_turn:
+                    return pts, "turn", None
+                k2 = self.D(x + 0.5 * h * sigma * k1[0], y + 0.5 * h * sigma * k1[1]) or k1
+                if prev is not None and k2[0] * prev[0] + k2[1] * prev[1] < cos_turn:
+                    return pts, "turn", None
+            step = (sigma * k2[0], sigma * k2[1])
+            if geom is not None:
+                step = self._steer(x, y, step, geom)
+            gdir = None
+            if eight and geom is not None and self.parallel >= 0.5:
+                gdir = self._guide_dir(x, y, (sigma * k2[0], sigma * k2[1]), geom)
+            if gdir is not None:
+                # beside a neighbour: its compass direction, leg for leg (a mitred
+                # offset of it at one spacing)
+                leg = int(round(math.atan2(gdir[1], gdir[0]) / self.EIGHT_STEP)) % 8
+                leg_len = 0.0
+                step = (math.cos(leg * self.EIGHT_STEP), math.sin(leg * self.EIGHT_STEP))
+            elif eight:
+                a = math.atan2(step[1], step[0])
+                if leg is None:
+                    leg = int(round(a / self.EIGHT_STEP)) % 8
+                else:
+                    diff = (a - leg * self.EIGHT_STEP + math.pi) % (2 * math.pi) - math.pi
+                    if (abs(diff) > 0.5 * self.EIGHT_STEP + self.EIGHT_HOLD
+                            and leg_len >= self.eight_min_leg):
+                        leg = (leg + (1 if diff > 0 else -1)) % 8
+                        leg_len = 0.0
+                step = (math.cos(leg * self.EIGHT_STEP), math.sin(leg * self.EIGHT_STEP))
+                leg_len += h
+            if prev_step is not None and fixed is None:
+                # judge turning on the path actually taken, so guided laterals cannot orbit
+                dot = prev_step[0] * step[0] + prev_step[1] * step[1]
+                if dot < cos_turn:
+                    return pts, "turn", None
+                cross = prev_step[0] * step[1] - prev_step[1] * step[0]
+                turned += math.asin(max(-1.0, min(1.0, cross)))
+                if abs(turned) > self.max_turn:
+                    return pts, "loop", None
+            qx, qy = x + h * step[0], y + h * step[1]
+            if not self.inside(qx, qy):
+                return pts, "boundary", None
+            dc = self.dcoll(qx, qy)
+            if sigma > 0 and dc < h:
+                pts.append((qx, qy))
+                return pts, "collector", None
+            if self.region_at(qx, qy) != reg:
+                if sigma > 0 and dc < 2 * self.g.cell:
+                    pts.append((qx, qy))
+                    return pts, "collector", None
+                return pts, "region", None
+            if sigma < 0 and dc < self.d_test and dc < dc_prev - 1e-9:
+                return pts, "collector_near", None
+            hit = self.hash.nearest(qx, qy, reg, self.d_test_eight if eight else self.d_test)
+            if hit is not None:
+                return pts, "lateral", hit
+            pts.append((qx, qy))
+            prev = k2
+            prev_step = step
+            x, y = qx, qy
+            dc_prev = dc
+            L += h
+        return pts, "maxlen", None
+
+    def _extend_to_collector(self, p, d):
+        x, y = p
+        step = 0.5 * self.g.cell
+        for _ in range(12):
+            if self.dcoll(x, y) < 0.75 * self.g.cell:
+                dist, q, cid, v = self.snap_collector(x, y)
+                return q, cid, v
+            x += step * d[0]
+            y += step * d[1]
+        return None
+
+    def _seed_status(self, cid, t, side, s, pts, tg):
+        x = float(np.interp(t, s, pts[:, 0]))
+        y = float(np.interp(t, s, pts[:, 1]))
+        tx = float(np.interp(t, s, tg[:, 0]))
+        ty = float(np.interp(t, s, tg[:, 1]))
+        tn = math.hypot(tx, ty) or 1.0
+        nx, ny = -ty / tn * side, tx / tn * side
+        off = 1.5 * self.g.cell
+        sx, sy = x + off * nx, y + off * ny
+        if not self.inside(sx, sy):
+            return "bad", None
+        reg = self.region_at(sx, sy)
+        if reg < 0:
+            return "bad", None
+        if (self.straight and self.p.pattern == PATTERN_HERRINGBONE
+                and self.fixed_b is None):
+            b = math.radians(min(max(self.p.herringbone_angle, 15.0), 90.0))
+            dx = -math.sin(b) * nx + math.cos(b) * tx / tn
+            dy = -math.sin(b) * ny + math.cos(b) * ty / tn
+            dn = math.hypot(dx, dy)
+            d = (dx / dn, dy / dn)
+        else:
+            d = self.D(sx, sy)
+        if d is None or (-d[0] * nx - d[1] * ny) < 0.2:
+            return "bad", None
+        if self.hash.nearest(sx, sy, reg, self.d_sep) is not None:
+            return "prox", None
+        if self.tried.nearest(sx, sy, reg, 0.2 * self.d_sep) is not None:
+            return "bad", None
+        return "ok", ((sx, sy), reg, d)
+
+    def _add_lateral(self, pts, reg, origin, conn, flags, bearing=None):
+        lid = len(self.lats)
+        self.lats.append({"pts": pts, "region": reg, "origin": origin,
+                          "conn": conn, "flags": flags, "bearing": bearing})
+        self.hash.add_polyline(pts, lid, reg)
+        return lid
+
+    def _seed_from_collectors(self):
+        for cid, col in enumerate(self.cols):
+            pts = col["pts"]
+            if len(pts) < 2:
+                continue
+            s = cumulative_length(pts)
+            tg = tangents(pts)
+            for side in (1.0, -1.0):
+                t = 0.0
+                t_prox = None
+                last = None
+                while t <= s[-1]:
+                    st, info = self._seed_status(cid, t, side, s, pts, tg)
+                    if st == "prox":
+                        t_prox = t
+                    elif st == "ok":
+                        if t_prox is not None:   # refine to the exact spacing
+                            lo, hi = t_prox, t
+                            for _ in range(7):
+                                mid = 0.5 * (lo + hi)
+                                st2, info2 = self._seed_status(cid, mid, side, s, pts, tg)
+                                if st2 == "ok":
+                                    hi, info = mid, info2
+                                else:
+                                    lo = mid
+                            t = hi
+                        t_prox = None
+                        (sx, sy), reg, d = info
+                        fixed = d if self.straight else None
+                        guide = last if (last is not None and
+                                         self.lats[last]["region"] == reg) else None
+                        up, status, _ = self._trace((sx, sy), -1.0, reg, fixed, guide)
+                        line = up[::-1]
+                        junction = self._extend_to_collector((sx, sy), d)
+                        if junction is None:
+                            dist, q, c2, v2 = self.snap_collector(sx, sy)
+                            junction = (q, c2, v2)
+                        q, c2, v2 = junction
+                        line = line + [q]
+                        if polyline_length(line) >= self.lmin:
+                            last = self._add_lateral(line, reg, "primary",
+                                                     ("collector", c2, v2), [], fixed)
+                        else:
+                            self.tried.add_polyline([(sx, sy), (sx, sy)], -1, reg)
+                    else:
+                        t_prox = None
+                    t += self.h
+
+    def _infill(self):
+        queue = deque(range(len(self.lats)))
+        stride = max(1, int(round(0.5 * self.d_sep / self.h)))
+        cap = 50000
+        while queue and len(self.lats) < cap:
+            lid = queue.popleft()
+            if lid % 50 == 0:
+                self._progress(40 + min(40, 40 * len(self.lats) / max(1, self.expected)),
+                               "Placing laterals ({})".format(len(self.lats)))
+            pts = self.lats[lid]["pts"]
+            bearing = self.lats[lid]["bearing"]
+            for k in range(0, len(pts), stride):
+                x, y = pts[k]
+                d = bearing if bearing is not None else self.D(x, y)
+                if d is None:
+                    continue
+                if bearing is None and self.p.shape == SHAPE_EIGHT and len(pts) > 1:
+                    # 8-point laterals can run up to ~30 degrees off the contours:
+                    # offset square to the lateral itself, so the seed is one spacing off
+                    a_, b_ = pts[max(k - 1, 0)], pts[min(k + 1, len(pts) - 1)]
+                    tx, ty = b_[0] - a_[0], b_[1] - a_[1]
+                    tn = math.hypot(tx, ty)
+                    if tn > 1e-9:
+                        d = (tx / tn, ty / tn)
+                for sgn in (1.0, -1.0):
+                    cx = x - sgn * self.d_sep * d[1]
+                    cy = y + sgn * self.d_sep * d[0]
+                    if not self.inside(cx, cy):
+                        continue
+                    reg = self.region_at(cx, cy)
+                    if reg < 0 or self.dcoll(cx, cy) < 2 * self.h:
+                        continue
+                    if self.hash.nearest(cx, cy, reg, 0.97 * self.d_sep) is not None:
+                        continue
+                    if self.tried.nearest(cx, cy, reg, 0.25 * self.d_sep) is not None:
+                        continue
+                    new = self._infill_from((cx, cy), reg, bearing, lid)
+                    if new is not None:
+                        queue.append(new)
+
+    def _clear(self, a, b):
+        """True if a straight connector a-b crosses no lateral or collector."""
+        ax, ay = a
+        bx, by = b
+        if segments_cross(ax, ay, bx, by, self.hash.segments_near(ax, ay, bx, by)):
+            return False
+        cs = self.cseg
+        lo_x, hi_x = min(ax, bx), max(ax, bx)
+        lo_y, hi_y = min(ay, by), max(ay, by)
+        m = ((np.maximum(cs[:, 0], cs[:, 2]) >= lo_x) & (np.minimum(cs[:, 0], cs[:, 2]) <= hi_x) &
+             (np.maximum(cs[:, 1], cs[:, 3]) >= lo_y) & (np.minimum(cs[:, 1], cs[:, 3]) <= hi_y))
+        return not segments_cross(ax, ay, bx, by, cs[m])
+
+    def _tee_target(self, hit):
+        _, host, k, t = hit
+        hp = self.lats[host]["pts"]
+        v = k if t < 0.5 else k + 1
+        return host, v, hp[v]
+
+    def _infill_from(self, c, reg, bearing=None, guide=None):
+        up, _, _ = self._trace(c, -1.0, reg, bearing, guide)
+        dn, status, hit = self._trace(c, 1.0, reg, bearing, guide)
+        line = up[::-1] + dn[1:]
+        flags = []
+        conn = None
+        end = line[-1]
+        if status == "collector":
+            dist, q, cid, v = self.snap_collector(*end)
+            line.append(q)
+            conn = ("collector", cid, v)
+        elif status == "lateral":
+            host, v, q = self._tee_target(hit)
+            if self._clear(end, q):
+                line.append(q)
+                conn = ("lateral", host, v)
+        if conn is None:
+            # open end: short straight connector to a collector, else a tee
+            dist, q, cid, v = self.snap_collector(*end)
+            if dist <= self.max_conn and self._clear(end, q):
+                line.append(q)
+                conn = ("collector", cid, v)
+                flags.append("connector " + self._fmt(dist, 0))
+            else:
+                hit = self.hash.nearest(end[0], end[1], reg, self.max_conn)
+                if hit is not None:
+                    host, v, q = self._tee_target(hit)
+                    if self._clear(end, q):
+                        line.append(q)
+                        conn = ("lateral", host, v)
+                        if hit[0] > self.d_test * 1.05:
+                            flags.append("connector " + self._fmt(hit[0], 0))
+            if conn is None:
+                flags.append("unconnected: needs its own collector")
+        if polyline_length(line) < self.lmin:
+            self.tried.add_polyline([c, c], -1, reg)
+            return None
+        return self._add_lateral(line, reg, "infill", conn, flags, bearing)
+
+    EIGHT_STEP = math.pi / 4               # 8-point laterals: 45 degrees
+    EIGHT_HOLD = math.radians(10.0)         # held 10 degrees past halfway before turning
+    EIGHT_STOP = 0.9                        # stop within this many spacings of a lateral
+
+    def _place_laterals(self):
+        self.straight = self.p.shape == SHAPE_STRAIGHT
+        # 8-point laterals: no leg shorter than half the spacing
+        self.eight_min_leg = max(0.5 * self.S, 2.0 * self.g.cell)
+        # 8-point laterals meet others at 45 degrees: stop them before they close in
+        self.d_test_eight = self.EIGHT_STOP * self.S
+        self.parallel = min(max(float(self.p.parallelism), 0.0), 1.0)
+        self.max_turn = math.radians(120.0)   # stop laterals circling a knoll
+        bucket = self.d_sep * 1.1 + self.h
+        self.hash = SegmentHash(bucket)
+        self.tried = SegmentHash(bucket)
+        self.lats = []
+        self.expected = max(1.0, self.inner.sum() * self.g.cell ** 2 / self.S / (4 * self.S))
+        self._seed_from_collectors()
+        self._infill()
+
+    # ------------------------------------------------------------ bends
+    def _limit_bends(self):
+        """Round bends sharper than the minimum bend angle (e.g. 120 degrees
+        between the two legs, a change of direction of at most 60 degrees).
+
+        Generated mains and submains, and laterals with their connectors, are
+        straightened to within half a cell and rounded where they turn too
+        sharply. Pipes are done downstream first, and each pipe's end is moved
+        to wherever the point it joins has moved, so the network stays joined.
+        User-supplied lines are left as drawn.
+        """
+        ang = float(self.p.min_bend_angle or 0.0)
+        if ang <= 0.0:
+            return
+        # aim 3 degrees inside the limit, for the simplification of the output lines
+        max_turn = math.radians(max(180.0 - min(ang, 179.0) - 3.0, 1.0))
+        tol = 0.25 * self.g.cell
+        kw = dict(tol=tol, t_max=0.5 * self.S, t_min=3.0 * tol)
+        cap = max(0.25 * self.S, 0.5 * self.g.cell)
+        rounded = left = 0
+        done = set()
+
+        # points at most a third of a cell apart (connectors are single segments),
+        # with every junction index renumbered to match
+        step = self.g.cell / 3.0
+        cmap, lmap = [], []
+        for c in self.cols:
+            c["pts"], mp = densify(c["pts"], step)
+            cmap.append(mp)
+        for L in self.lats:
+            pts, mp = densify(L["pts"], step)
+            L["pts"] = pts if isinstance(L["pts"], np.ndarray) else [tuple(q) for q in pts]
+            lmap.append(mp)
+        for c in self.cols:
+            to = c.get("to")
+            if to is not None and to[1] is not None:
+                c["to"] = (to[0], int(cmap[to[0]][to[1]])) + tuple(to[2:])
+        for L in self.lats:
+            conn = L["conn"]
+            if conn:
+                mp = cmap[conn[1]] if conn[0] == "collector" else lmap[conn[1]]
+                L["conn"] = (conn[0], conn[1], int(mp[conn[2]])) + tuple(conn[3:])
+
+        def bend(pts, trim=0.0):
+            # straighten as little as possible: half a cell, doubling while a bend
+            # is left that cannot be rounded, up to a quarter of the spacing
+            st = 0.5 * self.g.cell
+            while True:
+                out = limit_bends(pts, max_turn, straighten=st, trim_start=trim, **kw)
+                if out[2] == 0 or st >= cap:
+                    return out
+                st = min(2.0 * st, cap)
+
+        def do_col(k, stack=()):
+            nonlocal rounded, left
+            if ("c", k) in done or k in stack:
+                return
+            c = self.cols[k]
+            to = c.get("to")
+            if to is not None and to[1] is not None:
+                do_col(to[0], stack + (k,))
+                c["pts"] = np.array(c["pts"], float)
+                c["pts"][-1] = self.cols[to[0]]["pts"][to[1]]
+            if not c.get("user"):
+                c["pts"], r, l = bend(c["pts"])
+                rounded += r
+                left += l
+            done.add(("c", k))
+
+        def do_lat(lid, stack=()):
+            nonlocal rounded, left
+            if ("l", lid) in done or lid in stack:
+                return
+            L = self.lats[lid]
+            pts = np.array(L["pts"], float)
+            conn = L["conn"]
+            if conn and conn[0] == "collector":
+                pts[-1] = self.cols[conn[1]]["pts"][conn[2]]
+            elif conn:
+                do_lat(conn[1], stack + (lid,))
+                pts[-1] = np.asarray(self.lats[conn[1]]["pts"][conn[2]], float)
+            pts, r, l = bend(pts, trim=0.5 * self.S)
+            rounded += r
+            left += l
+            L["pts"] = pts if isinstance(L["pts"], np.ndarray) else [tuple(q) for q in pts]
+            done.add(("l", lid))
+
+        for k in range(len(self.cols)):
+            do_col(k)
+        for lid in range(len(self.lats)):
+            do_lat(lid)
+        self.bends_rounded = rounded
+        if left:
+            self._warn("{} bend(s) sharper than {:g} degrees could not be rounded (legs "
+                       "too short).".format(left, ang))
+
+    # ------------------------------------------------------------ inverts
+    def _junction_sets(self):
+        """Vertex indices where other pipes join each collector and lateral."""
+        col_fixed = [set() for _ in self.cols]
+        lat_fixed = [set() for _ in self.lats]
+        for L in self.lats:
+            if L["conn"] and L["conn"][0] == "collector":
+                col_fixed[L["conn"][1]].add(L["conn"][2])
+            elif L["conn"]:
+                lat_fixed[L["conn"][1]].add(L["conn"][2])
+        for c in self.cols:
+            if c["to"] is not None:
+                col_fixed[c["to"][0]].add(c["to"][1])
+        return col_fixed, lat_fixed
+
+    def _design(self):
+        """Bury the network with the Routine J scheme (Illini Drainage Tools).
+
+        Every pipe is cut at its junctions and at grade breaks no longer than
+        `grade_break`; these burying segments are ordered from the outlet
+        upstream (BURY_ORDER) and buried one by one, each starting from the tile
+        elevation already set at its downstream junction. Between grade breaks
+        the tile runs at a constant grade.
+        """
+        p = self.p
+        col_fixed, lat_fixed = self._junction_sets()
+        nc = len(self.cols)
+        pipes = []
+        for k, c in enumerate(self.cols):
+            pts = np.asarray(c["pts"])
+            end = None if c["to"] is None else (c["to"][0], c["to"][1])
+            pipes.append({"obj": c, "pts": pts, "end": end, "fixed": col_fixed[k],
+                          "min": p.min_main_grade, "root": c["to"] is None})
+        for lid, L in enumerate(self.lats):
+            pts = np.asarray(L["pts"])
+            if L["conn"] is None:
+                end = None
+            elif L["conn"][0] == "collector":
+                end = (L["conn"][1], L["conn"][2])
+            else:
+                end = (nc + L["conn"][1], L["conn"][2])
+            pipes.append({"obj": L, "pts": pts, "end": end, "fixed": lat_fixed[lid],
+                          "min": p.min_lateral_grade, "root": L["conn"] is None})
+
+        alias = {}
+        for P, pp in enumerate(pipes):
+            pp["z"] = self.ground(pp["pts"])
+            pp["s"] = cumulative_length(pp["pts"])
+            if pp["end"] is not None:
+                alias[(P, len(pp["pts"]) - 1)] = pp["end"]
+
+        def canon(key):
+            seen = 0
+            while key in alias and seen < 1000:
+                key = alias[key]
+                seen += 1
+            return key
+
+        # burying segments: junctions plus grade breaks
+        Lb = max(float(p.grade_break), 1e-3)
+        segs, meta = [], []
+        by_down = {}
+        for P, pp in enumerate(pipes):
+            n = len(pp["pts"])
+            s = pp["s"]
+            cuts = sorted({0, n - 1} | {int(v) for v in pp["fixed"] if 0 < int(v) < n - 1})
+            B = set(cuts)
+            for a, b in zip(cuts[:-1], cuts[1:]):
+                m = int(math.ceil((s[b] - s[a]) / Lb - 1e-9))
+                for k in range(1, m):
+                    target = s[a] + k * (s[b] - s[a]) / m
+                    i = a + int(np.argmin(np.abs(s[a:b + 1] - target)))
+                    if a < i < b:
+                        B.add(i)
+            B = sorted(B)
+            pp["B"] = B
+            z = pp["z"]
+            for up, dn in zip(B[:-1], B[1:]):
+                if s[dn] - s[up] < 1e-6:
+                    continue
+                seg = Segment(canon((P, dn)), canon((P, up)), float(z[dn]), float(z[up]),
+                              float(s[dn] - s[up]), pp["min"])
+                by_down.setdefault(seg.down_key, []).append(len(segs))
+                segs.append(seg)
+                meta.append((P, up, dn))
+
+        if p.bury_method == "min_cover":
+            self._bury_min_cover(pipes, nc)
+            return
+        if p.bury_method in ("fewest_breaks", "least_cost", "zone_level"):
+            self._bury_fewest_breaks(pipes, nc)
+            return
+
+        # BURY_ORDER: breadth first from the outlet, then any disconnected parts
+        roots = [canon((0, len(pipes[0]["pts"]) - 1))]
+        roots += [canon((P, len(pp["pts"]) - 1)) for P, pp in enumerate(pipes)
+                  if P > 0 and pp["root"]]
+        order, used = [], set()
+        for root in roots:
+            queue = deque([root])
+            while queue:
+                node = queue.popleft()
+                for idx in by_down.get(node, ()):
+                    if idx in used:
+                        continue
+                    used.add(idx)
+                    order.append(idx)
+                    queue.append(segs[idx].up_key)
+        order += [i for i in range(len(segs)) if i not in used]
+        rows = [segs[i] for i in order]
+        if rows and rows[0].down_key == roots[0]:
+            rows[0].outlet = True
+
+        bp = BuryParams(upper_depth=p.target_upper, lower_depth=p.target_lower,
+                        abs_upper=p.min_cover, abs_lower=p.max_depth,
+                        max_slope=p.max_grade, offset=p.outlet_offset,
+                        use_constant=p.use_constant, constant_slope=p.constant_grade,
+                        lower_outlet=p.lower_outlet,
+                        fixed_outlet=(p.outlet_invert if p.fix_outlet else None))
+        results, flagged, outlet_depth, start_depth, tiles = bury_network(
+            rows, bp, cancel=self._cancel_cb)
+        mid = 0.5 * (p.target_upper + p.target_lower)
+
+        for pp in pipes:
+            pp["steps"] = []
+        for i, res in zip(order, results):
+            P, up, dn = meta[i]
+            pipes[P]["steps"].append((up, dn, res[4], res[2], res[3]))
+        for P, pp in enumerate(pipes):
+            B, s, z = pp["B"], pp["s"], pp["z"]
+            tB = np.array([tiles.get(canon((P, i)), z[i] - mid) for i in B], dtype=float)
+            o = pp["obj"]
+            o["z"], o["s"] = z, s
+            o["inv"] = np.interp(s, s[B], tB)
+            o["B"] = list(B)                       # grade-break vertices
+            o["bury_steps"] = pp["steps"]
+
+        nlat = [0] * nc
+        for L in self.lats:
+            if L["conn"] and L["conn"][0] == "collector":
+                nlat[L["conn"][1]] += 1
+        for k, c in enumerate(self.cols):
+            c["nlat"] = nlat[k]
+        self.bury = {"segments": len(rows), "flagged": flagged,
+                     "outlet_depth": outlet_depth, "start_depth": start_depth}
+        if flagged:
+            self._warn("{} burying segment(s) could not be buried within the slope limits; "
+                       "see the BURY_CHECK field.".format(flagged))
+
+    def _bury_min_cover(self, pipes, nc):
+        """Bury every pipe as shallow as the minimum cover and minimum grade allow.
+
+        Each pipe is buried from its upstream end down, one burying segment
+        (junction to grade break) at a time, the tile straight along each. The
+        upstream end sits at the minimum cover; each segment's downstream end
+        is as high as it can be while the tile falls at least at the minimum
+        grade, keeps the minimum cover at every point along the segment, and
+        is no higher than any pipe that joins there. Pipes joining another are
+        buried first; afterwards, where the pipe they join lies lower, their
+        last segment is taken down to it, so the network stays joined.
+        """
+        p = self.p
+        cover = p.min_cover
+        joining = {}                                 # host pipe -> [(tributary, index)]
+        for P, pp in enumerate(pipes):
+            if pp["end"] is not None:
+                joining.setdefault(pp["end"][0], []).append((P, pp["end"][1]))
+        done, stack = set(), set()
+        order = []
+
+        def visit(P):
+            if P in done or P in stack:
+                return
+            stack.add(P)
+            for T, _ in joining.get(P, ()):
+                visit(T)
+            stack.discard(P)
+            done.add(P)
+            order.append(P)
+
+        for P in range(len(pipes)):
+            visit(P)
+
+        def drop_end(T, value, depth=0):
+            """Take pipe T's downstream end down to value, and with it any pipe
+            that ends at that same point."""
+            tp = pipes[T]
+            tp["tB"][-1] = value
+            if tp["steps"]:
+                u, d = tp["steps"][-1][0], tp["steps"][-1][1]
+                L = float(tp["s"][d] - tp["s"][u])
+                sl = (tp["tB"][-2] - value) / L if L > 0 and len(tp["tB"]) > 1 else 0.0
+                tp["steps"][-1][3] = tp["steps"][-1][4] = sl
+                if "Dropped to the pipe it joins" not in tp["steps"][-1][2]:
+                    tp["steps"][-1][2].append("Dropped to the pipe it joins")
+            last = len(tp["pts"]) - 1
+            for T2, idx2 in joining.get(T, ()):
+                t2 = pipes[T2].get("tB")
+                if idx2 == last and depth < 100 and t2 is not None and value < t2[-1] - 1e-9:
+                    drop_end(T2, value, depth + 1)
+
+        nseg = 0
+        for P in order:
+            pp = pipes[P]
+            B, s, z = pp["B"], pp["s"], pp["z"]
+            caps = {}
+            for T, idx in joining.get(P, ()):
+                t_end = pipes[T].get("tB")
+                if t_end is not None:
+                    caps[idx] = min(caps.get(idx, 1e18), float(t_end[-1]))
+            tB = [float(z[B[0]]) - cover]
+            if B[0] in caps:
+                tB[0] = min(tB[0], caps[B[0]])
+            steps = []
+            for j in range(1, len(B)):
+                u, d = B[j - 1], B[j]
+                L = float(s[d] - s[u])
+                tu = tB[-1]
+                if L <= 1e-9:
+                    tB.append(tu)
+                    continue
+                td = tu - pp["min"] * L                  # minimum grade
+                for i in range(u + 1, d + 1):            # minimum cover along the segment
+                    f = float(s[i] - s[u]) / L
+                    if f > 1e-9:
+                        td = min(td, tu + (float(z[i]) - cover - tu) / f)
+                notes = []
+                if d in caps and caps[d] < td:
+                    td = caps[d]
+                    notes.append("Lowered to a pipe joining here")
+                tB.append(td)
+                sl = (tu - td) / L
+                steps.append([u, d, notes, sl, sl])
+                nseg += 1
+            pp["tB"] = np.array(tB, dtype=float)
+            pp["steps"] = steps
+            if (P == 0 and p.fix_outlet and p.outlet_invert is not None and steps
+                    and pp["tB"][-1] > p.outlet_invert + 1e-9):
+                # outlet held at the outlet invert: take the last segment down to it
+                u, d = steps[-1][0], steps[-1][1]
+                L = float(s[d] - s[u])
+                pp["tB"][-1] = float(p.outlet_invert)
+                sl = (pp["tB"][-2] - pp["tB"][-1]) / L if L > 0 else 0.0
+                steps[-1][3] = steps[-1][4] = sl
+                steps[-1][2].append("Dropped to the outlet invert")
+            # a tributary whose host lies lower drops its last segment to it
+            for T, idx in joining.get(P, ()):
+                tp = pipes[T]
+                if tp.get("tB") is None or not len(tp["tB"]):
+                    continue
+                host = (float(pp["tB"][B.index(idx)]) if idx in B else
+                        float(np.interp(s[idx], s[B], pp["tB"])))
+                if host < tp["tB"][-1] - 1e-9:
+                    drop_end(T, host)
+
+        for P, pp in enumerate(pipes):
+            o = pp["obj"]
+            B, s, z = pp["B"], pp["s"], pp["z"]
+            o["z"], o["s"] = z, s
+            o["inv"] = np.interp(s, s[B], pp["tB"])
+            o["B"] = list(B)
+            o["bury_steps"] = [tuple(st[:2]) + (st[2], st[3], st[4]) for st in pp["steps"]]
+        nlat = [0] * nc
+        for L_ in self.lats:
+            if L_["conn"] and L_["conn"][0] == "collector":
+                nlat[L_["conn"][1]] += 1
+        for k, c in enumerate(self.cols):
+            c["nlat"] = nlat[k]
+        root = pipes[0]
+        out_depth = float(root["z"][-1] - root["tB"][-1])
+        self.bury = {"segments": nseg, "flagged": 0, "outlet_depth": out_depth,
+                     "start_depth": out_depth}
+
+    # depth limits relaxed in turn (extra depth, extra shallowness, m) when no
+    # profile fits a pipe
+    RELAX = ((0.3, 0.0), (1.0, 0.0), (1.0, 0.3))
+    # break points considered along a pipe: about every 3 m, but no more than this
+    # many on a long pipe (the search time grows with their square)
+    MAX_CANDIDATES = 80
+
+    def _bury_targets(self, P, pp):
+        """Per-vertex burying aims for pipe P (fewest breaks / least cost).
+
+        Returns (mid, ceiling): the tile elevation to aim for at every vertex
+        (default: the middle of the target depth band below the ground) and a
+        preferred highest tile elevation (None for none), kept where the
+        limits allow and dropped, with a note, where they do not. Subclasses
+        (the zonal subirrigation layout) aim for their own targets.
+        """
+        p = self.p
+        return pp["z"] - 0.5 * (p.target_upper + p.target_lower), None
+
+    def _fit_caps(self, P, caps, hi_for, lo, s, mid, gmin, gmax, start, cand):
+        """The junction caps of pipe P that can be kept together.
+
+        Caps are added from the downstream end up: the first one that cannot
+        be kept with those before it (found by bisection) is eased in steps
+        and dropped if that does not help; then the search goes on above it.
+        Feasibility only, so without the grade-change limit and in fewest mode.
+        """
+        p = self.p
+        keys = sorted(caps, reverse=True)              # downstream first
+        n_p = len(self._fb_pipes)
+
+        def ok(cd):
+            hi = hi_for(P, [cd if Q == P else {} for Q in range(n_p)])
+            return FBK.solve(s, lo, hi, mid, gmin, gmax, start, cand,
+                             min_run=float(p.min_break_run)) is not None
+
+        if not ok({}):
+            return {}                                  # it cannot fit even without caps
+        kept = {}
+        i = 0
+        while i < len(keys):
+            trial = dict(kept)
+            trial.update({k: caps[k] for k in keys[i:]})
+            if ok(trial):
+                return trial
+            # the longest run of further caps that still fits
+            a, b = i, len(keys)                        # keys[i:a] fit, keys[i:b] do not
+            while b - a > 1:
+                m = (a + b) // 2
+                t2 = dict(kept)
+                t2.update({k: caps[k] for k in keys[i:m]})
+                if ok(t2):
+                    a = m
+                else:
+                    b = m
+            kept.update({k: caps[k] for k in keys[i:a]})
+            bad = keys[a]                              # keys[a] is in conflict
+            for rise in (0.05, 0.1, 0.2, 0.4):
+                t3 = dict(kept)
+                t3[bad] = caps[bad] + rise
+                if ok(t3):
+                    kept[bad] = caps[bad] + rise
+                    break
+            i = a + 1
+        return kept
+
+    def _bury_fewest_breaks(self, pipes, nc):
+        """Bury every pipe with the fewest grade breaks the limits allow.
+
+        Pipes are buried from the outlet upstream, each starting at the tile
+        elevation of the pipe it joins (the outlet anywhere between the minimum
+        cover and the maximum depth, and not below the outlet invert when one
+        is given). Along each pipe the tile is a chain of straight runs, at
+        least min_break_run long, that keeps between the minimum cover and the
+        maximum depth at every vertex and rises upstream at a grade between the
+        minimum and maximum slope; of the profiles with the fewest runs, the one
+        closest to the middle of the target depth band is used (core/
+        fewest_breaks.py). Where no profile fits, the depth limits are eased a
+        step at a time and the pipe is noted in BURY_CHECK.
+        """
+        p = self.p
+        mid_d = 0.5 * (p.target_upper + p.target_lower)
+        step = max(1.0, min(3.0, float(p.min_break_run) or 3.0))
+        mode = "cost" if p.bury_method in ("least_cost", "zone_level") else "fewest"
+        targets = {P: self._bury_targets(P, pp) for P, pp in enumerate(pipes)}
+        soft = [True]
+        unit = 0.3048 if p.units == "ft" else 1.0
+        limit = float(p.max_grade_change) if p.max_grade_change else None
+        fixed_out = (float(p.outlet_invert) if p.fix_outlet and p.outlet_invert is not None
+                     else None)
+        joining = {}
+        for P, pp in enumerate(pipes):
+            if pp["end"] is not None:
+                joining.setdefault(pp["end"][0], []).append(P)
+        order, seen = [], set()
+        roots = [0] + [P for P, pp in enumerate(pipes) if P > 0 and pp["root"]]
+        for r in roots + list(range(len(pipes))):
+            if r in seen:
+                continue
+            queue = deque([r])
+            seen.add(r)
+            while queue:
+                P = queue.popleft()
+                order.append(P)
+                for T in joining.get(P, ()):
+                    if T not in seen:
+                        seen.add(T)
+                        queue.append(T)
+        # the highest tile elevation each pipe can have where it joins its host
+        # and still be buried within the limits upstream (tributaries first,
+        # exactly, with the same search run down the pipe); the host's tile is
+        # kept no higher than that at the junction. One set with the grade-change
+        # limit and one without it.
+
+        def hi_for(P, capset, rise=0.0):
+            pp = pipes[P]
+            z = pp["z"]
+            hi = z - p.min_cover
+            ceil = targets[P][1]
+            if ceil is not None and soft[0]:
+                # the preferred ceiling, but never below the maximum depth
+                c_ = np.where(np.isfinite(ceil), ceil, np.inf)
+                hi = np.minimum(hi, np.maximum(c_, z - p.max_depth))
+            fl = floors.get(P)
+            for idx, c in (capset[P].items() if capset is not None else ()):
+                # never asks the host to go below its maximum depth, nor below the
+                # lowest it can reach there, rising from its start at the minimum grade
+                c2 = max(c + rise, float(z[idx]) - p.max_depth)
+                if fl is not None:
+                    c2 = max(c2, float(fl[idx]) + 0.005)
+                hi[idx] = min(hi[idx], c2)
+            return hi
+
+        floors = {}
+
+        def cap_set(lim):
+            caps = [dict() for _ in pipes]
+            for P in reversed(order):
+                pp = pipes[P]
+                if pp["end"] is None:
+                    continue
+                s, z = pp["s"], pp["z"]
+                hi = hi_for(P, caps)
+                t = FBK.highest_end(s, z - p.max_depth, hi, pp["min"], p.max_grade,
+                                    FBK.candidates(s, max(step, float(s[-1]) / self.MAX_CANDIDATES),
+                                    keep=pp["fixed"]),
+                                    min_run=float(p.min_break_run), max_change=lim)
+                if t is None:                     # cannot fit anyway: the cover estimate
+                    t = float(hi[0])
+                    for i in range(1, len(s)):
+                        t = min(float(hi[i]), t - pp["min"] * float(s[i] - s[i - 1]))
+                H, idx = pp["end"]
+                c = t - 0.005
+                caps[H][idx] = min(caps[H].get(idx, c), c)
+            return caps
+
+        self._fb_pipes = pipes
+        caps_u = cap_set(None)
+        caps_l = cap_set(limit) if limit else None
+
+        nseg = nbreak = flagged = 0
+        for P in order:
+            if self._cancel_cb is not None and self._cancel_cb():
+                raise LayoutCancelled()
+            pp = pipes[P]
+            s, z = pp["s"], pp["z"]
+            n = len(s)
+            gmin, gmax = pp["min"], p.max_grade
+            lo, mid = z - p.max_depth, targets[P][0]
+            host = pipes[pp["end"][0]] if pp["end"] is not None else None
+            if host is not None and "tB_full" in host:
+                start = ("fixed", float(host["tB_full"][pp["end"][1]]))
+            elif P == 0 and fixed_out is not None:
+                start = ("fixed", fixed_out)
+            else:
+                a, b = float(lo[-1]), float(z[-1] - p.min_cover)
+                if P == 0 and p.outlet_invert is not None and a < p.outlet_invert <= b:
+                    a = float(p.outlet_invert)
+                start = ("window", a, b)
+            cand = FBK.candidates(s, max(step, float(s[-1]) / self.MAX_CANDIDATES),
+                                    keep=pp["fixed"])
+            # the lowest the tile can be at each vertex: from the start, rising at
+            # the minimum grade, and never below the maximum depth
+            a_k = lo + gmin * s
+            reach = np.maximum.accumulate(a_k[::-1])[::-1] - gmin * s
+            floors[P] = np.maximum(reach, float(start[1]) + gmin * (float(s[-1]) - s))
+            notes = []
+            use_limit = [limit]
+
+            def run(lo_, hi_, g_low):
+                return FBK.solve(s, lo_, hi_, mid, g_low, gmax, start, cand,
+                                 min_run=float(p.min_break_run), mode=mode,
+                                 break_cost=float(p.break_cost), unit=unit,
+                                 excavation=float(p.excavation_weight), z=z,
+                                 max_change=limit if use_limit[0] else None)
+
+            def attempt():
+                # serve the pipes joining it first, then the grade-change limit
+                res, hi = None, z - p.min_cover
+                tries = []
+                if caps_u[P]:
+                    if limit:
+                        tries += [(caps_l, True), (caps_u, True)]
+                    tries += [(caps_u, False)]
+                for capset, with_lim in tries:
+                    use_limit[0] = limit if with_lim else None
+                    hi_try = hi_for(P, capset)
+                    res = run(lo, hi_try, gmin)
+                    if res is not None:
+                        hi = hi_try
+                        if limit and not with_lim:
+                            notes.append("Change-of-slope limit eased")
+                        break
+                if res is None and caps_u[P]:
+                    # not every junction can be served: keep as many caps as possible,
+                    # from the outlet end up, easing (or dropping) only those in conflict
+                    fitted = self._fit_caps(P, caps_u[P], hi_for, lo, s, mid, gmin, gmax,
+                                            start, cand)
+                    for with_lim in ((True, False) if limit else (False,)):
+                        use_limit[0] = limit if with_lim else None
+                        hi_try = hi_for(P, [fitted if Q == P else {} for Q in range(len(pipes))])
+                        res = run(lo, hi_try, gmin)
+                        if res is not None:
+                            hi = hi_try
+                            if limit and not with_lim:
+                                notes.append("Change-of-slope limit eased")
+                            break
+                if res is None:
+                    for with_lim in ((True, False) if limit else (False,)):
+                        use_limit[0] = limit if with_lim else None
+                        hi_try = hi_for(P, None)
+                        res = run(lo, hi_try, gmin)
+                        if res is not None:
+                            hi = hi_try
+                            if limit and not with_lim:
+                                notes.append("Change-of-slope limit eased")
+                            break
+                return res, hi
+
+            res, hi = attempt()
+            if res is None and targets[P][1] is not None:
+                soft[0] = False
+                res, hi = attempt()
+                soft[0] = True
+                if res is not None:
+                    notes.append("Tile above the board in places")
+            use_limit[0] = False
+            if res is None:
+                for deep, shallow in self.RELAX:
+                    lo2 = z - p.max_depth - deep
+                    hi2 = np.minimum(hi + shallow, z)
+                    res = run(lo2, hi2, gmin)
+                    if res is not None:
+                        break
+                if res is not None:
+                    notes.append("No profile within the depth limits; see min_depth "
+                                 "and max_depth")
+            if res is None:
+                # within the depth limits, with the grade allowed below the minimum
+                # (flat or reverse where the ground leaves no choice)
+                for g_low in (0.0, -gmax):
+                    res = run(lo, np.minimum(hi + 0.3, z), g_low)
+                    if res is not None:
+                        notes.append("No profile within the depth and slope limits")
+                        break
+            if res is None:
+                # follow the target depth up the pipe, within the slope limits
+                t_end = start[1] if start[0] == "fixed" else \
+                    min(max(float(mid[-1]), start[1]), start[2])
+                tt = np.empty(n)
+                tt[-1] = t_end
+                for i in range(n - 2, -1, -1):
+                    ds_ = float(s[i + 1] - s[i])
+                    want = min(float(mid[i]), float(hi[i]))
+                    t_i = min(max(want, tt[i + 1] + gmin * ds_), tt[i + 1] + gmax * ds_)
+                    tt[i] = min(t_i, float(hi[i]))     # keep the cover, even below min grade
+                br = FBK.candidates(s, max(step, float(s[-1]) / self.MAX_CANDIDATES),
+                                    keep=pp["fixed"])
+                res = {"breaks": br, "tile": [float(tt[i]) for i in br], "runs": len(br) - 1}
+                notes.append("No profile within the depth and slope limits; tile follows the "
+                             "target depth")
+            if notes:
+                flagged += 1
+            br = list(res["breaks"])
+            inv = np.interp(s, s[br], res["tile"])
+            pp["tB_full"] = inv
+            cuts = {0, n - 1} | {int(v) for v in pp["fixed"] if 0 < int(v) < n - 1}
+            B = sorted(set(br) | cuts)
+            steps = []
+            for u, d in zip(B[:-1], B[1:]):
+                L = float(s[d] - s[u])
+                if L <= 1e-9:
+                    continue
+                sl = float(inv[u] - inv[d]) / L
+                nn = list(notes)
+                if sl <= 1e-9:
+                    nn.append("Reverse or zero grade: tile cannot drain")
+                elif sl < gmin - 1e-6:
+                    nn.append("Grade below minimum")
+                steps.append((u, d, nn, sl, min(max(sl, gmin), gmax)))
+            nseg += res["runs"]
+            nbreak += res["runs"] - 1
+            o = pp["obj"]
+            o["z"], o["s"] = z, s
+            o["inv"] = inv
+            o["B"] = B
+            o["bury_steps"] = steps
+        nlat = [0] * nc
+        for L_ in self.lats:
+            if L_["conn"] and L_["conn"][0] == "collector":
+                nlat[L_["conn"][1]] += 1
+        for k, c in enumerate(self.cols):
+            c["nlat"] = nlat[k]
+        root = pipes[0]
+        out_depth = float(root["z"][-1] - root["tB_full"][-1])
+        self.bury = {"segments": nseg, "flagged": flagged, "outlet_depth": out_depth,
+                     "start_depth": out_depth, "breaks": nbreak}
+        if flagged:
+            self._warn("{} pipe(s) could not be buried {} within the limits; see the "
+                       "BURY_CHECK field.".format(
+                           flagged, "at least cost" if mode == "cost"
+                           else "with the fewest grade breaks"))
+
+    # ------------------------------------------------------------ tile raster
+    DEPTH_OK, DEPTH_SHALLOW, DEPTH_DEEP = 1, 2, 3
+
+    def tile_raster(self, tol=0.01):
+        """Rasterize the buried tile onto the analysis grid.
+
+        Every pipe is sampled at most a third of a cell apart, with ground and
+        tile interpolated along it as in the design. A cell crossed by the tile
+        gets the tile elevation, the tile depth (ground - tile) and a depth
+        check: DEPTH_SHALLOW where the tile anywhere in the cell has less than
+        the minimum cover, DEPTH_DEEP where it is deeper than the maximum
+        installation depth, else DEPTH_OK. A shallow or deep cell keeps the
+        elevation and depth of its worst sample; a cell within limits keeps
+        its shallowest sample. Other cells are NaN (code 0).
+        Returns {"tile", "depth", "code"} arrays in metres, and the counts.
+        """
+        g, p = self.g, self.p
+        step = g.cell / 3.0
+        X, Y, T, D = [], [], [], []
+        for o in list(self.cols) + list(self.lats):
+            if "inv" not in o:
+                continue
+            pts = np.asarray(o["pts"], float)
+            s = np.asarray(o["s"], float)
+            if len(pts) < 2 or s[-1] <= 0:
+                continue
+            n = max(2, int(math.ceil(s[-1] / step)) + 1)
+            ss = np.unique(np.concatenate([np.linspace(0.0, s[-1], n), s]))
+            X.append(np.interp(ss, s, pts[:, 0]))
+            Y.append(np.interp(ss, s, pts[:, 1]))
+            t = np.interp(ss, s, o["inv"])
+            T.append(t)
+            D.append(np.interp(ss, s, o["z"]) - t)
+        tile = np.full(g.shape, np.nan)
+        depth = np.full(g.shape, np.nan)
+        code = np.zeros(g.shape, dtype=np.int8)
+        if not X:
+            return {"tile": tile, "depth": depth, "code": code, "cells": 0,
+                    "shallow": 0, "deep": 0}
+        X, Y, T, D = (np.concatenate(a) for a in (X, Y, T, D))
+        i = np.floor((g.y0 - Y) / g.cell).astype(int)
+        j = np.floor((X - g.x0) / g.cell).astype(int)
+        ok = (i >= 0) & (i < g.nrows) & (j >= 0) & (j < g.ncols) & np.isfinite(D)
+        i, j, T, D = i[ok], j[ok], T[ok], D[ok]
+        cell = i * g.ncols + j
+        order = np.lexsort((D, cell))           # by cell, then depth ascending
+        cell, T, D = cell[order], T[order], D[order]
+        first = np.r_[True, cell[1:] != cell[:-1]]
+        last = np.r_[cell[1:] != cell[:-1], True]
+        c_id = cell[first]
+        dmin, tmin = D[first], T[first]
+        dmax, tmax = D[last], T[last]
+        shallow = dmin < p.min_cover - tol
+        deep = (dmax > p.max_depth + tol) & ~shallow
+        cc = np.where(shallow, self.DEPTH_SHALLOW, np.where(deep, self.DEPTH_DEEP,
+                                                             self.DEPTH_OK))
+        ii, jj = np.divmod(c_id, g.ncols)
+        tile[ii, jj] = np.where(deep, tmax, tmin)
+        depth[ii, jj] = np.where(deep, dmax, dmin)
+        code[ii, jj] = cc
+        return {"tile": tile, "depth": depth, "code": code, "cells": int(len(c_id)),
+                "shallow": int(shallow.sum()), "deep": int(deep.sum())}
+
+    # ------------------------------------------------------------ results
+    def _pipe_attrs(self, z, s, inv):
+        L = float(s[-1]) if len(s) else 0.0
+        depth = z - inv
+        return {
+            "length_m": round(L, 1),
+            "ground_us": round(float(z[0]), 3),
+            "ground_ds": round(float(z[-1]), 3),
+            "terrain_grade_pct": round(100 * float(z[0] - z[-1]) / L, 3) if L > 0 else 0.0,
+            "invert_us": round(float(inv[0]), 3),
+            "invert_ds": round(float(inv[-1]), 3),
+            "design_grade_pct": round(100 * float(inv[0] - inv[-1]) / L, 3) if L > 0 else 0.0,
+            "max_depth_m": round(float(np.nanmax(depth)), 2),
+            "min_depth_m": round(float(np.nanmin(depth)), 2),
+            "depth_ds_m": round(float(depth[-1]), 2),
+        }
+
+    def _coverage(self):
+        g = self.g
+        r = 0.5 * self.S / g.cell
+        R = int(math.ceil(r))
+        oi, oj = np.mgrid[-R:R + 1, -R:R + 1]
+        keep = oi ** 2 + oj ** 2 <= r * r
+        oi, oj = oi[keep], oj[keep]
+        cov = np.zeros(g.shape, dtype=bool)
+        lines = [np.asarray(L["pts"]) for L in self.lats] + [c["pts"] for c in self.cols]
+        for pts in lines:
+            q = resample(pts, g.cell)
+            i = np.floor((g.y0 - q[:, 1]) / g.cell).astype(int)
+            j = np.floor((q[:, 0] - g.x0) / g.cell).astype(int)
+            ii = (i[:, None] + oi[None, :]).ravel()
+            jj = (j[:, None] + oj[None, :]).ravel()
+            ok = (ii >= 0) & (ii < g.nrows) & (jj >= 0) & (jj < g.ncols)
+            cov[ii[ok], jj[ok]] = True
+        self.covered = cov
+        return (float((cov & self.inner).sum()) / max(1, self.inner.sum()),
+                float((cov & self.field_full).sum()) / max(1, self.field_full.sum()))
+
+    def _results(self):
+        p = self.p
+        tol = 0.25 * self.g.cell
+        names = {}
+        mains = subs = 0
+        for k, c in enumerate(self.cols):
+            if c["kind"] == "main":
+                mains += 1
+                names[k] = "main" if mains == 1 else "main {}".format(mains)
+            else:
+                subs += 1
+                names[k] = "submain {}".format(subs)
+
+        col_fixed, lat_fixed = self._junction_sets()
+
+        # flag holds layout problems only (outlet, connections, connectors, pipe size);
+        # depth problems are in min_depth/max_depth, the Tile elevation raster and
+        # the log, and grade problems in BURY_CHECK
+        n_shallow = n_deep_col = 0
+        collectors = []
+        for k, c in enumerate(self.cols):
+            a = self._pipe_attrs(c["z"], c["s"], c["inv"])
+            flags = []
+            n_deep_col += a["max_depth_m"] > p.max_depth + 0.01
+            n_shallow += a["min_depth_m"] < p.min_cover - 0.01
+            if c["to"] is None and p.outlet_invert is not None:
+                short = p.outlet_invert - a["invert_ds"]
+                if short > 0:
+                    flags.append("invert {} below outlet".format(self._fmt(short, 2)))
+            a.update({"col_id": k + 1, "name": names[k], "kind": c["kind"],
+                      "flows_to": "outlet" if c["to"] is None else names[c["to"][0]],
+                      "n_laterals": c.get("nlat", 0), "flag": "; ".join(flags)})
+            collectors.append({"coords": simplify(c["pts"], tol, col_fixed[k]), "attrs": a})
+
+        laterals = []
+        n_unconn = n_deep = 0
+        for lid, L in enumerate(self.lats):
+            a = self._pipe_attrs(L["z"], L["s"], L["inv"])
+            flags = list(L["flags"])
+            n_deep += a["max_depth_m"] > p.max_depth + 0.01
+            n_shallow += a["min_depth_m"] < p.min_cover - 0.01
+            if L["conn"] is None:
+                n_unconn += 1
+                to = ""
+            elif L["conn"][0] == "collector":
+                to = names[L["conn"][1]]
+            else:
+                to = "lateral {}".format(L["conn"][1] + 1)
+            a.update({"lat_id": lid + 1, "origin": L["origin"], "flows_to": to,
+                      "flag": "; ".join(flags)})
+            laterals.append({"coords": simplify(np.asarray(L["pts"]), tol, lat_fixed[lid]),
+                             "attrs": a})
+
+        cov, cov_field = self._coverage()
+        lat_len = sum(l["attrs"]["length_m"] for l in laterals)
+        col_len = sum(c["attrs"]["length_m"] for c in collectors)
+        area_ha = self.field_area / 1e4
+        if getattr(self, "off_dem", False):
+            self._warn("Part of the main runs beyond the DEM; ground there is carried "
+                       "along from the nearest DEM data, so check its depths.")
+        if n_unconn:
+            self._warn("{} lateral(s) have no collector downstream; the low ground they "
+                       "drain to needs its own submain or outlet.".format(n_unconn))
+        if n_deep:
+            self._warn("{} lateral(s) exceed the maximum depth; consider a contour-"
+                       "following layout, a lower outlet or a submain.".format(n_deep))
+        if n_deep_col:
+            self._warn("{} main(s)/submain(s) go deeper than the maximum depth ({}) in "
+                       "places; see max_depth and the Tile elevation raster.".format(
+                           n_deep_col, self._fmt(p.max_depth, 2)))
+        if n_shallow:
+            self._warn("{} pipe(s) have less than the minimum cover ({}) in places; see "
+                       "min_depth and the Tile elevation raster.".format(
+                           n_shallow, self._fmt(p.min_cover, 2)))
+        for c in collectors:
+            for part in c["attrs"]["flag"].split("; "):
+                if part.endswith("below outlet"):
+                    self._warn("The main reaches the outlet with its {} — the outlet is "
+                               "not deep enough for this layout.".format(part))
+        az = (90 - math.degrees(math.atan2(self.uc[1], self.uc[0]))) % 180
+        summary = {
+            "field_area_ha": round(area_ha, 2),
+            "laterals": len(laterals),
+            "lateral_length_m": round(lat_len, 0),
+            "collector_length_m": round(col_len, 0),
+            "total_length_m": round(lat_len + col_len, 0),
+            "length_per_ha_m": round((lat_len + col_len) / area_ha, 0) if area_ha else 0,
+            "coverage_pct": round(100 * float(cov), 1),
+            "field_coverage_pct": round(100 * float(cov_field), 1),
+            "mean_slope_pct": round(100 * self.mean_slope, 2),
+            "contour_azimuth_deg": round(az, 1),
+            "unconnected_laterals": n_unconn,
+            "deep_laterals": n_deep,
+            "shallow_pipes": n_shallow,
+            "outlet_depth_m": (round(self.bury["outlet_depth"], 3)
+                               if self.bury.get("outlet_depth") is not None else None),
+            "outlet_start_depth_m": (round(self.bury["start_depth"], 3)
+                                     if self.bury.get("start_depth") is not None else None),
+            "bury_segments": self.bury["segments"],
+            "bury_flagged": self.bury["flagged"],
+            "bury_breaks": self.bury.get("breaks"),
+        }
+        network = self._network(names, col_fixed, lat_fixed,
+                                [c["attrs"]["flag"] for c in collectors],
+                                [l["attrs"]["flag"] for l in laterals], tol)
+        summary["network_links"] = len(network)
+        summary["length_by_size_m"] = getattr(self, "size_totals", {})
+        return {"laterals": laterals, "collectors": collectors, "network": network,
+                "summary": summary, "warnings": list(self.warnings)}
+
+    # ------------------------------------------------------------ network
+    def _network(self, names, col_fixed, lat_fixed, col_flags, lat_flags, tol):
+        """Merge all pipes into one node-link network.
+
+        Every pipe is split at the vertices where other pipes join it, so each
+        link runs node to node and flows from `from_node` to `to_node`. Links
+        carry their downstream link, the pipe length upstream of their lower
+        end and the area drained by the laterals upstream (lateral length x
+        spacing), which is what pipe sizing needs.
+        """
+        node_ids = {}
+        alias = {}
+
+        def node(key):
+            seen = 0
+            while key in alias and seen < 100:
+                key = alias[key]
+                seen += 1
+            if key not in node_ids:
+                node_ids[key] = len(node_ids) + 1
+            return node_ids[key]
+
+        node(("outlet",))
+        p_min_main = self.p.min_main_grade
+        p_min_lat = self.p.min_lateral_grade
+        pipes = []   # (kind, name, pts, z, s, inv, split, end_key, flag, is_lateral, n, steps, min)
+        for k, c in enumerate(self.cols):
+            n = len(c["pts"])
+            end = ("outlet",) if c["to"] is None else ("c", c["to"][0], c["to"][1])
+            pipes.append((c["kind"], names[k], c["pts"], c["z"], c["s"], c["inv"],
+                          col_fixed[k], ("c", k), end, col_flags[k], False, n,
+                          c.get("bury_steps", []), p_min_main, c.get("B", [])))
+        for lid, L in enumerate(self.lats):
+            n = len(L["pts"])
+            if L["conn"] is None:
+                end = ("l", lid, n - 1)
+            elif L["conn"][0] == "collector":
+                end = ("c", L["conn"][1], L["conn"][2])
+            else:
+                end = ("l", L["conn"][1], L["conn"][2])
+            pipes.append(("lateral", "lateral {}".format(lid + 1), np.asarray(L["pts"]),
+                          L["z"], L["s"], L["inv"], lat_fixed[lid], ("l", lid), end,
+                          lat_flags[lid], True, n, L.get("bury_steps", []), p_min_lat,
+                          L.get("B", [])))
+
+        for p in pipes:   # a pipe's last vertex is the node it discharges into
+            pkey, end, n = p[7], p[8], p[11]
+            if end != pkey + (n - 1,):
+                alias[pkey + (n - 1,)] = end
+
+        ang = float(self.p.min_bend_angle or 0.0)
+        out_turn = math.radians(180.0 - min(ang, 179.0)) if ang > 0 else None
+        links = []
+        for pid, (kind, name, pts, z, s, inv, fixed, pkey, end, flag, is_lat, n, steps,
+                  gmin, gbreaks) in enumerate(pipes, start=1):
+            cuts = sorted({0, n - 1} | {int(v) for v in fixed if 0 < int(v) < n - 1})
+            # simplify the whole pipe once: junctions and grade breaks are kept (the
+            # tile is straight between vertices), and with a bend limit, points are
+            # put back wherever dropping them would make a bend too sharp
+            anchors = sorted(set(cuts) | {int(i) for i in gbreaks if 0 < int(i) < n - 1})
+            _, kept = simplify(pts, tol, anchors, return_index=True)
+            if out_turn is not None:
+                kept = refine_turns(pts, kept, out_turn, min_span=2.0 * tol)
+            kept = np.asarray(kept, dtype=int)
+            for a, b in zip(cuts[:-1], cuts[1:]):
+                if s[b] - s[a] < 1e-6:
+                    continue
+                to_key = end if b == n - 1 else pkey + (b,)
+                attrs = self._pipe_attrs(z[a:b + 1], s[a:b + 1] - s[a], inv[a:b + 1])
+                notes = []
+                seg_in, seg_out = [], []
+                for up, dn, nn, s_in, s_out in steps:
+                    if up >= a and dn <= b:
+                        for t in nn:
+                            if t not in notes:
+                                notes.append(t)
+                        if s_in is not None:
+                            seg_in.append(s_in)
+                            seg_out.append(s_out)
+                L_ab = float(s[b] - s[a])
+                in_slope = float(inv[a] - inv[b]) / L_ab
+                attrs.update({"pipe_id": pid, "kind": kind, "pipe": name,
+                              "from_node": node(pkey + (a,)), "to_node": node(to_key),
+                              "flag": flag,
+                              "in_slope": round(in_slope, 6),
+                              "out_slope": round(min(max(in_slope, gmin), self.p.max_grade), 6),
+                              "bury_check": "; ".join(notes) if notes else "OK",
+                              # flattest Routine J segment in the line governs sizing
+                              "seg_in_slope": min(seg_in) if seg_in else None,
+                              "seg_out_slope": min(seg_out) if seg_out else None})
+                idx = kept[(kept >= a) & (kept <= b)]
+                links.append({"coords": np.asarray(pts, dtype=float)[idx], "attrs": attrs,
+                              "lateral": is_lat,
+                              "tile_z": np.asarray(inv)[idx],
+                              "ground_m": np.asarray(z)[idx]})
+
+        # downstream link and accumulated upstream quantities
+        out_of = {}
+        for i, L in enumerate(links):
+            out_of[L["attrs"]["from_node"]] = i
+        up_len = [L["attrs"]["length_m"] for L in links]
+        up_lat = [L["attrs"]["length_m"] if L["lateral"] else 0.0 for L in links]
+        tot_len = list(up_len)
+        tot_lat = list(up_lat)
+        for i, L in enumerate(links):
+            j = out_of.get(L["attrs"]["to_node"])
+            seen = 0
+            while j is not None and j != i and seen < len(links):
+                tot_len[j] += up_len[i]
+                tot_lat[j] += up_lat[i]
+                j = out_of.get(links[j]["attrs"]["to_node"])
+                seen += 1
+        net = []
+        for i, L in enumerate(links):
+            a = L["attrs"]
+            j = out_of.get(a["to_node"])
+            a.update({"id": i + 1,
+                      "ds_link": j + 1 if j is not None else 0,
+                      "upstream_m": round(tot_len[i], 1),
+                      "drained_ha": round(tot_lat[i] * self.S / 1e4, 3)})
+            net.append({"coords": L["coords"], "attrs": a,
+                        "tile_z": L["tile_z"], "ground_m": L["ground_m"]})
+        # flag every link whose flow path never reaches the outlet
+        outlet = node(("outlet",))
+        reaches = {}
+        for i in range(len(net)):
+            path = []
+            j = i
+            ok = False
+            while j is not None and len(path) <= len(net):
+                if j in reaches:
+                    ok = reaches[j]
+                    break
+                path.append(j)
+                to = net[j]["attrs"]["to_node"]
+                if to == outlet:
+                    ok = True
+                    break
+                j = out_of.get(to)
+            for k in path:
+                reaches[k] = ok
+        for i, L in enumerate(net):
+            if not reaches.get(i, False) and "unconnected" not in L["attrs"]["flag"]:
+                f = L["attrs"]["flag"]
+                L["attrs"]["flag"] = (f + "; " if f else "") + "does not reach the outlet"
+        if self.p.size_pipes:
+            self._size(net)
+        return net
+
+    # ------------------------------------------------------------ sizing
+    def _size(self, net):
+        """Size every line with Routine K (Illini Drainage Tools).
+
+        Each line is a sizing segment: TILE_ORDER is its Strahler order (Routine
+        G), FLOW_LENGTH the tile length draining through it (Routine I) and the
+        slope the flattest InSlope (or OutSlope) among its Routine J segments.
+        """
+        p = self.p
+        by_to = {}
+        for i, L in enumerate(net):
+            by_to.setdefault(L["attrs"]["to_node"], []).append(i)
+        sources = [by_to.get(L["attrs"]["from_node"], []) for L in net]
+        orders = K.strahler_orders(sources)
+        spacing_ft = self.S / 0.3048
+        key = "seg_in_slope" if p.sizing_slope == "in" else "seg_out_slope"
+        totals = {}
+        for L, order in zip(net, orders):
+            a = L["attrs"]
+            slope = a.get(key)
+            if slope is None:
+                slope = a["out_slope"]
+            flow_len_ft = a["upstream_m"] / 0.3048
+            try:
+                r = K.size_segment(flow_len_ft, slope, spacing_ft, p.pipe_material,
+                                   p.drainage_coeff)
+            except ValueError as e:
+                raise LayoutError(str(e))
+            a.update({"TILE_ORDER": order, "FLOW_LENGTH": round(flow_len_ft, 2),
+                      "SIZE_SLOPE": round(slope, 6),
+                      "D_COEFF": round(r["D_COEFF"], 4), "DRAIN_SPACE": r["drain_space"],
+                      "D_AREA": round(r["D_AREA"], 4),
+                      "CUM_SEG_FLOW": round(r["CUM_SEG_FLOW"], 6),
+                      "ACTUAL_SIZE": round(r["ACTUAL_SIZE"], 3), "NOMINAL": r["NOMINAL"],
+                      "PIPE_TYPE": K.MATERIALS[p.pipe_material],
+                      "_exact": dict(r, flow_len_ft=flow_len_ft, slope=slope)})
+            if r["ACTUAL_SIZE"] >= K.AVAILABLE_NOMINAL_SIZES[-1]:
+                f = a["flag"]
+                a["flag"] = (f + "; " if f else "") + "needs more than {} in pipe".format(
+                    K.AVAILABLE_NOMINAL_SIZES[-1])
+            totals[r["NOMINAL"]] = totals.get(r["NOMINAL"], 0.0) + a["length_m"]
+        self.size_totals = dict(sorted(totals.items()))
+
+
+def run_layout(dem, valid, grid, rings, outlet, params, progress=None, cancel=None,
+               mains=None):
+    return DrainageLayout(dem, valid, grid, rings, outlet, params,
+                          progress=progress, cancel=cancel, mains=mains).run()

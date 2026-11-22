@@ -1,8 +1,8 @@
 [general]
 name=Illini Drainage System Design
 qgisMinimumVersion=3.16
-description=Designs a complete subsurface tile drainage system in one run (Illini Drainage Tools routines E-K combined).
-version=2.1.0
+description=Designs a complete subsurface tile drainage system in one run from drawn mains and submains (Illini Drainage Tools routines E-K), writing an Illini drainage network.
+version=3.0.0
 author=Anamelechi FALASY & Richard COOKE
 email=raccooke@gmail.com
 
@@ -12,7 +12,8 @@ tracker=https://github.com/Bhudus/QGIS_Tools/issues
 repository=https://github.com/Bhudus/QGIS_Tools
 homepage=https://bhudus.github.io/QGIS_Tools/
 
-changelog=2.1.0 - Also listed under Raster → Tile Drainage with the other drainage tools (existing menu entry kept). Fixed "provider has been deleted" error when unloading or reinstalling.
+changelog=3.0.0 - The design now uses the Illini Subsurface Drain Layout engine for steps G to K, and writes the same Drainage Network as the layout tool: lines from node to node with the tile (Z) and ground (M) elevation at every vertex and the layout's fields, ready for Tile Profile and the Tile Size Calculator (it replaces Network Pipe Sizings). New burying methods Minimum cover, Fewest grade breaks and Least cost besides Routine J, with the shortest run, largest change of grade at a break, cost of a grade break and excavation weight; new Outlet Invert Elevation and Bury from the Outlet Invert; DEM elevation units. Steps G to J remain available as intermediate layers.
+    2.1.0 - Also listed under Raster → Tile Drainage with the other drainage tools (existing menu entry kept). Fixed "provider has been deleted" error when unloading or reinstalling.
     2.0.2 - New option "Lower the Outlet for Low Ground": junctions downstream of low-ground segments are deepened, and the outlet may go down to the Lower Tile Depth, so those segments keep the minimum grade; downstream segments always keep the minimum grade. Absolute Lower Tile Depth default is now 6 ft. A positive Offset Depth now lowers the outlet. Junctions are matched by vertex coordinates instead of ground elevation, and the outlet end is the end no other segment touches.
     2.0.1 - Tile Burying System (step J): tile can no longer be placed above the ground; each grade now starts from the buried tile at the downstream junction and is kept between the absolute upper and lower depths. OutSlope now uses each segment's own length. The offset moves the outlet and the whole network follows it. New BURY_CHECK field flags segments whose grade is outside the slope limits.
     2.0.0 - Renamed to Illini Drainage System Design. Step H (Network Elevation Exports) no longer needs SAGA: end point elevations and terrain profiles are sampled from the DEM directly. Fixed missing Point_ID in End Point Elevations.
