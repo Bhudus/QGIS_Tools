@@ -11,6 +11,7 @@ code as text (`vba/`) so you can read the macros before running them.
 | [DRAINMOD Path Fixer](drainmod_path_fixer/) | Rewrites the paths in a moved or copied DRAINMOD project (.prj, .gen and input files) so DRAINMOD finds its files, with a check first, .bak copies and undo |
 | [Illinois Drain Spacing Calculator](illinois_drain_spacing/) | Looks up an Illinois soil's properties and gives the drain spacing from the Hooghoudt or Kirkham (steady state), van Schilfgaarde (transient) or NRCS subirrigation equation |
 | [Main Telescoping Worksheet](main_telescoping_worksheet/) | Sizes the sections of a telescoping main from the laterals, upstream area, attached pipes, inflows and inlets it carries |
+| [Pipe Sizing](pipe_sizing/) | Manning's equation for drain pipe with optional sediment: drained area, standard tile size, slope, flow rate or velocity from any two of the others, with a pipe capacity chart |
 | [Tile Slopes](tile_slopes/) | Sets tile depths and grades along a main or lateral from a surface profile, within depth and slope limits |
 
 ## Opening a downloaded workbook
