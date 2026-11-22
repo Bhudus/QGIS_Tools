@@ -1,4 +1,4 @@
-# Illinois Soil Depth Spacing Calculator
+# Illinois Drain Spacing Calculator
 
 **Workbook:** `Illinois_Drain_Spacing.xlsm` · Version 1 ·
 [download zip](https://github.com/Bhudus/QGIS_Tools/raw/main/spreadsheets/illinois_drain_spacing/illinois_drain_spacing.zip)
