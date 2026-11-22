@@ -35,6 +35,10 @@ If aps > 15 And aps <= 18 Then ps = 18
 If aps > 18 And aps <= 21 Then ps = 21
 If aps > 21 And aps <= 24 Then ps = 24
 If aps > 24 And aps <= 30 Then ps = 30
+If aps > 30 And aps <= 36 Then ps = 36
+If aps > 36 And aps <= 42 Then ps = 42
+If aps > 42 And aps <= 48 Then ps = 48
+If aps > 48 Then ps = 6 * Int((aps + 5.999) / 6)   ' 54, 60, ... in
 
 NominalPipeSize = ps
 End Function
@@ -47,19 +51,18 @@ Select Case PType
      psize = (Flow * nn * 4 ^ (5 / 3) / (1.49 * 3.142 * Slp ^ 0.5)) ^ (3 / 8)
      psize = psize * 12
 Case Else
-   'single wall pipe
-    k = 2
-100  k = k + 4
-     nn = Roughness(PType, k)
-     psize = (Flow * nn * 4 ^ (5 / 3) / (1.49 * 3.142 * Slp ^ 0.5)) ^ (3 / 8)
-     psize = psize * 12
-          d = psize / 12
-         nn = Roughness(1, d)
-     flow1 = 1.49 * 3.142 * Slp ^ 0.5 / (nn * 4 ^ (5 / 3)) * d ^ (8 / 3)
-         
-     If Abs(Flow - flow1) > 0.001 Then GoTo 100
-
-     
+   'single wall pipe: n depends on the size (0.015 up to 8 in, 0.017 to 12 in, 0.020 above),
+   'so solve with 0.015 and step n up while the result is in a larger size range
+     nn = 0.015
+     psize = (Flow * nn * 4 ^ (5 / 3) / (1.49 * 3.142 * Slp ^ 0.5)) ^ (3 / 8) * 12
+     If psize > 8 Then
+         nn = 0.017
+         psize = (Flow * nn * 4 ^ (5 / 3) / (1.49 * 3.142 * Slp ^ 0.5)) ^ (3 / 8) * 12
+     End If
+     If psize > 12 Then
+         nn = 0.02
+         psize = (Flow * nn * 4 ^ (5 / 3) / (1.49 * 3.142 * Slp ^ 0.5)) ^ (3 / 8) * 12
+     End If
 End Select
 Pipesize = psize
 End Function

@@ -1,6 +1,6 @@
 # Main Telescoping Worksheet
 
-**Workbook:** `Main_Telescoping_Worksheet.xlsm` · Version 1.1 ·
+**Workbook:** `Main_Telescoping_Worksheet.xlsm` · Version 1.2 ·
 [download zip](https://github.com/Bhudus/QGIS_Tools/raw/main/spreadsheets/main_telescoping_worksheet/main_telescoping_worksheet.zip)
 
 Sizes each section of a telescoping main (M1, M2, …, from the upper end down) from the
@@ -25,7 +25,7 @@ Pipe type index: 1 single wall, 2 dual wall, 3 clay, 4 concrete.
 The sheet adds up the flow (cfs) and sizes the pipe with Manning's equation flowing full
 (roughness n = 0.015 / 0.017 / 0.020 for single-wall pipe up to 8 in / 8–12 in / larger,
 0.012 dual wall, 0.013 clay and concrete), then rounds up to the next nominal size
-(3, 4, 5, 6, 8, 10, 12, 15, 18, 21, 24, 30 in). **Cumulative Pipe Lengths** totals the
+(3, 4, 5, 6, 8, 10, 12, 15, 18, 21, 24, 30, 36, 42, 48 in, then 6-in steps). **Cumulative Pipe Lengths** totals the
 lateral length feeding each section.
 
 ## Code
@@ -35,5 +35,7 @@ lateral length feeding each section.
 
 ## Versions
 
+* **1.2** – Single-wall pipe is sized with the n for its size (it always used 0.015, so
+  sections over 8 in could come out a size too small); nominal sizes go past 30 in.
 * **1.1** – Dual-wall pipe roughness n = 0.012 (was 0.011).
 * **1** – First published version.
