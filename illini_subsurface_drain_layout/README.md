@@ -46,9 +46,9 @@ The plugin is also listed under **Raster → Tile Drainage**, a menu shared by t
 | Lateral spacing | In design units. Default 80 ft. |
 | Layout pattern | *Parallel / gridiron* or *Herringbone* (see below). |
 | Lateral orientation | *Down the slope* (near perpendicular to contours; default) or *Across the slope* (near parallel). |
-| Lateral shape | *Straight* (default) or *Contour-following*. |
+| Lateral shape | *Straight* (default), *Contour-following*, or *8-point*: contour-following, but every leg in one of the 8 compass directions. |
 | Straight laterals: bearing | *Follow the terrain* (default: set by the lateral orientation), *North-south*, *East-west*, *Northwest-southeast* or *Northeast-southwest*, on the map grid of the DEM's CRS. Straight laterals only. |
-| Parallelism | Contour-following laterals only, 0–1 (default 0.9). Steers each lateral to run parallel to its neighbour at exactly one spacing; 0 follows the terrain freely, 1 makes every lateral an offset of its neighbour. |
+| Parallelism | Contour-following and 8-point laterals only, 0–1 (default 0.9). Steers each lateral to run parallel to its neighbour at exactly one spacing; 0 follows the terrain freely, 1 makes every lateral an offset of its neighbour. |
 | Burying method | *Routine J* (default): the Illini target depth band, below. *Minimum cover*: as shallow as the minimum cover and minimum grade allow. *Fewest grade breaks*: each pipe in as few straight runs as the depth and slope limits allow. *Least cost*: grade breaks balanced against distance from the target depth (see How the layout is built, step 5). |
 | Fewest breaks / least cost: shortest run between grade breaks | Advanced. No straight run shorter than this, except at the top of a pipe. Default 20 ft. |
 | Fewest breaks / least cost: largest change of grade at a break | Advanced, percent. The grade may change by no more than this at a grade break, for plows and laser grade control. Default 0 (any change). |
@@ -106,6 +106,20 @@ grade breaks (default 50 ft); and, for sizing, whether to size with InSlope
      collector. Where the ground is flatter than the target grade the lateral
      runs straight downhill.
    - *Down the slope, contour-following*: the fall line.
+   - *8-point*: the contour-following direction (across or down the slope),
+     rounded to the nearest of the 8 compass directions: north, northeast,
+     east, southeast and so on, on the map grid of the DEM's CRS. A lateral
+     holds its direction until the terrain has turned 10 degrees past
+     halfway to the next one, then turns 45 degrees, and no leg is shorter
+     than half the spacing, so it does not zigzag where the contours run near
+     a halfway direction. Beside a neighbour (parallelism 0.5 or more) it
+     copies the neighbour's legs, turning on the bisector of each of its
+     corners (a mitred offset), so the spacing holds through the turns; 8-point
+     laterals stop at 0.9 of the spacing from another lateral rather than
+     half, since they meet at 45 degrees. The mains and submains are those of
+     contour-following laterals. On the test fields 84 to 100% of the lateral
+     length runs exactly on a compass direction; the rest is mostly the short
+     last piece joining a main or submain at an angle.
    - *Straight*: a constant bearing (dominant contour or fall direction);
      herringbone laterals leave the main at the herringbone angle.
    - *Straight, fixed bearing*: every lateral runs exactly north-south,

@@ -42,7 +42,8 @@ boundary, outlet, optional main line(s), design units, lateral spacing,
 pattern, orientation, shape, burying and sizing settings (one drainage
 coefficient, default 0.375 inch/day, for every line; the burying methods,
 shortest run and largest change of grade at a break; *bury from the outlet
-invert*). See that plugin's README for the details. This plugin adds one
+invert*; the *8-point* lateral shape, contour-following laterals in the 8
+compass directions). See that plugin's README for the details. This plugin adds one
 burying method, *Level within zones* (below). Three defaults differ, to suit
 subirrigation:
 

@@ -50,6 +50,7 @@ ORIENT_ACROSS = "across"  # laterals roughly parallel to the contours
 ORIENT_ALONG = "along"    # laterals roughly perpendicular to the contours
 SHAPE_STRAIGHT = "straight"
 SHAPE_CONTOUR = "contour"  # laterals bend with the terrain
+SHAPE_EIGHT = "eight"      # laterals bend with the terrain, in the 8 compass directions
 
 
 class LayoutError(Exception):
@@ -461,7 +462,7 @@ class DrainageLayout:
 
     def _parallel_collectors(self):
         p = self.p
-        curved = p.shape == SHAPE_CONTOUR
+        curved = p.shape in (SHAPE_CONTOUR, SHAPE_EIGHT)
         shp = self.g.shape
         upx, upy = -self.fx, -self.fy                 # uphill fall line
         cx, cy = -self.fy, self.fx                    # contour tangent
@@ -718,6 +719,28 @@ class DrainageLayout:
             return step
         return (sx / sn, sy / sn)
 
+    def _guide_dir(self, x, y, step, geom):
+        """Direction of the guide lateral's segment nearest (x, y), turned to run
+        with `step`, or None beyond its ends or more than 1.5 spacings away. The
+        nearest segment changes on the bisector of each of the guide's corners,
+        so following it turns a lateral where a mitred offset of the guide would."""
+        A, AB, L2, n = geom
+        t = ((x - A[:, 0]) * AB[:, 0] + (y - A[:, 1]) * AB[:, 1]) / L2
+        tc = np.clip(t, 0.0, 1.0)
+        qx = A[:, 0] + tc * AB[:, 0]
+        qy = A[:, 1] + tc * AB[:, 1]
+        d2 = (x - qx) ** 2 + (y - qy) ** 2
+        k = int(np.argmin(d2))
+        if (k == 0 and t[k] < 0) or (k == n - 1 and t[k] > 1):
+            return None
+        if math.sqrt(float(d2[k])) > 1.5 * self.S:
+            return None
+        tl = math.sqrt(float(L2[k]))
+        tx, ty = AB[k, 0] / tl, AB[k, 1] / tl
+        if tx * step[0] + ty * step[1] < 0:
+            tx, ty = -tx, -ty
+        return tx, ty
+
     def _trace(self, p0, sigma, reg, fixed=None, guide=None):
         """Trace a lateral through D (or along a fixed bearing for straight laterals).
 
@@ -734,6 +757,11 @@ class DrainageLayout:
         L = 0.0
         turned = 0.0
         prev_step = None
+        # 8-point laterals: legs in the compass direction (a multiple of 45 degrees)
+        # nearest the contour-following direction, turning 45 degrees at a time and
+        # only once the direction is well past halfway to the next one
+        eight = fixed is None and self.p.shape == SHAPE_EIGHT
+        leg, leg_len = None, 0.0
         while L < 20000:
             if fixed is not None:
                 k2 = fixed
@@ -749,6 +777,27 @@ class DrainageLayout:
             step = (sigma * k2[0], sigma * k2[1])
             if geom is not None:
                 step = self._steer(x, y, step, geom)
+            gdir = None
+            if eight and geom is not None and self.parallel >= 0.5:
+                gdir = self._guide_dir(x, y, (sigma * k2[0], sigma * k2[1]), geom)
+            if gdir is not None:
+                # beside a neighbour: its compass direction, leg for leg (a mitred
+                # offset of it at one spacing)
+                leg = int(round(math.atan2(gdir[1], gdir[0]) / self.EIGHT_STEP)) % 8
+                leg_len = 0.0
+                step = (math.cos(leg * self.EIGHT_STEP), math.sin(leg * self.EIGHT_STEP))
+            elif eight:
+                a = math.atan2(step[1], step[0])
+                if leg is None:
+                    leg = int(round(a / self.EIGHT_STEP)) % 8
+                else:
+                    diff = (a - leg * self.EIGHT_STEP + math.pi) % (2 * math.pi) - math.pi
+                    if (abs(diff) > 0.5 * self.EIGHT_STEP + self.EIGHT_HOLD
+                            and leg_len >= self.eight_min_leg):
+                        leg = (leg + (1 if diff > 0 else -1)) % 8
+                        leg_len = 0.0
+                step = (math.cos(leg * self.EIGHT_STEP), math.sin(leg * self.EIGHT_STEP))
+                leg_len += h
             if prev_step is not None and fixed is None:
                 # judge turning on the path actually taken, so guided laterals cannot orbit
                 dot = prev_step[0] * step[0] + prev_step[1] * step[1]
@@ -772,7 +821,7 @@ class DrainageLayout:
                 return pts, "region", None
             if sigma < 0 and dc < self.d_test and dc < dc_prev - 1e-9:
                 return pts, "collector_near", None
-            hit = self.hash.nearest(qx, qy, reg, self.d_test)
+            hit = self.hash.nearest(qx, qy, reg, self.d_test_eight if eight else self.d_test)
             if hit is not None:
                 return pts, "lateral", hit
             pts.append((qx, qy))
@@ -896,6 +945,14 @@ class DrainageLayout:
                 d = bearing if bearing is not None else self.D(x, y)
                 if d is None:
                     continue
+                if bearing is None and self.p.shape == SHAPE_EIGHT and len(pts) > 1:
+                    # 8-point laterals can run up to ~30 degrees off the contours:
+                    # offset square to the lateral itself, so the seed is one spacing off
+                    a_, b_ = pts[max(k - 1, 0)], pts[min(k + 1, len(pts) - 1)]
+                    tx, ty = b_[0] - a_[0], b_[1] - a_[1]
+                    tn = math.hypot(tx, ty)
+                    if tn > 1e-9:
+                        d = (tx / tn, ty / tn)
                 for sgn in (1.0, -1.0):
                     cx = x - sgn * self.d_sep * d[1]
                     cy = y + sgn * self.d_sep * d[0]
@@ -970,8 +1027,16 @@ class DrainageLayout:
             return None
         return self._add_lateral(line, reg, "infill", conn, flags, bearing)
 
+    EIGHT_STEP = math.pi / 4               # 8-point laterals: 45 degrees
+    EIGHT_HOLD = math.radians(10.0)         # held 10 degrees past halfway before turning
+    EIGHT_STOP = 0.9                        # stop within this many spacings of a lateral
+
     def _place_laterals(self):
         self.straight = self.p.shape == SHAPE_STRAIGHT
+        # 8-point laterals: no leg shorter than half the spacing
+        self.eight_min_leg = max(0.5 * self.S, 2.0 * self.g.cell)
+        # 8-point laterals meet others at 45 degrees: stop them before they close in
+        self.d_test_eight = self.EIGHT_STOP * self.S
         self.parallel = min(max(float(self.p.parallelism), 0.0), 1.0)
         self.max_turn = math.radians(120.0)   # stop laterals circling a knoll
         bucket = self.d_sep * 1.1 + self.h

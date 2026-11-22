@@ -631,7 +631,7 @@ class ZonalLayout(DrainageLayout):
                 self.cols[-1]["vzone"] = self._vertex_zones(pts)
             else:
                 sub = resample(stem, self.hc) if polyline_length(stem) > 0 \
-                    else np.array([ex, ex + 1e-3])
+                    else np.array([ex, (float(ex[0]) + 1e-3, float(ex[1]))], dtype=float)
                 sub[-1] = ex
                 conn = resample(np.array([ex, hp]), self.hc)
                 conn[0], conn[-1] = ex, hp

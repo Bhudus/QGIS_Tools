@@ -5,6 +5,7 @@ from .layout import (  # noqa: F401
     PATTERN_HERRINGBONE,
     PATTERN_PARALLEL,
     SHAPE_CONTOUR,
+    SHAPE_EIGHT,
     SHAPE_STRAIGHT,
     DrainageLayout,
     LayoutCancelled,

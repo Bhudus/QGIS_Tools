@@ -58,6 +58,7 @@ from .core import (
     PATTERN_HERRINGBONE,
     PATTERN_PARALLEL,
     SHAPE_CONTOUR,
+    SHAPE_EIGHT,
     SHAPE_STRAIGHT,
     Grid,
     LayoutCancelled,
@@ -70,7 +71,7 @@ PLUGIN_DIR = os.path.dirname(__file__)
 
 PATTERNS = [PATTERN_PARALLEL, PATTERN_HERRINGBONE]
 ORIENTS = [ORIENT_ACROSS, ORIENT_ALONG]
-SHAPES = [SHAPE_STRAIGHT, SHAPE_CONTOUR]
+SHAPES = [SHAPE_STRAIGHT, SHAPE_CONTOUR, SHAPE_EIGHT]
 Z_FACTORS = [1.0, 0.3048, 1200.0 / 3937.0]
 UNIT_FACTORS = [1.0, 0.3048]
 BEARINGS = ["terrain", "ns", "ew", "nwse", "nesw"]   # straight-lateral bearing options
@@ -343,7 +344,14 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             "is held by evenly spaced streamline placement. <i>Parallelism</i> steers each "
             "lateral to run parallel to its neighbour at exactly one spacing: 0 follows "
             "the terrain freely, 1 makes each lateral an offset of its neighbour; 0.9 keeps "
-            "laterals near parallel while still bending with the land.</p>"
+            "laterals near parallel while still bending with the land.<br>"
+            "<i>8-point</i>: like contour-following, but every leg of a lateral runs in "
+            "one of the 8 compass directions (north, northeast, east, ... on the map grid "
+            "of the DEM's CRS), the one nearest the contour-following direction. A lateral "
+            "turns 45 degrees at a time, once the terrain has turned well past halfway to "
+            "the next direction, and no leg is shorter than half the spacing; beside a "
+            "neighbour (parallelism 0.5 or more) it copies the neighbour's legs, turning on "
+            "the bisector of each corner so the spacing holds.</p>"
             "<p><b>Straight laterals: bearing</b> keeps straight laterals running "
             "north-south, east-west, northwest-southeast or northeast-southwest (on the "
             "map grid of the DEM's CRS) instead of "
@@ -477,7 +485,8 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterEnum(
             self.SHAPE, self.tr("Lateral shape"),
             options=[self.tr("Straight"),
-                     self.tr("Contour-following (bend with the terrain)")],
+                     self.tr("Contour-following (bend with the terrain)"),
+                     self.tr("8-point (bend with the terrain in the 8 compass directions)")],
             defaultValue=0))
         self.addParameter(QgsProcessingParameterEnum(
             self.LATERAL_BEARING, self.tr("Straight laterals: bearing"),
@@ -487,7 +496,7 @@ class IlliniSubsurfaceDrainLayoutAlgorithm(QgsProcessingAlgorithm):
             defaultValue=0))
         self.addParameter(QgsProcessingParameterNumber(
             self.PARALLELISM,
-            self.tr("Contour-following laterals: parallelism "
+            self.tr("Contour-following and 8-point laterals: parallelism "
                     "(0 = follow terrain, 1 = strictly parallel)"),
             QgsProcessingParameterNumber.Double, defaultValue=0.9,
             minValue=0.0, maxValue=1.0))
