@@ -2471,9 +2471,9 @@ Private Sub SensChart(ws As Worksheet, ByVal row0 As Long, ByVal n As Integer)
     ch.ChartGroups(1).GapWidth = 60
 End Sub
 
-' write <name>_calibrated.gen/.prj with the best values (full simulation period)
+' write the calibrated .prj/.gen, named by the user, with the best values (full simulation period)
 Public Sub WriteCalibratedProject()
-    Dim x() As Double, i As Integer, v As Variant, g As String, p As String
+    Dim x() As Double, i As Integer, v As Variant, g As String, p As String, ans As Variant
     On Error GoTo Failed
     LoadProject
     LoadSelectedParams
@@ -2484,8 +2484,23 @@ Public Sub WriteCalibratedProject()
         If Not IsNumeric(v) Or IsEmpty(v) Then Err.Raise vbObjectError + 761, "Write", "Run the calibration first (the Best column is empty)."
         x(i) = v
     Next i
-    g = FolderOf(CStr(Cfg("GenFile").Value)) & BaseName(CStr(Cfg("GenFile").Value)) & "_calibrated.gen"
+    ' ask for the name; the .gen gets the same name in the same folder
     p = FolderOf(CStr(Cfg("PrjFile").Value)) & BaseName(CStr(Cfg("PrjFile").Value)) & "_calibrated.prj"
+    Do
+        ans = Application.GetSaveAsFilename(InitialFileName:=p, FileFilter:="DRAINMOD project (*.prj),*.prj", _
+            Title:="Name for the calibrated project (.prj and .gen)")
+        If VarType(ans) = vbBoolean Then Exit Sub
+        p = CStr(ans)
+        If LCase$(Right$(p, 4)) <> ".prj" Then p = p & ".prj"
+        g = FolderOf(p) & BaseName(p) & ".gen"
+        If LCase$(p) = LCase$(CStr(Cfg("PrjFile").Value)) Or LCase$(g) = LCase$(CStr(Cfg("GenFile").Value)) Then
+            MsgBox "Choose a different name: this would overwrite the original project files.", vbExclamation
+        ElseIf Dir$(p) <> "" Or Dir$(g) <> "" Then
+            If MsgBox(BaseName(p) & ".prj/.gen already exist in this folder. Replace them?", vbYesNo + vbQuestion) = vbYes Then Exit Do
+        Else
+            Exit Do
+        End If
+    Loop
     WriteProject x, g, p, False
     MsgBox "Calibrated project written:" & vbLf & p & vbLf & g, vbInformation
     Exit Sub
@@ -2571,12 +2586,13 @@ End Sub
 ' on the sheet keep their formatting; their data ranges are resized.
 Private Sub UpdateGraphs()
     Dim ws As Worksheet, i As Long, j As Long, n As Long, last As Long, data() As Variant, dfmt As String
-    Dim co As ChartObject, sr As Series, f As String, parts As Variant, rx As Range, ry As Range
+    Dim co As ChartObject, sr As Series, f As String, parts As Variant, rx As Range, ry As Range, lim As Double
     On Error Resume Next
     Set ws = ThisWorkbook.Worksheets("Graphs")
     On Error GoTo 0
     If ws Is Nothing Or nObs < 1 Then Exit Sub
     n = nObs
+    lim = InstrDepth()
     ReDim data(1 To n, 1 To 3)
     Dim wt() As Variant
     ReDim wt(1 To n, 1 To 2)
@@ -2589,7 +2605,11 @@ Private Sub UpdateGraphs()
         If oHasQ(i) Then data(i, 2) = oQ(i)
         If sDate(j) = oDate(i) Then data(i, 3) = sQ(j)
         If oHasW(i) Then wt(i, 1) = oW(i)
-        If sDate(j) = oDate(i) Then wt(i, 2) = sW(j)
+        ' simulated depths below the measuring instrument are shown at its depth
+        If sDate(j) = oDate(i) Then
+            wt(i, 2) = sW(j)
+            If lim > 0 And sW(j) > lim Then wt(i, 2) = lim
+        End If
     Next i
     dfmt = ws.Range("A2").NumberFormat
     If dfmt = "General" Then dfmt = "m/d/yyyy"

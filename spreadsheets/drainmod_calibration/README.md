@@ -1,6 +1,6 @@
 # DRAINMOD Calibration
 
-**Workbook:** `DRAINMOD_Calibration.xlsm` · Version 1.3 ·
+**Workbook:** `DRAINMOD_Calibration.xlsm` · Version 1.4 ·
 [download zip](https://github.com/Bhudus/QGIS_Tools/raw/main/spreadsheets/drainmod_calibration/drainmod_calibration.zip)
 
 Calibrates a DRAINMOD project to measured daily drain flow, water table depth or both,
@@ -57,12 +57,14 @@ On the **Setup** sheet:
    sheet; press Esc to stop early and keep the best values so far. Runs side by side are
    used only after a check that they reproduce a single run exactly, and a run longer
    than the time limit is stopped.
-8. **5. Write calibrated project** saves `<name>_calibrated.prj/.gen` next to the
-   project with the best values.
+8. **5. Write calibrated project** asks for a name and saves the calibrated `.prj` and
+   `.gen` with that name and the best values (the original project files cannot be
+   overwritten).
 
 Your project files are never changed by the runs: they write `<name>_cal.prj/.gen` (and
 `_cal2`, `_cal3`, ... for runs side by side) next to them. The **Graphs** sheet charts
-measured and simulated drain flow (with cumulative flow) and water table depth, and is
+measured and simulated drain flow (with cumulative flow) and water table depth
+(simulated depths below the measuring instrument are shown at its depth), and is
 refreshed after each evaluation.
 
 ## Code
@@ -72,6 +74,9 @@ workbook opens).
 
 ## Versions
 
+* **1.4** – Write calibrated project asks for the name of the .prj and .gen; the
+  Graphs sheet shows simulated water table depths below the measuring instrument at its
+  depth.
 * **1.3** – Water table depth chart on the Graphs sheet; depth of the water table
   measuring instrument (water table statistics use only days when the simulated depth is
   at or above it); Sensitivity rank moved to the first column of the Parameters sheet.
