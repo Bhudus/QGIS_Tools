@@ -42,7 +42,8 @@ The plugin is also listed under **Raster → Tile Drainage**, a menu shared by t
 | Field boundary | Polygon layer. All features are merged; holes (waterways, buildings) are excluded. |
 | Outlet location | Click on the map. It can sit just outside the field; the main is extended to it. Optional when a main line is given. |
 | Main line(s) | Optional line layer with your own main, and any submains. Leave empty to route the main automatically (see below). |
-| Design units | Feet (default) or metres, for spacing, cover, depths and all outputs. |
+| Design units | Feet (default) or metres, for spacing, cover, depths and the layer outputs. |
+| Report units | *US customary* (default: acres and feet) or *Metric* (hectares and metres), for the layout report and the summary in the log, whatever the design units. |
 | Lateral spacing | In design units. Default 80 ft. |
 | Layout pattern | *Parallel / gridiron* or *Herringbone* (see below). |
 | Lateral orientation | *Down the slope* (near perpendicular to contours; default) or *Across the slope* (near parallel). |
@@ -355,7 +356,7 @@ temporary layer; choose **Skip output** under **Tile elevation** to leave it
 out, or **Save to file** to keep it.
 
 The log and the optional HTML report give the pipe length by nominal size.
-The report also summarises totals, pipe per hectare, coverage and warnings. Coverage is the share of the drainable area (inside the setback)
+The report also summarises the field area, totals, pipe per acre (or per hectare), coverage and warnings, in the report units. Coverage is the share of the drainable area (inside the setback)
 within half a spacing of a pipe.
 
 ## Import a LANDRAIN network

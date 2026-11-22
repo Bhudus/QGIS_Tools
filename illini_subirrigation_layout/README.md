@@ -180,7 +180,8 @@ Zone and water-management settings:
 
 - **Surface Layout**, **Tile elevation** and the **Layout report** as in the
   Illini Subsurface Drain Layout. The report adds tables of the zones and the
-  structures.
+  structures. Like the summary in the log, it is in the *report units*: acres,
+  feet and gpm (the default), or hectares, metres and L/s.
 - **Water-table status** (optional raster, off by default): each field cell is
   marked controlled, too deep, too wet, or more than half a spacing from a
   tile, for the zone boards.

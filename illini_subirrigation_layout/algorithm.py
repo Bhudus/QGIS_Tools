@@ -354,6 +354,7 @@ class IlliniSubirrigationLayoutAlgorithm(QgsProcessingAlgorithm):
     NETWORK = "NETWORK"
     SURFACE_LAYOUT = "SURFACE_LAYOUT"
     REPORT = "REPORT"
+    REPORT_UNITS = "REPORT_UNITS"
     TILE_RASTER = "TILE_RASTER"
     ZONES = "ZONES"
     INTERVAL = "INTERVAL"
@@ -827,6 +828,11 @@ class IlliniSubirrigationLayoutAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterFeatureSink(
             self.SURFACE_LAYOUT, self.tr("Surface Layout"),
             QgsProcessing.TypeVectorLine))
+        self.addParameter(QgsProcessingParameterEnum(
+            self.REPORT_UNITS, self.tr("Report units (layout report and log)"),
+            options=[self.tr("US customary (acres, feet)"),
+                     self.tr("Metric (hectares, metres)")],
+            defaultValue=0))
         self.addParameter(QgsProcessingParameterFileDestination(
             self.REPORT, self.tr("Layout report"), self.tr("HTML files (*.html)"),
             optional=True, createByDefault=False))
@@ -1342,13 +1348,19 @@ class IlliniSubirrigationLayoutAlgorithm(QgsProcessingAlgorithm):
                 context.layerToLoadOnCompletionDetails(status_path).setPostProcessor(
                     _POST[status_path])
 
+        # the report and the summary below: acres and feet, or hectares and metres
+        us = self.parameterAsEnum(parameters, self.REPORT_UNITS, context) == 0
+        rf, r_lbl = (0.3048, "ft") if us else (1.0, "m")
+        r_area_div, ra_lbl = (4046.8564224, "ac") if us else (1.0e4, "ha")
+        r_sup = "gpm" if us else "L/s"
         s = res["summary"]
         feedback.pushInfo("")
-        feedback.pushInfo(self.tr("Field area: {:.2f} ha").format(s["field_area_ha"]))
+        feedback.pushInfo(self.tr("Field area: {:.2f} {}").format(
+            s["field_area_ha"] * 1.0e4 / r_area_div, ra_lbl))
         feedback.pushInfo(self.tr("Laterals: {} totalling {:,.0f} {}").format(
-            s["laterals"], s["lateral_length_m"] / uf, u_lbl))
+            s["laterals"], s["lateral_length_m"] / rf, r_lbl))
         feedback.pushInfo(self.tr("Mains/submains: {:,.0f} {}").format(
-            s["collector_length_m"] / uf, u_lbl))
+            s["collector_length_m"] / rf, r_lbl))
         feedback.pushInfo(self.tr("Drainable area within half a spacing of a pipe: {:.1f}%")
                           .format(s["coverage_pct"]))
         feedback.pushInfo(self.tr("Zones: {}; control structures: {}; zone submains: {}")
@@ -1358,24 +1370,24 @@ class IlliniSubirrigationLayoutAlgorithm(QgsProcessingAlgorithm):
                 "  Zone {}: {:.2f} {}, ground {:.2f}-{:.2f} {}, board {:.2f} {}, "
                 "{} structure(s), tile below board {:.0f}%, controlled {:.0f}%, "
                 "supply {:.1f} {}{}").format(
-                zr["zone"], zr["area_m2"] / area_div, a_lbl, zr["p_low"] / uf,
-                zr["p_high"] / uf, u_lbl, zr["board"] / uf, u_lbl, zr["structures"],
+                zr["zone"], zr["area_m2"] / r_area_div, ra_lbl, zr["p_low"] / rf,
+                zr["p_high"] / rf, r_lbl, zr["board"] / rf, r_lbl, zr["structures"],
                 zr["tile_below_board_pct"], zr["pct_ok"],
-                zr["supply_gpm"] if uf != 1.0 else zr["supply_lps"], sup_lbl,
+                zr["supply_gpm"] if rf != 1.0 else zr["supply_lps"], r_sup,
                 (" — " + zr["flag"]) if zr["flag"] else ""))
         feedback.pushInfo(self.tr("Land with the water table within the control depth: "
                                   "{:.1f}%; water supply for all zones: {:.1f} {}").format(
-            s["pct_ok"], s["supply_gpm"] if uf != 1.0 else s["supply_lps"], sup_lbl))
+            s["pct_ok"], s["supply_gpm"] if rf != 1.0 else s["supply_lps"], r_sup))
         feedback.pushInfo(self.tr("Mean field slope: {:.2f}%; dominant contour bearing "
                                   "{:.0f} degrees").format(s["mean_slope_pct"],
                                                            s["contour_azimuth_deg"]))
         if s.get("outlet_depth_m") is not None:
-            od, sd = s["outlet_depth_m"] / uf, s["outlet_start_depth_m"] / uf
+            od, sd = s["outlet_depth_m"] / rf, s["outlet_start_depth_m"] / rf
             if od > sd + 1e-6:
                 feedback.pushInfo(self.tr("Outlet lowered from {:.2f} {} to {:.2f} {} deep to "
-                                          "serve low ground.").format(sd, u_lbl, od, u_lbl))
+                                          "serve low ground.").format(sd, r_lbl, od, r_lbl))
             feedback.pushInfo(self.tr("Outlet tile depth: {:.2f} {}{}.").format(
-                od, u_lbl, self.tr(", held at the outlet invert") if params.fix_outlet else ""))
+                od, r_lbl, self.tr(", held at the outlet invert") if params.fix_outlet else ""))
         if params.bury_method in ("fewest_breaks", "least_cost", "zone_level"):
             feedback.pushInfo(self.tr("Buried {}: {} straight runs, {} grade breaks.").format(
                 {"fewest_breaks": "with the fewest grade breaks",
@@ -1389,7 +1401,7 @@ class IlliniSubirrigationLayoutAlgorithm(QgsProcessingAlgorithm):
                                                       "routine_j" else "minimum cover"))
         if s.get("length_by_size_m"):
             feedback.pushInfo(self.tr("Pipe by nominal size: {}").format("; ".join(
-                "{} in: {:,.0f} {}".format(k, v / uf, u_lbl)
+                "{} in: {:,.0f} {}".format(k, v / rf, r_lbl)
                 for k, v in s["length_by_size_m"].items())))
         for w in res["warnings"]:
             feedback.pushWarning(w)
@@ -1419,7 +1431,7 @@ class IlliniSubirrigationLayoutAlgorithm(QgsProcessingAlgorithm):
         if status_path:
             out[self.STATUS] = status_path
         if report:
-            self._write_report(report, res, params, uf, u_lbl, area_div, a_lbl, sup_lbl)
+            self._write_report(report, res, params, rf, r_lbl, r_area_div, ra_lbl, r_sup)
             out[self.REPORT] = report
         return out
 
@@ -1487,14 +1499,17 @@ class IlliniSubirrigationLayoutAlgorithm(QgsProcessingAlgorithm):
             ("Land with the water table within the control depth",
              "{:.1f}%".format(s["pct_ok"])),
             ("Water supply, all zones", "{:.1f} {}".format(s[sup_key], sup_lbl)),
-            ("Field area", "{:.2f} ha".format(s["field_area_ha"])),
+            ("Field area", "{:.2f} {}".format(
+                s["field_area_ha"] * (2.4710538 if uf != 1.0 else 1.0),
+                "ac" if uf != 1.0 else "ha")),
             ("Pattern / orientation / shape", "{} / {} / {}".format(
                 params.pattern, params.orientation, params.shape)),
             ("Lateral spacing", "{:.1f} {}".format(params.spacing / uf, u)),
             ("Laterals", "{} ({:,.0f} {})".format(s["laterals"], s["lateral_length_m"] / uf, u)),
             ("Mains and submains", "{:,.0f} {}".format(s["collector_length_m"] / uf, u)),
             ("Total pipe", "{:,.0f} {}".format(s["total_length_m"] / uf, u)),
-            ("Pipe per hectare", "{:,.0f} {}".format(s["length_per_ha_m"] / uf, u)),
+            ("Pipe per acre" if uf != 1.0 else "Pipe per hectare", "{:,.0f} {}".format(
+                s["length_per_ha_m"] / (2.4710538 if uf != 1.0 else 1.0) / uf, u)),
             ("Drainable area within half a spacing of a pipe",
              "{:.1f}%".format(s["coverage_pct"])),
             ("Whole field within half a spacing of a pipe",
