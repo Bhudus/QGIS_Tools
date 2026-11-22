@@ -20,7 +20,7 @@ The plugin is also listed under **Vector → Tile Drainage**, a menu shared by t
    - **Vector → SSURGO drainage soil map → Get Soil Map for Polygons…**
    - The soil-layers toolbar button.
    - In the Processing Toolbox, **SSURGO drainage soil map → Soils → Get soil map for polygons (SSURGO)**.
-3. Pick the input layer and choose what to label the soils with: the soil name, the map unit symbol, both, the series name only (e.g. Drummer), the drain spacing, soil name and drain spacing, the subirrigation spacing, or soil name and subirrigation spacing. Enter the drain depth and drainage coefficient (see [Drain spacing](#drain-spacing)).
+3. Pick the input layer and choose what to label the soils with: the soil name, the map unit symbol, both, the series name only (e.g. Drummer), the drain spacing, soil name and drain spacing, the subirrigation spacing, soil name and subirrigation spacing, or drain depth / spacing (e.g. 3.5 ft / 70 ft). Enter the drain depth and drainage coefficient (see [Drain spacing](#drain-spacing)).
 4. Under **Soil map**, click **…**, choose **Save to File**, and pick a `.shp` file name.
 5. Click **Run**.
 

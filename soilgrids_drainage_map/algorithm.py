@@ -67,6 +67,8 @@ LABEL_CHOICES = [
     ("Soil zone and drain spacing", "\"soil\" || '\\n' || format_number(\"spacing_m\", 0) || ' m'"),
     ("Subirrigation spacing (m)", "format_number(\"subirr_m\", 0) || ' m'"),
     ("Soil zone and subirrigation spacing", "\"soil\" || '\\n' || format_number(\"subirr_m\", 0) || ' m'"),
+    # {depth} is replaced with the drain depth entered for the run.
+    ("Drain depth / spacing (e.g. 1.2 m / 21 m)", "'{depth} m / ' || format_number(\"spacing_m\", 0) || ' m'"),
 ]
 
 # Shapefile field names are limited to 10 characters.
@@ -334,6 +336,7 @@ class SoilGridsDrainageAlgorithm(QgsProcessingAlgorithm):
         label_expr = LABEL_CHOICES[self.parameterAsEnum(parameters, self.LABEL, context)][1]
         outline = self.parameterAsBool(parameters, self.OUTLINE, context)
         drain_depth = self.parameterAsDouble(parameters, self.DRAIN_DEPTH, context)
+        label_expr = label_expr.replace("{depth}", f"{drain_depth:g}")
         coef = self.parameterAsDouble(parameters, self.DRAIN_COEF, context)
         barrier = self.parameterAsDouble(parameters, self.BARRIER, context)
         diam = self.parameterAsDouble(parameters, self.DRAIN_DIAM, context)

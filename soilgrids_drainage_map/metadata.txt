@@ -3,8 +3,9 @@ name=SoilGrids drainage soil map
 qgisMinimumVersion=3.22
 supportsQt6=True
 description=Soil zones with drain and subirrigation spacings for fields anywhere in the world, from ISRIC SoilGrids 2.0 (metric).
-version=0.3.0
-changelog=0.3.0 - ksat_prof now includes low and high Ksat (Rosetta 3 estimate plus or minus one standard deviation), for spacing ranges in the Drain spacing recalculator.
+version=0.4.0
+changelog=0.4.0 - New label option: drain depth / spacing (e.g. 1.2 m / 21 m).
+    0.3.0 - ksat_prof now includes low and high Ksat (Rosetta 3 estimate plus or minus one standard deviation), for spacing ranges in the Drain spacing recalculator.
     0.2.0 - New ksat_prof field (Ksat of each layer), so the Drain spacing recalculator can recalculate spacings for other drain depths and water levels.
     0.1.0 - First release: SoilGrids 2.0 texture zones above and below the drains, Rosetta 3 Ksat, Hooghoudt drain spacing and inverse Hooghoudt subirrigation spacing in metres.
 author=Richard Cooke

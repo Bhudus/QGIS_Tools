@@ -17,7 +17,7 @@ Requires QGIS 3.22 or newer and an internet connection. The plugin is listed und
 
 1. Load your field boundary, or any polygon layer with a CRS. You can also click **Trace Field and Get Drainage Soil Zones (SoilGrids)** on the toolbar and click the field corners on the map. Right-click or press Enter to finish.
 2. Open **Vector → SoilGrids drainage soil map → Get Drainage Soil Zones for Polygons (SoilGrids)…**, or find the tool in the Processing Toolbox.
-3. Enter the drainage and subirrigation design values (see below).
+3. Enter the drainage and subirrigation design values (see below), and choose what to label the zones with: the zone name, the drain or subirrigation spacing, the zone name with either spacing, or drain depth / spacing (e.g. 1.2 m / 21 m).
 4. Under **Soil zones**, click **…**, choose **Save to File**, and pick a `.shp` file name if you want to keep the result. A `.qml` style file with the same name is saved next to it.
 5. Click **Run**.
 

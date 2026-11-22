@@ -66,6 +66,8 @@ LABEL_CHOICES = [
     ("Soil name and drain spacing", "\"muname\" || '\\n' || format_number(\"spacing_ft\", 0) || ' ft'"),
     ("Subirrigation spacing (ft)", "format_number(\"subirr_ft\", 0) || ' ft'"),
     ("Soil name and subirrigation spacing", "\"muname\" || '\\n' || format_number(\"subirr_ft\", 0) || ' ft'"),
+    # {depth} is replaced with the drain depth entered for the run.
+    ("Drain depth / spacing (e.g. 3.5 ft / 70 ft)", "'{depth} ft / ' || format_number(\"spacing_ft\", 0) || ' ft'"),
 ]
 
 # Series names that are two words, so "Du Page silt loam" gives "Du Page", not "Du".
@@ -369,6 +371,8 @@ class SoilMapAlgorithm(QgsProcessingAlgorithm):
         dissolve = self.parameterAsBool(parameters, self.DISSOLVE, context)
         label_expr = LABEL_CHOICES[self.parameterAsEnum(parameters, self.LABEL, context)][1]
         outline = self.parameterAsBool(parameters, self.OUTLINE, context)
+        label_expr = label_expr.replace(
+            "{depth}", f"{self.parameterAsDouble(parameters, self.DRAIN_DEPTH, context):g}")
         drain = (
             self.parameterAsDouble(parameters, self.DRAIN_DEPTH, context),
             self.parameterAsDouble(parameters, self.DRAIN_COEF, context),
