@@ -41,6 +41,7 @@ All lengths, coefficients and the drain diameter are in the units you choose: **
 | Drain diameter | blank | Advanced. Blank uses 4 in or 100 mm. Only affects the equivalent depth. |
 | Installed drain cost per ft or per m | blank | Blank leaves the cost fields empty. Any currency. |
 | Narrowest-soil design: only soils covering at least this share of the field (%) | 10 | See [Field summary](#field-summary). |
+| Label soils with | Soil name and drain spacing | Also: drain spacing, soil name and subirrigation spacing, subirrigation spacing, soil name, or drain depth / spacing (e.g. 3.5 ft / 70 ft or 1.2 m / 21 m). |
 
 The defaults are US customary. When you switch to metric, enter metric values too. The tool won't run with a metric drain depth over 5 m, in case feet were entered by mistake.
 

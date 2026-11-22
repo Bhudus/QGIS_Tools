@@ -55,7 +55,7 @@ FLAG_ADVANCED = _pick(lambda: Qgis.ProcessingParameterFlag.Advanced,
 
 UNIT_CHOICES = ["US customary (ft, in/day, in)", "Metric (m, mm/day, mm)"]
 LABEL_CHOICES = ["Soil name and drain spacing", "Drain spacing", "Soil name and subirrigation spacing",
-                 "Subirrigation spacing", "Soil name"]
+                 "Subirrigation spacing", "Soil name", "Drain depth / spacing (e.g. 3.5 ft / 70 ft)"]
 
 
 def _make_field(name, kind, length, prec):
@@ -82,6 +82,9 @@ def label_expression(choice, units, name_field):
         return f"{name} || '\\n' || {su}" if name else su
     if choice == 3:
         return su
+    if choice == 5:  # drain depth from the drain_ft / drain_m field this tool writes
+        depth = "drain_ft" if units == US else "drain_m"
+        return f"to_string(\"{depth}\") || '{unit} / ' || {sp}"
     return name or sp
 
 

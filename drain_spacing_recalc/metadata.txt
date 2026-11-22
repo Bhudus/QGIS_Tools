@@ -3,8 +3,9 @@ name=Drain spacing recalculator
 qgisMinimumVersion=3.22
 supportsQt6=True
 description=Recalculates drain and subirrigation spacings on a soil map from SSURGO or SoilGrids drainage soil map, for a new drain depth, coefficients and water table heights.
-version=0.2.0
-changelog=0.2.0 - Spacing ranges from low and high Ksat; drain footage and optional cost per soil; Field summary table with two design spacings for the field (equal drain length, and narrowest soil over a set share of the field).
+version=0.3.0
+changelog=0.3.0 - New label option: drain depth / spacing (e.g. 3.5 ft / 70 ft).
+    0.2.0 - Spacing ranges from low and high Ksat; drain footage and optional cost per soil; Field summary table with two design spacings for the field (equal drain length, and narrowest soil over a set share of the field).
     0.1.0 - First release: one scenario per run, US customary or metric units, Hooghoudt drain spacing with an optional mid-drain water table and inverse Hooghoudt subirrigation spacing, using each soil's ksat_prof field.
 author=Richard Cooke
 email=raccooke@gmail.com
