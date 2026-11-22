@@ -74,7 +74,7 @@ Select Case PipeType
   Case 4, 3
     Roughness = 0.013
   Case 2
-    Roughness = 0.011
+    Roughness = 0.012   ' dual wall
 
  Case Else
     If Pipesize <= 8 Then Roughness = 0.015
