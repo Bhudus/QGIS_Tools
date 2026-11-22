@@ -1587,13 +1587,25 @@ Private Function ZeroFlowSkip() As Boolean
     ZeroFlowSkip = IsYes(ThisWorkbook.Names("ZeroFlowSkip").RefersToRange.Value)
 End Function
 
+' Setup: depth of the water table measuring instrument (cm below the surface);
+' the water table statistics use only days when the simulated depth is at or
+' above it. 0 = no limit
+Private Function InstrDepth() As Double
+    Dim v As Variant
+    On Error Resume Next
+    v = ThisWorkbook.Names("InstrDepth").RefersToRange.Value
+    If IsNumeric(v) And Not IsEmpty(v) Then
+        If v > 0 Then InstrDepth = v
+    End If
+End Function
+
 Private Sub Stats(ByVal useW As Boolean, st() As Double)
     Dim i As Long, j As Long, n As Long, so As Double, ss As Double, soo As Double, sss As Double, sos As Double
     Dim mo As Double, ms As Double, vo As Double, vs As Double, cov As Double, r As Double, a As Double, b As Double
-    Dim o As Double, sim As Double, sse As Double, sst As Double, ver As String, skipZero As Boolean
+    Dim o As Double, sim As Double, sse As Double, sst As Double, ver As String, skipZero As Boolean, lim As Double
     j = 1
     For i = 1 To 9: st(i) = 0: Next i
-    If Not useW Then skipZero = ZeroFlowSkip()
+    If useW Then lim = InstrDepth() Else skipZero = ZeroFlowSkip()
     For i = 1 To nObs
         If (useW And oHasW(i)) Or (Not useW And oHasQ(i)) Then
             Do While j < sN And sDate(j) < oDate(i)
@@ -1601,8 +1613,9 @@ Private Sub Stats(ByVal useW As Boolean, st() As Double)
             Loop
             If sDate(j) = oDate(i) Then
                 If useW Then o = oW(i): sim = sW(j) Else o = oQ(i): sim = sQ(j)
-                ' optionally leave out days with no measured and no simulated drain flow
-                If Not (skipZero And Abs(o) < ZEROQ And Abs(sim) < ZEROQ) Then
+                ' optionally leave out days with no measured and no simulated drain flow,
+                ' and days when the simulated water table is below the measuring instrument
+                If Not (skipZero And Abs(o) < ZEROQ And Abs(sim) < ZEROQ) And Not (lim > 0 And sim > lim) Then
                     n = n + 1
                     so = so + o: ss = ss + sim: soo = soo + o * o: sss = sss + sim * sim: sos = sos + o * sim
                     sse = sse + (sim - o) ^ 2
@@ -2371,18 +2384,18 @@ Analyse:
     ws.Range(ws.Cells(row0, 1), ws.Cells(row0, 11)).WrapText = True
     SensChart ws, row0, pN
     ' rank column on the Parameters sheet
-    tbl.Worksheet.Cells(tbl.Row - 1, tbl.Column + 9).Value = "Sensitivity rank"
-    tbl.Worksheet.Cells(tbl.Row - 1, tbl.Column + 9).Font.Bold = True
-    tbl.Columns(1).Offset(0, 9).ClearContents
+    tbl.Worksheet.Cells(tbl.Row - 1, tbl.Column - 1).Value = "Sensitivity rank"
+    tbl.Worksheet.Cells(tbl.Row - 1, tbl.Column - 1).Font.Bold = True
+    tbl.Columns(1).Offset(0, -1).ClearContents
     For i = 1 To pN
-        If rk(i) > 0 Then tbl.Cells(pRow(i), 10).Value = rk(i)
+        If rk(i) > 0 Then tbl.Worksheet.Cells(tbl.Row + pRow(i) - 1, tbl.Column - 1).Value = rk(i)
     Next i
     msg = "Sensitivity analysis finished: " & qDone & " runs"
     If pN > 0 Then
         If rk(order(1)) > 0 Then msg = msg & "; most sensitive: " & tbl.Cells(pRow(order(1)), 2).Value
     End If
     If nFail > 0 Then msg = msg & " (" & nFail & " failed runs left out)"
-    SetStatus msg & ". Ranks are on the Sensitivity sheet and in column J of the Parameters sheet."
+    SetStatus msg & ". Ranks are on the Sensitivity sheet and in column A of the Parameters sheet."
     Application.StatusBar = False
     Application.EnableCancelKey = xlInterrupt
     ws.Activate
@@ -2501,7 +2514,10 @@ Private Sub WriteResults()
         If stW(9) = 1 Or i = 7 Then ws.Cells(3 + i, 3).Value = stW(i + 1)
     Next i
     ws.Range("B3:C9").NumberFormat = "0.000"
-    If ZeroFlowSkip() Then ws.Range("A11").Value = "Drain flow: days when measured and simulated flow are both zero are left out."
+    ver = ""
+    If ZeroFlowSkip() Then ver = "Drain flow: days when measured and simulated flow are both zero are left out. "
+    If InstrDepth() > 0 Then ver = ver & "Water table: only days when the simulated depth is at or above the measuring instrument depth (" & InstrDepth() & " cm) are used."
+    ws.Range("A11").Value = Trim$(ver)
     ws.Range("A12").Value = "Parameter values used"
     ws.Range("A12").Font.Bold = True
     For i = 1 To pN
@@ -2562,6 +2578,8 @@ Private Sub UpdateGraphs()
     If ws Is Nothing Or nObs < 1 Then Exit Sub
     n = nObs
     ReDim data(1 To n, 1 To 3)
+    Dim wt() As Variant
+    ReDim wt(1 To n, 1 To 2)
     j = 1
     For i = 1 To n
         Do While j < sN And sDate(j) < oDate(i)
@@ -2570,14 +2588,18 @@ Private Sub UpdateGraphs()
         data(i, 1) = CDate(oDate(i))
         If oHasQ(i) Then data(i, 2) = oQ(i)
         If sDate(j) = oDate(i) Then data(i, 3) = sQ(j)
+        If oHasW(i) Then wt(i, 1) = oW(i)
+        If sDate(j) = oDate(i) Then wt(i, 2) = sW(j)
     Next i
     dfmt = ws.Range("A2").NumberFormat
     If dfmt = "General" Then dfmt = "m/d/yyyy"
     last = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
     If last < 2 Then last = 2
-    ws.Range(ws.Cells(2, 1), ws.Cells(last, 5)).ClearContents
-    ws.Range("A1:E1").Value = Array("Date", "Observed Flow", "Simulated Flow", "Cumulative Observed", "Cumulative Simulated")
+    ws.Range(ws.Cells(2, 1), ws.Cells(last, 7)).ClearContents
+    ws.Range("A1:G1").Value = Array("Date", "Observed Flow", "Simulated Flow", "Cumulative Observed", "Cumulative Simulated", _
+        "Observed WTD (cm)", "Simulated WTD (cm)")
     ws.Cells(2, 1).Resize(n, 3).Value = data
+    ws.Cells(2, 6).Resize(n, 2).Value = wt
     ws.Cells(2, 1).Resize(n, 1).NumberFormat = dfmt
     ws.Range("D2").Formula = "=IF(AND(ISNUMBER(B2),ISNUMBER(C2)),B2,0)"
     ws.Range("E2").Formula = "=IF(AND(ISNUMBER(B2),ISNUMBER(C2)),C2,0)"

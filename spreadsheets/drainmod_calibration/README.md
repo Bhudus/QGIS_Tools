@@ -1,6 +1,6 @@
 # DRAINMOD Calibration
 
-**Workbook:** `DRAINMOD_Calibration.xlsm` · Version 1.2 ·
+**Workbook:** `DRAINMOD_Calibration.xlsm` · Version 1.3 ·
 [download zip](https://github.com/Bhudus/QGIS_Tools/raw/main/spreadsheets/drainmod_calibration/drainmod_calibration.zip)
 
 Calibrates a DRAINMOD project to measured daily drain flow, water table depth or both,
@@ -28,7 +28,9 @@ On the **Setup** sheet:
    table depth (blank where not measured). Set the units, sign and what to calibrate to
    on the Setup sheet (drain flow in cm/day by default); KGE 2012 is the default, 2009
    can be chosen. Optionally, days when measured and simulated drain flow are both zero
-   can be left out of the drain-flow statistics.
+   can be left out of the drain-flow statistics. The depth of the water table measuring
+   instrument (100 cm by default) limits the water table statistics to days when the
+   simulated depth is at or above it.
 3. **1. Read project parameters** fills the current value of each parameter on the
    **Parameters** sheet and sets the calibration period to the simulation period.
 4. On the Parameters sheet, give each parameter a minimum and maximum and set
@@ -48,8 +50,8 @@ On the **Setup** sheet:
    to the project, ticked or not. The **Sensitivity** sheet ranks them (1 = most
    sensitive) by mu\*, the mean absolute change in the objective when a parameter moves
    across its range, with sigma (non-linearity and interactions), the effect on the flow
-   and water table KGE separately, and a bar chart; the ranks also go in column J of the
-   Parameters sheet. It takes trajectories × (parameters + 1) runs (10 trajectories by
+   and water table KGE separately, and a bar chart; the ranks also go in the first column
+   (Sensitivity rank) of the Parameters sheet. It takes trajectories × (parameters + 1) runs (10 trajectories by
    default, set on the Setup sheet).
 7. **4. Run calibration** runs DDS and the polish. Each run is logged on the **Run Log**
    sheet; press Esc to stop early and keep the best values so far. Runs side by side are
@@ -60,7 +62,8 @@ On the **Setup** sheet:
 
 Your project files are never changed by the runs: they write `<name>_cal.prj/.gen` (and
 `_cal2`, `_cal3`, ... for runs side by side) next to them. The **Graphs** sheet charts
-measured and simulated drain flow and is refreshed after each evaluation.
+measured and simulated drain flow (with cumulative flow) and water table depth, and is
+refreshed after each evaluation.
 
 ## Code
 
@@ -69,6 +72,9 @@ workbook opens).
 
 ## Versions
 
+* **1.3** – Water table depth chart on the Graphs sheet; depth of the water table
+  measuring instrument (water table statistics use only days when the simulated depth is
+  at or above it); Sensitivity rank moved to the first column of the Parameters sheet.
 * **1.2** – Cumulative drain flow curves on a second axis of the Results drain flow
   chart; option to leave out days when measured and simulated drain flow are both zero;
   drain flow in cm/day and a depth to the impermeable layer of 120 to 250 cm by default.
