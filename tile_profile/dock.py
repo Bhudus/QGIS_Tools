@@ -5,6 +5,8 @@ from qgis.core import (
     QgsCoordinateTransform,
     QgsFeatureRequest,
     QgsGeometry,
+    QgsLineString,
+    QgsPoint,
     QgsPointXY,
     QgsProject,
     QgsRectangle,
@@ -39,6 +41,10 @@ from .chart_model import ChartModel
 from .profile_core import (
     ProfileError,
     build_profile,
+    insert_break,
+    interp,
+    nearest_on_line,
+    path_xy,
     check_pipe,
     group_pipes,
     line_changes,
@@ -111,7 +117,7 @@ def _record(feature):
             z = None
         if not has_m:
             m = None
-    return {"attrs": attrs, "xy": xy, "z": z, "m": m, "geometry": geom}
+    return {"attrs": attrs, "xy": xy, "z": z, "m": m, "geometry": geom, "fid": feature.id()}
 
 
 def _set_z(part, values):
@@ -135,6 +141,7 @@ class TileProfileDock(QDockWidget):
         self.profile = None
         self.shown = None                   # the profile as drawn (with any offset)
         self.node_offsets = {}              # node_key -> amount a single tile point is lowered
+        self.breaks = {}                    # feature id -> [(x, y)] break points to add
         self.sel_key = None                 # node_key of the selected tile point
         self.tool = None
         self.band = QgsRubberBand(self.canvas, LINE_GEOMETRY)
@@ -240,6 +247,15 @@ class TileProfileDock(QDockWidget):
                                    "point further up this pipe moves by the same amount, so "
                                    "the other slopes stay as they are.")
         self.slope_mode.setEnabled(False)
+        self.break_btn = QPushButton("Add break point")
+        self.break_btn.setCheckable(True)
+        self.break_btn.setToolTip(
+            "Then click the chart where the tile line should get a new point (a grade "
+            "break): it is added at the tile's elevation there, selected, and can be moved "
+            "or given a slope above it like any other point")
+        self.unbreak_btn = QPushButton("Remove")
+        self.unbreak_btn.setToolTip("Remove the selected break point (not yet applied)")
+        self.unbreak_btn.setEnabled(False)
         self.clear_pts_btn = QPushButton("Clear moved points")
         self.clear_pts_btn.setEnabled(False)
         row3.addWidget(self.point_label, 1)
@@ -248,6 +264,8 @@ class TileProfileDock(QDockWidget):
         row3.addWidget(QLabel("Slope above"))
         row3.addWidget(self.slope_box)
         row3.addWidget(self.slope_mode)
+        row3.addWidget(self.break_btn)
+        row3.addWidget(self.unbreak_btn)
         row3.addWidget(self.clear_pts_btn)
         v.addLayout(row3)
 
@@ -293,6 +311,8 @@ class TileProfileDock(QDockWidget):
         self.point_off.valueChanged.connect(self._point_offset_changed)
         self.slope_box.valueChanged.connect(self._slope_changed)
         self.clear_pts_btn.clicked.connect(self._clear_points)
+        self.break_btn.toggled.connect(self._break_mode)
+        self.unbreak_btn.clicked.connect(self._remove_break)
         self.check_btn.clicked.connect(self._check_network)
         self.table.cellClicked.connect(self._check_row_clicked)
         self.apply_btn.clicked.connect(self._apply_offset)
@@ -330,7 +350,7 @@ class TileProfileDock(QDockWidget):
         return UNITS[self.units.currentIndex()][0]
 
     def _pending(self):
-        return bool(self.offset.value()) or bool(self.node_offsets)
+        return bool(self.offset.value()) or bool(self.node_offsets) or bool(self.breaks)
 
     def _offset_changed(self, *args):
         self.apply_btn.setEnabled(self._pending() and self.layer is not None)
@@ -345,7 +365,11 @@ class TileProfileDock(QDockWidget):
                 return i
         return None
 
-    def _point_clicked(self, index, *args):
+    def _point_clicked(self, index, station=None, *args):
+        if self.break_btn.isChecked():
+            if station is not None:
+                self._add_break(station)
+            return
         p = self.profile
         if p is None or index is None or not p.get("tile_xy"):
             self.sel_key = None
@@ -380,7 +404,8 @@ class TileProfileDock(QDockWidget):
                 s, self._unit(), t, " (junction or pipe end: the joining pipes move with it)"
                 if junction else ""))
         self.point_off.blockSignals(False)
-        self.clear_pts_btn.setEnabled(bool(self.node_offsets))
+        self.clear_pts_btn.setEnabled(bool(self.node_offsets) or bool(self.breaks))
+        self.unbreak_btn.setEnabled(self._sel_break() is not None)
 
     def _point_offset_changed(self, *args):
         if self.sel_key is None:
@@ -413,9 +438,88 @@ class TileProfileDock(QDockWidget):
 
     def _clear_points(self, *args):
         self.node_offsets.clear()
+        if self.breaks:
+            self.breaks.clear()
+            self.refresh()
         self._update_point_controls()
         self.apply_btn.setEnabled(self._pending() and self.layer is not None)
         self._redraw()
+
+    # ------------------------------------------------------------ break points
+    def _break_mode(self, on, *args):
+        if on:
+            self.point_label.setText("Click the chart where the tile line gets a new point.")
+        else:
+            self._update_point_controls()
+
+    def _sel_break(self):
+        """(feature id, index) of the selected point if it is a break point to add."""
+        if self.sel_key is None:
+            return None
+        for fid, pts in self.breaks.items():
+            for i, q in enumerate(pts):
+                if node_key(*q) == self.sel_key:
+                    return fid, i
+        return None
+
+    def _add_break(self, station):
+        """Add a point to the tile line at `station` (from the downstream end), at the
+        tile's elevation as shown there, and select it."""
+        p = self.profile
+        self.break_btn.blockSignals(True)
+        self.break_btn.setChecked(False)
+        self.break_btn.blockSignals(False)
+        if p is None or self.layer is None:
+            return
+        if p.get("tile_source") != "vertices":
+            self.point_label.setText("Break points need tile elevations at the vertices (Z "
+                                     "values); this layer has them only at the line ends.")
+            return
+        tile = p["tile"]
+        # a click next to an existing point selects that point
+        near = min(range(len(tile)), key=lambda i: abs(tile[i][0] - station))
+        if abs(tile[near][0] - station) <= max(0.005 * p["length"], 1e-6):
+            self._point_clicked(near)
+            return
+        xy = path_xy(p, station)
+        lines = getattr(self, "_pipe_lines", None) or []
+        best = None
+        for l in lines:
+            if len(l["xy"]) >= 2 and l.get("fid") is not None:
+                d = nearest_on_line(l["xy"], *xy)[0]
+                if best is None or d < best[0]:
+                    best = (d, l)
+        if best is None:
+            return
+        rec, idx = insert_break(best[1], *xy)
+        if idx is None:
+            return
+        q = rec["xy"][idx]
+        # keep the point on the tile line as shown, with the moves made so far
+        shown = offset_profile(p, self.offset.value(), self.node_offsets)
+        each = interp(p["tile"], station) - interp(shown["tile"], station) - self.offset.value()
+        key = node_key(*q)
+        if abs(each) > 1e-9:
+            self.node_offsets[key] = each
+        self.breaks.setdefault(rec["fid"], []).append(q)
+        self.refresh()
+        self.sel_key = key
+        self._update_point_controls()
+        self.apply_btn.setEnabled(self._pending() and self.layer is not None)
+        self._redraw()
+
+    def _remove_break(self, *args):
+        hit = self._sel_break()
+        if hit is None:
+            return
+        fid, i = hit
+        self.node_offsets.pop(self.sel_key, None)
+        del self.breaks[fid][i]
+        if not self.breaks[fid]:
+            del self.breaks[fid]
+        self.sel_key = None
+        self.apply_btn.setEnabled(self._pending() and self.layer is not None)
+        self.refresh()
 
     def _units_changed(self, *args):
         self.offset.setSuffix(" " + self._unit())
@@ -453,6 +557,7 @@ class TileProfileDock(QDockWidget):
                 pass
         if layer is not self.layer:
             self.node_offsets.clear()          # moved points belong to one layer
+            self.breaks.clear()
             self.sel_key = None
         self.layer = layer if isinstance(layer, QgsVectorLayer) else None
         self.apply_btn.setEnabled(self._pending() and self.layer is not None)
@@ -518,6 +623,10 @@ class TileProfileDock(QDockWidget):
                 req = QgsFeatureRequest().setFilterExpression(
                     "\"to_node\" IN ({})".format(",".join(str(n) for n in sorted(set(nodes)))))
                 all_lines = [_record(f) for f in layer.getFeatures(req)]
+        for k, l in enumerate(lines):
+            for bx, by in self.breaks.get(l.get("fid"), ()):
+                lines[k], _ = insert_break(lines[k], bx, by)
+        self._pipe_lines = lines
         for l in lines:
             g = l.pop("geometry", None)
             if g is not None and not g.isEmpty():
@@ -797,12 +906,15 @@ class TileProfileDock(QDockWidget):
         undoable edit."""
         layer, d, u = self.layer, self.offset.value(), self._unit()
         pts = dict(self.node_offsets)
-        if layer is None or not (d or pts):
+        breaks = {fid: list(q) for fid, q in self.breaks.items()}
+        if layer is None or not (d or pts or breaks):
             return
         what = []
         if d:
             what.append("{} every tile by {:g} {}".format("lower" if d > 0 else "raise",
                                                           abs(d), u))
+        if breaks:
+            what.append("add {} break point(s)".format(sum(len(q) for q in breaks.values())))
         if pts:
             what.append("move {} single point(s) by their own amounts".format(len(pts)))
         n = layer.featureCount()
@@ -835,14 +947,33 @@ class TileProfileDock(QDockWidget):
                 attrs, g = rec["attrs"], rec.get("geometry")
                 if not rec["xy"]:
                     continue
+                added = 0
+                for bx, by in breaks.get(f.id(), ()):
+                    rec, idx = insert_break(rec, bx, by)
+                    added += idx is not None
                 ch, new_z = line_changes(attrs, rec["xy"], rec["z"], rec["m"], d, pts)
-                if not ch and new_z is None:
+                if not ch and new_z is None and not added:
                     continue
+                if new_z is None and added:
+                    new_z = list(rec["z"])
                 ch.update(refreshed_checks(attrs, rec["xy"], new_z, ch, dd["abs_upper"],
                                            dd["abs_lower"], u, xy_scale, rec["m"]))
                 for name, value in ch.items():
                     layer.changeAttributeValue(f.id(), fields.indexOf(name), value)
-                if new_z is not None and g is not None and not g.isEmpty():
+                if added and g is not None and not g.isEmpty():
+                    # the line with its new vertices: tile (Z) and, if it has them,
+                    # ground (M) at every vertex
+                    m = rec["m"]
+                    if m is not None and all(v is not None for v in m):
+                        verts = [QgsPoint(x, y, zv, mv)
+                                 for (x, y), zv, mv in zip(rec["xy"], new_z, m)]
+                    else:
+                        verts = [QgsPoint(x, y, zv) for (x, y), zv in zip(rec["xy"], new_z)]
+                    ng = QgsGeometry(QgsLineString(verts))
+                    if g.isMultipart():
+                        ng.convertToMultiType()
+                    layer.changeGeometry(f.id(), ng)
+                elif new_z is not None and g is not None and not g.isEmpty():
                     part = g.constGet().clone()
                     _set_z(part, iter(new_z))
                     layer.changeGeometry(f.id(), QgsGeometry(part))
@@ -859,6 +990,7 @@ class TileProfileDock(QDockWidget):
         self.offset.setValue(0.0)
         self.offset.blockSignals(False)
         self.node_offsets.clear()
+        self.breaks.clear()
         self.apply_btn.setEnabled(False)
         self.refresh()
 

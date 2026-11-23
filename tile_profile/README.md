@@ -69,6 +69,18 @@ Requires QGIS 3.34 LTR or newer. Uses only QGIS.
    in `flag` are removed. The minimum and maximum grades are not rechecked
    (the panel does not know them), nor are OutSlope and the pipe sizes: run
    the layout tool again for those.
+
+   **Break points.** To change the slope of only part of a section, add a
+   point to the line there: click **Add break point**, then click the chart
+   where the break should go. A new tile point is put on the line at that
+   station, at the tile elevation already there (so nothing moves yet), and
+   it is selected: lower or raise it, or set the **Slope above** it, like any
+   other point. Clicking within about half a percent of the profile's length
+   from an existing point selects that point instead. Break points show as
+   points until **Apply to layer…**, which adds a vertex to the line with its
+   Z (and the ground in M when the line has it); **Remove** takes away a
+   selected break point that has not been applied, and **Clear moved points**
+   clears break points too. Break points need a line layer with Z values.
 7. **Check network** finds the profiles to check. It goes through every
    pipe of the network, sampling the tile every third of a cell against the
    absolute upper and lower depths, and looks for flat or reverse sections

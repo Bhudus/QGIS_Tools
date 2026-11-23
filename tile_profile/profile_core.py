@@ -293,6 +293,61 @@ def offset_profile(profile, offset, node_offsets=None):
     return p
 
 
+def path_xy(profile, station):
+    """Map position (x, y) at `station` (from the downstream end) along the pipe."""
+    path = profile.get("path") or []
+    if not path:
+        return None
+    if station <= path[0][0]:
+        return path[0][1], path[0][2]
+    if station >= path[-1][0]:
+        return path[-1][1], path[-1][2]
+    for (s1, x1, y1), (s2, x2, y2) in zip(path[:-1], path[1:]):
+        if s1 <= station <= s2:
+            t = 0.0 if s2 <= s1 else (station - s1) / (s2 - s1)
+            return x1 + t * (x2 - x1), y1 + t * (y2 - y1)
+    return path[-1][1], path[-1][2]
+
+
+def nearest_on_line(xy, x, y):
+    """(distance, segment index, t) of the point of polyline xy nearest (x, y)."""
+    best = None
+    for i in range(len(xy) - 1):
+        (ax, ay), (bx, by) = xy[i], xy[i + 1]
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy
+        t = 0.0 if L2 <= 0 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L2))
+        d = math.hypot(ax + t * dx - x, ay + t * dy - y)
+        if best is None or d < best[0]:
+            best = (d, i, t)
+    return best
+
+
+def insert_break(rec, x, y, tol=1e-6):
+    """The line record `rec` with a new vertex at the point of the line nearest
+    (x, y), its tile (Z) and ground (M) interpolated along the segment, so the
+    tile does not change until the point is moved. Returns (new record, index of
+    the new vertex), or (rec, None) when that point is already a vertex or the
+    line has no Z values."""
+    xy, z, m = rec["xy"], rec.get("z"), rec.get("m")
+    if len(xy) < 2 or z is None or len(z) != len(xy) or any(v is None for v in z):
+        return rec, None
+    _, i, t = nearest_on_line(xy, x, y)
+    (ax, ay), (bx, by) = xy[i], xy[i + 1]
+    seg = math.hypot(bx - ax, by - ay)
+    if seg * t <= tol or seg * (1.0 - t) <= tol:
+        return rec, None
+    px, py = ax + t * (bx - ax), ay + t * (by - ay)
+    out = dict(rec)
+    out["xy"] = list(xy[:i + 1]) + [(px, py)] + list(xy[i + 1:])
+    out["z"] = list(z[:i + 1]) + [z[i] + t * (z[i + 1] - z[i])] + list(z[i + 1:])
+    if m is not None and len(m) == len(xy) and all(v is not None for v in m):
+        out["m"] = list(m[:i + 1]) + [m[i] + t * (m[i + 1] - m[i])] + list(m[i + 1:])
+    elif m is not None:
+        out["m"] = list(m[:i + 1]) + [None] + list(m[i + 1:])
+    return out, i + 1
+
+
 FLAT_SLOPE = 0.00005      # |slope| below this (0.005%) is flat
 
 

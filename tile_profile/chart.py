@@ -145,7 +145,9 @@ class ProfileChart(QWidget):
         except AttributeError:
             pos = event.pos()
         self.model.layout(self.width(), self.height())
-        self.on_point_clicked(self.model.tile_point_at(pos.x(), pos.y()))
+        x, y = pos.x(), pos.y()
+        station = self.model.station_at(x) if self.model.inside(x, y) else None
+        self.on_point_clicked(self.model.tile_point_at(x, y), station)
 
     def leaveEvent(self, event):
         if self.hover_x is not None:
