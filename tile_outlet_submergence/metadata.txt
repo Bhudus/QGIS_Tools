@@ -1,0 +1,21 @@
+[general]
+name=Tile Outlet Submergence
+qgisMinimumVersion=3.34
+description=Tile outlet submergence: how much a rising water level in the outlet ditch reduces the flow from a tile drainage system: a rating curve of system outflow and affected area against ditch level, maps of the drainage rate and the hydraulic grade line in every pipe at each ditch level, a ditch level explorer panel, and a report with charts.
+about=For a buried tile network from Illini Subsurface Drain Layout (tile elevations and pipe sizes) and the DEM. For each ditch water level, steps the hydraulic grade line up the network from the outlet with Manning's equation (open channel to normal depth, full-pipe friction once surcharged), and reduces the drainage rate wherever the water in a drain stands above its invert, with Hooghoudt's steady-state equation; inflow and friction loss are iterated to a steady state. Writes a rating curve (outflow, % of free outlet, area with drainage reduced by more than 10% and 50%, area not draining, area where the ditch stands above the design water table, HGL rise, surcharged pipe length), a raster of the drainage rate as a share of the free-outlet rate (one band per ditch level), the pipes with their flow and HGL rise at each level, a ditch level explorer panel whose up and down arrows step the map through the levels, and an HTML report with the same explorer, the rating curve and the main's profile. Uses only QGIS, GDAL and numpy.
+version=0.1.0
+author=Richard Cooke
+email=raccooke@gmail.com
+
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+
+changelog=0.1.0 - First release: ditch level explorer (QGIS panel and report); rating curve as CSV; steady backwater model coupled with Hooghoudt drainage, rating curve, drainage-rate map, pipe HGL rise and report; settings kept while the project is open.
+tags=drainage,tile,outlet,outlet submergence,submerged outlet,backwater,ditch,hydraulic grade line,manning,hooghoudt,rating curve
+category=Analysis
+experimental=True
+deprecated=False
+hasProcessingProvider=yes
+icon=icon.png
+license=GPL-3.0-or-later
