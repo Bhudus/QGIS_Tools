@@ -71,6 +71,7 @@ processing.run("tileoutletsubmergence:tileoutletsubmergence", {
 units in the column names (`level_above_invert_ft`, `outflow_cfs`, …; `_m` and `Lps` in
 metres). The free-outlet row has `free` as its level. The report's **Export CSV** button
 downloads the same file.
+The [Tile Outlet Flows](../spreadsheets/tile_outlet_flows/) workbook imports this CSV and gives the flow for each of a column of stream depths.
 
 **Pipes** (lines): `kind`, `d_in`, flows free and at the mapped level, the HGL at the downstream end free and at the mapped level, `hgl_rise`, `above_crown` and `surch_len`. Then, for every step of the rating curve, `q_00`, `q_01`, … (flow) and `rise_00`, `rise_01`, … (HGL rise over the free outlet). Step 00 is the free outlet and the others follow the rows of the rating curve. Styled by HGL rise at the mapped level.
 
