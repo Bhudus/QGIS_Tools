@@ -1,12 +1,18 @@
 # DRAINMOD Drainage Design
 
-**Workbook:** `DRAINMOD_DrainageDesign.xlsm` · Version 1 ·
+**Workbook:** `DRAINMOD_DrainageDesign.xlsm` · Version 2 ·
 [download zip](https://github.com/Bhudus/QGIS_Tools/raw/main/spreadsheets/drainmod_drainage_design/drainmod_drainage_design.zip)
 
 Runs a DRAINMOD project for every combination of weather set, drain depth and drain
 spacing, and plots DRAINMOD's average relative yield against drain spacing: one chart per
 crop, one line per drain depth and weather set. Use it to choose a depth and spacing
 that hold up under both current and projected (future) weather.
+
+For one chosen depth and spacing, the **POE analysis** gives the probability of
+exceedance of daily drain flow under each weather set: daily flow statistics, the design
+drain flow at a P.O.E. (or the P.O.E. of a flow), monthly design flows and the empirical
+distribution function, with the current and future weather on the same charts. It is a
+port of the MonthlyPOE (DrainPOE) Visual Basic program.
 
 ## Needs
 
@@ -62,6 +68,32 @@ On the **Setup** sheet:
 **Results** has the averages for each run; the hidden **Yearly** sheet has every year and
 the hidden **Run Log** lists each run (right-click a sheet tab → Unhide).
 
+### POE analysis (daily drain flow)
+
+1. Under **POE analysis** on the Setup sheet, enter one drain depth and spacing in feet
+   (default 3.5 ft and 80 ft; a blank cell uses the default).
+2. Click **4. Run POE analysis**. DRAINMOD runs once per weather set with that drain, and
+   its daily drain flow is read from the run's daily summary (`.DAY`).
+3. The **POE Calculator** sheet shows, for each weather set side by side: number of days
+   and of flow days, maximum, average (the median of the flow days, as in MonthlyPOE)
+   and mean annual drain flow, the P.O.E. and design drain flow, and the design flow of
+   each month.
+   * Change the **P.O.E. (%)** to get the design flow, or type a **design drain flow**
+     to get its P.O.E.: the results update at once, with no new DRAINMOD runs.
+   * Charts (colour = weather set): monthly design flows (columns) with each set's annual
+     design flow (dashed line), and the empirical distribution function of daily drain
+     flow (P.O.E. against drain flow).
+   * The daily flows of each run are on the hidden **POE Daily** sheet.
+
+The statistics follow MonthlyPOE step by step, so they match it for the same daily data.
+
+### DRAINMOD output files
+
+Whatever the project's own output settings, the runs set them in their copies of the
+`.gen` (the Printout and Input Control line): design runs write no daily (`.DAY`),
+monthly (`.MON`) or plot (`.PLT`) files, and POE runs write `.DAY` (and, with it,
+`.MON`) but no `.PLT`.
+
 ## Your files
 
 The runs never change your project: they write `<name>_dsg.prj/.gen` (and `_dsg2`,
@@ -71,9 +103,13 @@ the paths in the project files, keeping each original as `.bak`.
 
 ## Code
 
-`vba/modDrain.bas` (all the macros) and `vba/ThisWorkbook.cls` (adds the buttons when the
-workbook opens).
+`vba/modDrain.bas` (all the macros), `vba/ThisWorkbook.cls` (adds the buttons when the
+workbook opens) and `vba/Sheet6.cls` (the POE Calculator sheet: recalculates when the
+P.O.E. or design flow is changed).
 
 ## Versions
 
+* **2** – POE analysis: **4. Run POE analysis** and the POE Calculator sheet (probability
+  of exceedance of daily drain flow, monthly design flows, both weather sets on each
+  chart). Design runs no longer write daily, monthly or plot files.
 * **1** – First published version.

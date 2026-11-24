@@ -88,6 +88,34 @@ Private yearlyRow As Long                ' next free row on the Yearly sheet
 Private oldRoot As String
 Private newRoot As String
 
+'--- POE analysis (see the POE analysis section at the end of the module)
+' Probability of exceedance (P.O.E.) of daily drain flow, ported from the
+' VB6 program DrainPOE (MonthlyPOE.exe, frmPOE.frm). DRAINMOD is run once per
+' weather set for one drain depth and spacing (Setup sheet, "POE analysis");
+' the POE runs switch DRAINMOD's daily summary (.DAY) on and its plot file
+' (.PLT) off in their own .gen copy (see PrintoutLine), and each run's daily
+' drain flow (cm) is read from <name>_dsg.DAY (DRAIN column of the monthly
+' blocks, dated as DRAINMOD dates the .PLT). It goes to the hidden POE Daily
+' sheet, and the
+' POE Calculator sheet shows, side by side for every weather set, the daily
+' flow statistics, the design flow at a P.O.E. (or the P.O.E. of a flow), the
+' monthly design flows and the empirical distribution function, with all
+' weather sets on each of its two charts. The statistics follow the original
+' program step by step (including its single-precision arithmetic), so they
+' match MonthlyPOE.exe for the same daily file.
+Private Const POE_SHEET As String = "POE Calculator"
+Private Const POE_DATA As String = "POE Daily"
+Private Const POE_STRIDE As Long = 5        ' POE Daily columns per weather set
+Public Const POE_MODE_VALUE As String = "Calculate Value Given P.O.E."
+Public Const POE_MODE_POE As String = "Calculate P.O.E. Given Value"
+' rows of the POE Calculator sheet
+Private Const PR_HEAD As Long = 14, PR_DAYS As Long = 15, PR_FLOWDAYS As Long = 16, PR_MAX As Long = 17
+Private Const PR_AVG As Long = 18, PR_MEANANN As Long = 19, PR_POE As Long = 20, PR_DESIGN As Long = 21
+Private Const PR_MHEAD As Long = 23, PR_JAN As Long = 24
+Private poeMbase(12) As Integer
+Private poeDaily As Boolean            ' the run being written is a POE run: daily summary (.DAY) on
+
+
 '============================================================ buttons ====
 Public Sub EnsureButtons()
     Dim ws As Worksheet
@@ -102,7 +130,12 @@ Public Sub EnsureButtons()
     AddButton ws, "btnRead", "1. Read project and weather files", "ReadInputs", ws.Range("D14"), 210
     AddButton ws, "btnRun", "2. Run design analysis", "RunDesign", ws.Range("D16"), 210
     AddButton ws, "btnCharts", "3. Redraw charts", "DrawCharts", ws.Range("D18"), 210
+    AddButton ws, "btnPOE", "4. Run POE analysis", "RunPOE", ws.Range("D24"), 210
     EnsureChartOptions
+    On Error Resume Next
+    Set ws = Nothing
+    Set ws = ThisWorkbook.Worksheets("POE Calculator")
+    If Not ws Is Nothing Then AddButton ws, "btnPOEUpdate", "Update", "UpdatePOE", ws.Range("D11"), 110
 End Sub
 
 ' four large buttons on the Charts sheet, used like radio buttons: which
@@ -558,6 +591,7 @@ Private Sub WriteDesignProject(ByVal w As Integer, ByVal s As Integer, ByVal dFt
     g(k + 1) = setRainId(s) & " " & setRain(s)
     g(k + 2) = setTempId(s) & " " & setTemp(s)
     SetClimatePeriod g, setY1(s), setM1(s), setY2(s), setM2(s)
+    SetPrintout g, poeDaily
     WriteAllText WorkGenPath(w), Join(g, vbCrLf) & vbCrLf
     lines = SplitLines(prjText)
     For i = 0 To UBound(lines)
@@ -1871,4 +1905,614 @@ Private Function OutputFolder() As String
     End If
     If OutputFolder = "" Then OutputFolder = FolderOf(CStr(Cfg("PrjFile").Value))
     If Right$(OutputFolder, 1) <> "\" Then OutputFolder = OutputFolder & "\"
+End Function
+
+'====================================================== POE analysis ====
+' Setup sheet button "4. Run POE analysis"
+Public Sub RunPOE()
+    Dim dFt As Double, spFt As Double, s As Integer, p As String, msg As String, errText As String
+    Dim errNum As Long, h As Double
+    On Error GoTo Failed
+    Application.EnableCancelKey = xlErrorHandler
+    LoadProject
+    LoadSets
+    dFt = PoeSetting("POEDepth", 3.5, "drain depth")
+    spFt = PoeSetting("POESpace", 80, "drain spacing")
+    h = ImpDepth(genLines)
+    If dFt * CM_PER_FT >= h Then Err.Raise vbObjectError + 900, "POE", "The drain depth for the POE analysis (" & dFt & _
+        " ft) must be above the impermeable layer (" & NumStr(h / CM_PER_FT, 2) & " ft)."
+    ThisWorkbook.Worksheets(POE_DATA).Cells.Clear
+    yldFolder = "": yldFixed = ""
+    poeDaily = True
+    For s = 1 To nSet
+        SetStatus "POE analysis: DRAINMOD run " & s & " of " & nSet & " (" & setName(s) & " weather, drain depth " & dFt & _
+            " ft, spacing " & spFt & " ft) ...  (press Esc to stop)"
+        ClearOldDaily
+        LaunchJob 1, s, dFt, spFt
+        WaitRuns 1
+        If wFail(1) <> "" Then Err.Raise vbObjectError + 901, "DRAINMOD", wFail(1)
+        p = FindDailyFile()
+        If Not WaitFileDone(p) Then Err.Raise vbObjectError + 902, "DRAINMOD", "DRAINMOD did not finish writing " & p & " within the time limit."
+        msg = PoeStoreDaily(p, s, setName(s))
+        If msg <> "" Then Err.Raise vbObjectError + 903, "DRAINMOD", msg
+    Next s
+    poeDaily = False
+    KillRuns
+    With ThisWorkbook.Worksheets(POE_SHEET)
+        .Range("POEDepthUsed").Value = dFt
+        .Range("POESpaceUsed").Value = spFt
+        .Range("POERunInfo").Value = "DRAINMOD runs of " & BaseName(CStr(Cfg("PrjFile").Value)) & ".prj, " & Format$(Now, "yyyy-mm-dd hh:nn")
+    End With
+    Application.EnableEvents = False
+    PoeCalculate True
+    Application.EnableEvents = True
+    SetStatus "POE analysis finished: " & nSet & " weather set(s), drain depth " & dFt & " ft, spacing " & spFt & " ft (see the POE Calculator sheet)."
+    Application.StatusBar = False
+    Application.EnableCancelKey = xlInterrupt
+    ThisWorkbook.Worksheets(POE_SHEET).Activate
+    Exit Sub
+Failed:
+    errNum = Err.Number
+    errText = Err.Description
+    poeDaily = False
+    If errNum = 18 Then
+        If MsgBox("Stop the POE analysis?", vbYesNo + vbQuestion) = vbNo Then Resume
+        errText = "stopped (Esc)"
+    End If
+    KillRuns
+    Application.EnableEvents = True
+    SetStatus "POE analysis stopped: " & errText
+    Application.StatusBar = False
+    Application.EnableCancelKey = xlInterrupt
+    If errNum <> 18 Then MsgBox "POE analysis stopped: " & errText, vbExclamation
+End Sub
+
+' POE Calculator button "Update" (and edits of its P.O.E./flow cells)
+Public Sub UpdatePOE()
+    On Error GoTo Failed
+    Application.EnableEvents = False
+    PoeCalculate False
+    Application.EnableEvents = True
+    Exit Sub
+Failed:
+    Application.EnableEvents = True
+    MsgBox "Could not update the POE results: " & Err.Description, vbExclamation
+End Sub
+
+' depth or spacing (ft) for the POE runs; blank = the default (3.5 ft deep, 80 ft apart)
+Private Function PoeSetting(ByVal nm As String, ByVal dflt As Double, ByVal label As String) As Double
+    Dim v As Variant
+    v = Cfg(nm).Value
+    If IsEmpty(v) Or Trim$(CStr(v)) = "" Then
+        PoeSetting = Round(dflt, 2)
+        Cfg(nm).Value = PoeSetting
+    ElseIf Not IsNumeric(v) Then
+        Err.Raise vbObjectError + 905, "POE", "Enter the " & label & " for the POE analysis in feet on the Setup sheet."
+    Else
+        PoeSetting = CDbl(v)
+    End If
+    If PoeSetting <= 0 Then Err.Raise vbObjectError + 906, "POE", "The " & label & " for the POE analysis must be above zero."
+End Function
+
+' remove run slot 1's previous daily output files, so only this run's are read
+Private Sub ClearOldDaily()
+    Dim fol As Collection, i As Long, f As String, ext As Variant
+    Set fol = OutputFolders()
+    On Error Resume Next
+    For i = 1 To fol.Count
+        For Each ext In Array(".PLT", ".DAY")
+            f = fol(i) & BaseName(WorkPrjPath(1)) & ext
+            If Dir(f) <> "" Then Kill f
+        Next ext
+    Next i
+End Sub
+
+' The Printout and Input Control line of every run's .gen. DRAINMOD 5.1
+' (dmhydro.exe) reads it as (I2,I2,2I1,1X,A): columns 1-2 the output level
+' (1 writes the daily summary .DAY, 1-2 the monthly .MON, 3-4 neither),
+' columns 3-5 other switches, column 6 the daily plot file .PLT (1 = on), then
+' the output folder. Design runs: no .DAY, no .MON, no .PLT, whatever the
+' project has. POE runs: .DAY on (DRAINMOD then also writes .MON), .PLT off.
+Private Sub SetPrintout(g() As String, ByVal daily As Boolean)
+    Dim k As Long
+    k = FindSection(g, "Printout")
+    If k < 0 Then Err.Raise vbObjectError + 907, "gen", "No '*** Printout and Input Control ***' section in the .gen file."
+    g(k + 1) = PrintoutLine(g(k + 1), daily)
+End Sub
+
+Public Function PrintoutLine(ByVal ln As String, ByVal daily As Boolean) As String
+    Dim s As String, lvl As Long
+    s = ln
+    If Len(s) < 7 Then s = s & Space$(7 - Len(s))
+    lvl = Val(Left$(s, 2))
+    If daily Then
+        lvl = 1
+    ElseIf lvl < 3 Or lvl > 4 Then
+        lvl = 3
+    End If
+    PrintoutLine = RJ(CStr(lvl), 2) & Mid$(s, 3, 3) & "0" & Mid$(s, 7)
+    If Len(ln) < 7 Then PrintoutLine = RTrim$(PrintoutLine)
+End Function
+
+' the daily summary of run slot 1: <name>_dsg.DAY in one of the output folders,
+' or else the one .DAY written during the run
+Private Function FindDailyFile() As String
+    Dim fol As Collection, i As Long, f As String, nm As String, t As Double, found As String, nFound As Integer
+    Dim lst As String, n As Integer, msg As String, ext As Variant
+    nm = BaseName(WorkPrjPath(1))
+    Set fol = OutputFolders()
+    t = Timer
+    Do
+        For Each ext In Array(".DAY")
+            For i = 1 To fol.Count
+                If Dir(fol(i) & nm & ext) <> "" Then
+                    If FileDateTime(fol(i) & nm & ext) >= wStart(1) - TimeSerial(0, 0, 5) Then
+                        FindDailyFile = fol(i) & nm & ext
+                        Exit Function
+                    End If
+                End If
+            Next i
+        Next ext
+        For Each ext In Array(".DAY")
+            found = "": nFound = 0
+            For i = 1 To fol.Count
+                f = Dir(fol(i) & "*" & ext)
+                Do While f <> ""
+                    If FileDateTime(fol(i) & f) >= wStart(1) - TimeSerial(0, 0, 5) Then
+                        found = fol(i) & f
+                        nFound = nFound + 1
+                    End If
+                    f = Dir
+                Loop
+            Next i
+            If nFound = 1 Then
+                FindDailyFile = found
+                Exit Function
+            End If
+        Next ext
+        If SecondsSince(t) > 15 Then Exit Do
+        DoEvents
+        Sleep 250
+    Loop
+    ' what the run did write, for the message
+    For i = 1 To fol.Count
+        f = Dir(fol(i) & "*.*")
+        Do While f <> ""
+            If FileDateTime(fol(i) & f) >= wStart(1) - TimeSerial(0, 0, 5) Then
+                If LCase$(Right$(f, 4)) <> ".gen" And LCase$(Right$(f, 4)) <> ".prj" Then
+                    n = n + 1
+                    If n <= 12 Then lst = lst & IIf(lst = "", "", ", ") & f
+                End If
+            End If
+            f = Dir
+        Loop
+    Next i
+    msg = "DRAINMOD wrote no daily summary (" & nm & ".DAY) for the run, although the run's " & _
+        WorkGenPath(1) & " asks for it (output level 1 on its Printout and Input Control line)."
+    If n > 0 Then msg = msg & vbLf & vbLf & "Files written during the run: " & lst & IIf(n > 12, ", ...", "") & "."
+    msg = msg & vbLf & "Folders searched: "
+    For i = 1 To fol.Count
+        msg = msg & IIf(i > 1, "; ", "") & fol(i)
+    Next i
+    Err.Raise vbObjectError + 904, "DRAINMOD", msg
+End Function
+
+' copy a run's daily drain flows to weather set s's columns of the POE Daily
+' sheet, from a .PLT (date in column 1, drain flow in cm in column 5) or a .DAY
+' file (monthly blocks: a "year month" line, then DAY RAIN INFIL ET DRAIN ...
+' rows, drain flow in cm); "" or why not
+Public Function PoeStoreDaily(ByVal path As String, ByVal s As Integer, ByVal nm As String) As String
+    Dim f As Integer, ln As String, t As Variant, n As Long, pass As Integer, c0 As Long, data() As Double
+    Dim isDay As Boolean, yr As Long, mo As Long, dy As Long, leap As Long, doy As Long, fr As Single, x As Single
+    Dim wsD As Worksheet
+    isDay = (UCase$(Right$(path, 4)) = ".DAY")
+    PoeInitMonths
+    For pass = 1 To 2                          ' pass 1 counts the days, pass 2 reads them
+        If pass = 2 Then ReDim data(1 To n, 1 To 2)
+        n = 0: yr = 0: mo = 0
+        f = FreeFile
+        Open path For Input Access Read As #f
+        Do While Not EOF(f)
+            Line Input #f, ln
+            t = Tokens(ln)
+            If isDay Then
+                If UBound(t) = 1 Then
+                    ' "      1980         1": the year and month of the block that follows
+                    If IsIntTok(CStr(t(0))) And IsIntTok(CStr(t(1))) And Len(CStr(t(0))) = 4 Then
+                        If CLng(t(1)) >= 1 And CLng(t(1)) <= 12 Then yr = CLng(t(0)): mo = CLng(t(1))
+                    End If
+                ElseIf UBound(t) >= 4 And yr > 0 Then
+                    If IsIntTok(CStr(t(0))) And PoeIsNum(CStr(t(4))) Then
+                        dy = CLng(t(0))
+                        If dy >= 1 And dy <= 31 Then
+                            n = n + 1
+                            If pass = 2 Then
+                                ' the date as DRAINMOD writes it in the .PLT: year + (day of year - 1) / days
+                                ' in the year, in single precision, to 3 decimals
+                                If yr Mod 4 = 0 Then leap = 1 Else leap = 0
+                                doy = poeMbase(mo - 1) + dy
+                                If mo > 2 Then doy = doy + leap
+                                fr = CSng(doy - 1) / CSng(365 + leap)
+                                x = CSng(yr) + fr
+                                data(n, 1) = Int(CDbl(x) * 1000 + 0.5) / 1000
+                                data(n, 2) = Val(t(4))
+                            End If
+                        End If
+                    End If
+                End If
+            ElseIf UBound(t) >= 4 Then
+                If PoeIsNum(CStr(t(0))) And PoeIsNum(CStr(t(4))) Then
+                    n = n + 1
+                    If pass = 2 Then
+                        data(n, 1) = Val(t(0))
+                        data(n, 2) = Val(t(4))
+                    End If
+                End If
+            End If
+        Loop
+        Close #f
+        If n < 2 Then
+            PoeStoreDaily = "no daily drain flows in " & path
+            Exit Function
+        End If
+    Next pass
+    Set wsD = ThisWorkbook.Worksheets(POE_DATA)
+    c0 = (s - 1) * POE_STRIDE + 1
+    wsD.Cells(1, c0).Value = nm
+    wsD.Cells(1, c0 + 1).Value = n
+    wsD.Cells(1, c0 + 2).Value = "EDF points"
+    wsD.Cells(2, c0).Resize(1, POE_STRIDE).Value = Array("Date (decimal year)", "Drain flow (cm/day)", _
+        "EDF drain flow (in/day)", "EDF P.O.E. (%)", "Annual design flow (in/day)")
+    wsD.Cells(3, c0).Resize(n, 2).Value = data
+    wsD.Cells(2, c0).ClearComments
+    wsD.Cells(2, c0).AddComment "Read from " & path
+End Function
+
+Private Function PoeIsNum(ByVal s As String) As Boolean
+    PoeIsNum = (s Like "*[0-9]*") And Not (s Like "*[!0-9.eEdD+-]*")
+End Function
+
+' weather sets on the POE Daily sheet
+Private Function PoeSets(wsD As Worksheet) As Integer
+    Dim n As Integer
+    Do While n < NSETMAX
+        If Trim$(CStr(wsD.Cells(1, n * POE_STRIDE + 1).Value)) = "" Then Exit Do
+        n = n + 1
+    Loop
+    PoeSets = n
+End Function
+
+' recalculate the POE Calculator sheet from the POE Daily sheet
+Private Sub PoeCalculate(ByVal rebuild As Boolean)
+    Dim ws As Worksheet, wsD As Worksheet, nS As Integer, s As Integer, c0 As Long, nobs As Long, i As Long
+    Dim modeVal As Boolean, poeIn As Single, flowIn As Single, raw As Variant, v As Variant
+    Dim dDate() As Single, cmFlow() As Single
+    Set ws = ThisWorkbook.Worksheets(POE_SHEET)
+    Set wsD = ThisWorkbook.Worksheets(POE_DATA)
+    nS = PoeSets(wsD)
+    If nS = 0 Then Err.Raise vbObjectError + 910, "POE", "There are no daily drain flows yet: click ""4. Run POE analysis"" on the Setup sheet."
+    modeVal = (CStr(ws.Range("POECalcMode").Value) <> POE_MODE_POE)
+    If modeVal Then
+        v = ws.Range("POEPct").Value
+        If Not IsNumeric(v) Or IsEmpty(v) Then Err.Raise vbObjectError + 911, "POE", "Enter a P.O.E. between 0 and 100 (%)."
+        poeIn = CSng(v)
+        If poeIn <= 0 Or poeIn > 100 Then Err.Raise vbObjectError + 911, "POE", "Enter a P.O.E. between 0 and 100 (%)."
+    Else
+        v = ws.Range("POEFlow").Value
+        If IsNumeric(v) And Not IsEmpty(v) Then flowIn = CSng(v)
+        If flowIn = 0 Then flowIn = 0.125: ws.Range("POEFlow").Value = 0.125
+        If flowIn < 0 Then Err.Raise vbObjectError + 912, "POE", "The design drain flow must be above zero."
+    End If
+    PoeInitMonths
+    PoeLayout ws, wsD, nS
+    For s = 1 To nS
+        c0 = (s - 1) * POE_STRIDE + 1
+        nobs = CLng(wsD.Cells(1, c0 + 1).Value)
+        raw = wsD.Cells(3, c0).Resize(nobs, 2).Value
+        ReDim dDate(1 To nobs): ReDim cmFlow(1 To nobs)
+        For i = 1 To nobs
+            dDate(i) = CSng(raw(i, 1))
+            cmFlow(i) = CSng(raw(i, 2))
+        Next i
+        PoeSet ws, wsD, s, c0, dDate, cmFlow, nobs, modeVal, poeIn, flowIn
+    Next s
+    If rebuild Or ws.ChartObjects.Count < 2 Then PoeCharts ws, wsD, nS
+End Sub
+
+' column headers (one column per weather set) and number formats
+Private Sub PoeLayout(ws As Worksheet, wsD As Worksheet, ByVal nS As Integer)
+    Dim s As Integer, col As Long
+    ws.Range(ws.Cells(PR_HEAD, 2), ws.Cells(PR_JAN + 11, 1 + NSETMAX)).Clear
+    For s = 1 To nS
+        col = 1 + s
+        ws.Cells(PR_HEAD, col).Value = wsD.Cells(1, (s - 1) * POE_STRIDE + 1).Value
+        ws.Cells(PR_MHEAD, col).Value = wsD.Cells(1, (s - 1) * POE_STRIDE + 1).Value
+        With ws.Range(ws.Cells(PR_HEAD, col), ws.Cells(PR_HEAD, col))
+            .Font.Bold = True: .HorizontalAlignment = xlCenter
+        End With
+        With ws.Range(ws.Cells(PR_MHEAD, col), ws.Cells(PR_MHEAD, col))
+            .Font.Bold = True: .HorizontalAlignment = xlCenter
+        End With
+        With ws.Range(ws.Cells(PR_DAYS, col), ws.Cells(PR_DESIGN, col))
+            .Interior.Color = RGB(237, 237, 237): .HorizontalAlignment = xlCenter
+        End With
+        ws.Range(ws.Cells(PR_DAYS, col), ws.Cells(PR_FLOWDAYS, col)).NumberFormat = "#,##0"
+        ws.Range(ws.Cells(PR_MAX, col), ws.Cells(PR_AVG, col)).NumberFormat = "0.000"
+        ws.Cells(PR_MEANANN, col).NumberFormat = "0.00"
+        ws.Cells(PR_POE, col).NumberFormat = "0.0"
+        ws.Cells(PR_DESIGN, col).NumberFormat = "0.000"
+        With ws.Range(ws.Cells(PR_JAN, col), ws.Cells(PR_JAN + 11, col))
+            .Interior.Color = RGB(237, 237, 237): .HorizontalAlignment = xlCenter: .NumberFormat = "0.000"
+        End With
+    Next s
+End Sub
+
+' statistics, design flow and monthly design flows of weather set s
+' (frmPOE: NonParametric, MonthlyFlows and PlotPOE, step by step)
+Private Sub PoeSet(ws As Worksheet, wsD As Worksheet, ByVal s As Integer, ByVal c0 As Long, dDate() As Single, cmFlow() As Single, _
+        ByVal nobs As Long, ByVal modeVal As Boolean, ByVal poeIn As Single, ByVal flowIn As Single)
+    Dim col As Long, i As Long, ii As Long, np As Long, m As Integer, Iz As Long, pt As Long, Istep As Long, nPts As Long, oldPts As Long
+    Dim Nyears As Single, ky As Single, Sum As Single, M1 As Single, M2 As Single, pb As Single
+    Dim z() As Single, zres() As Single, zresM() As Single, mon() As Integer, outp() As Double, ann(1 To 12, 1 To 1) As Double
+    col = 1 + s
+    ReDim mon(1 To nobs)
+    For i = 1 To nobs
+        mon(i) = PoeMonth(dDate(i))
+    Next i
+
+    ' ---- summary statistics (like the original, over days 1 .. nobs-1)
+    Nyears = nobs / 365.25
+    ws.Cells(PR_DAYS, col).Value = nobs
+    ReDim z(nobs + 1)
+    ii = 0: Sum = 0
+    For i = 1 To nobs - 1
+        ky = cmFlow(i) / 2.54                     ' cm -> in
+        If ky > 0 Then
+            ii = ii + 1
+            Sum = Sum + ky
+            z(ii) = ky
+        End If
+    Next i
+    Sum = Sum / Nyears
+    ws.Cells(PR_MEANANN, col).Value = PoeTxt(Int(100 * Sum + 0.5) / 100)
+    np = ii
+    PoeSort z, np
+    ws.Cells(PR_MAX, col).Value = PoeTxt(Int((z(1) * 1000) + 0.5) / 1000)
+    ws.Cells(PR_FLOWDAYS, col).Value = np
+    M1 = np * 0.5: M2 = Int(np * 0.5)
+    If M2 = M1 Then Sum = (z(M2) + z(M1)) / 2 Else Sum = z(M2 + 1)
+    ws.Cells(PR_AVG, col).Value = PoeTxt(Int(1000 * Sum + 0.5) / 1000)
+
+    ' ---- every day, zero flow included: design flow at a P.O.E., or P.O.E. of a flow
+    ReDim zres(nobs + 1)
+    For i = 0 To nobs - 2
+        zres(i) = cmFlow(i + 1) / 2.54
+    Next i
+    PoeSort zres, nobs - 1
+    If modeVal Then
+        pb = poeIn / 100
+        M1 = pb * nobs: M2 = Int(pb * nobs)
+        If M2 = M1 Then Sum = (zres(M2) + zres(M1)) / 2 Else Sum = zres(M2 + 1)
+        ws.Cells(PR_POE, col).Value = PoeTxt(poeIn)
+        ws.Cells(PR_DESIGN, col).Value = PoeTxt(Int(1000 * Sum + 0.5) / 1000)
+    Else
+        Sum = flowIn
+        i = 1
+        Do While Sum < zres(i) And i < nobs
+            i = i + 1
+        Loop
+        pb = i / nobs
+        pb = Int(1000 * pb + 0.5) / 10
+        ws.Cells(PR_POE, col).Value = PoeTxt(pb)
+        ws.Cells(PR_DESIGN, col).Value = PoeTxt(flowIn)
+    End If
+
+    ' ---- monthly design flows at that P.O.E.
+    pb = CSng(ws.Cells(PR_POE, col).Value) / 100
+    For m = 1 To 12
+        ReDim zresM(nobs + 1)
+        ii = 0
+        For i = 1 To nobs - 1
+            If mon(i) = m Then
+                ii = ii + 1
+                zresM(ii) = cmFlow(i) / 2.54
+            End If
+        Next i
+        np = ii
+        PoeSort zresM, np
+        M1 = pb * np: M2 = Int(pb * np)
+        If M2 = M1 Then Sum = (zresM(M2) + zresM(M1)) / 2 Else Sum = zresM(M2 + 1)
+        If Sum < 0 Then Sum = 0
+        ws.Cells(PR_JAN + m - 1, col).Value = PoeTxt(Int(1000 * Sum + 0.5) / 1000)
+        ann(m, 1) = ws.Cells(PR_DESIGN, col).Value
+    Next m
+    wsD.Cells(3, c0 + 4).Resize(12, 1).Value = ann
+
+    ' ---- empirical distribution function (upper half of the sorted days)
+    ReDim zres(1 To nobs)
+    For i = 1 To nobs
+        zres(i) = cmFlow(i) / 2.54
+    Next i
+    PoeSort zres, nobs
+    Istep = Int(nobs / 32000) + 1
+    For pt = 1 To Int(nobs / 2) + 1 Step Istep
+        nPts = nPts + 1
+    Next pt
+    ReDim outp(1 To nPts, 1 To 2)
+    For pt = 1 To Int(nobs / 2) + 1 Step Istep
+        Iz = Iz + 1
+        outp(Iz, 1) = zres(pt)
+        outp(Iz, 2) = CSng(200 * CSng(pt) / (2 * nobs + 1))
+    Next pt
+    If IsNumeric(wsD.Cells(1, c0 + 3).Value) Then oldPts = CLng(Val(CStr(wsD.Cells(1, c0 + 3).Value)))
+    If oldPts > 0 Then wsD.Cells(3, c0 + 2).Resize(oldPts, 2).ClearContents
+    wsD.Cells(3, c0 + 2).Resize(nPts, 2).Value = outp
+    wsD.Cells(1, c0 + 3).Value = nPts
+End Sub
+
+' the two charts, every weather set on each (colour = weather set):
+' monthly design flows (columns) with each set's annual design flow (line),
+' and the empirical distribution function
+Private Sub PoeCharts(ws As Worksheet, wsD As Worksheet, ByVal nS As Integer)
+    Dim co As ChartObject, sr As Series, s As Integer, c0 As Long, pal As Variant, nPts As Long, nm As String
+    Dim x0 As Double, y0 As Double
+    pal = Array(RGB(79, 129, 189), RGB(192, 80, 77), RGB(155, 187, 89), RGB(128, 100, 162))
+    Do While ws.ChartObjects.Count > 0
+        ws.ChartObjects(1).Delete
+    Loop
+    x0 = ws.Range("H3").Left: y0 = ws.Range("H3").Top
+
+    Set co = ws.ChartObjects.Add(x0, y0, 640, 360)
+    co.Name = "chtPOEMonthly"
+    With co.Chart
+        .ChartType = xlColumnClustered
+        Do While .SeriesCollection.Count > 0
+            .SeriesCollection(1).Delete
+        Loop
+        For s = 1 To nS
+            Set sr = .SeriesCollection.NewSeries
+            sr.Name = CStr(wsD.Cells(1, (s - 1) * POE_STRIDE + 1).Value) & " weather"
+            sr.XValues = ws.Range(ws.Cells(PR_JAN, 1), ws.Cells(PR_JAN + 11, 1))
+            sr.Values = ws.Range(ws.Cells(PR_JAN, 1 + s), ws.Cells(PR_JAN + 11, 1 + s))
+            sr.Format.Fill.ForeColor.RGB = pal((s - 1) Mod 4)
+        Next s
+        For s = 1 To nS
+            c0 = (s - 1) * POE_STRIDE + 1
+            Set sr = .SeriesCollection.NewSeries
+            sr.ChartType = xlLine
+            sr.Name = CStr(wsD.Cells(1, c0).Value) & ": annual design flow"
+            sr.XValues = ws.Range(ws.Cells(PR_JAN, 1), ws.Cells(PR_JAN + 11, 1))
+            sr.Values = wsD.Range(wsD.Cells(3, c0 + 4), wsD.Cells(14, c0 + 4))
+            sr.MarkerStyle = xlMarkerStyleNone
+            sr.Format.Line.Visible = msoTrue
+            sr.Format.Line.ForeColor.RGB = pal((s - 1) Mod 4)
+            sr.Format.Line.Weight = 2.25
+            sr.Format.Line.DashStyle = msoLineDash
+        Next s
+        .ChartGroups(1).GapWidth = 60
+        .HasTitle = True
+        .ChartTitle.Text = "Monthly Design Drain Flows"
+        .Axes(xlCategory).HasTitle = True
+        .Axes(xlCategory).AxisTitle.Text = "Month"
+        .Axes(xlValue).HasTitle = True
+        .Axes(xlValue).AxisTitle.Text = "Drain Flow (in/day)"
+        .Axes(xlValue).TickLabels.NumberFormat = "0.00"
+        .HasLegend = True
+        .Legend.Position = xlLegendPositionBottom
+    End With
+    PoeStyleChart co
+
+    Set co = ws.ChartObjects.Add(x0, y0 + 375, 640, 360)
+    co.Name = "chtPOEEDF"
+    With co.Chart
+        .ChartType = xlXYScatterLinesNoMarkers
+        Do While .SeriesCollection.Count > 0
+            .SeriesCollection(1).Delete
+        Loop
+        For s = 1 To nS
+            c0 = (s - 1) * POE_STRIDE + 1
+            nPts = CLng(wsD.Cells(1, c0 + 3).Value)
+            Set sr = .SeriesCollection.NewSeries
+            sr.Name = CStr(wsD.Cells(1, c0).Value) & " weather"
+            sr.XValues = wsD.Cells(3, c0 + 2).Resize(nPts, 1)
+            sr.Values = wsD.Cells(3, c0 + 3).Resize(nPts, 1)
+            sr.MarkerStyle = xlMarkerStyleNone
+            sr.Format.Line.Visible = msoTrue
+            sr.Format.Line.ForeColor.RGB = pal((s - 1) Mod 4)
+            sr.Format.Line.Weight = 2.25
+        Next s
+        .HasTitle = True
+        .ChartTitle.Text = "Empirical Distribution Function of Daily Drain Flow"
+        .Axes(xlCategory).HasTitle = True
+        .Axes(xlCategory).AxisTitle.Text = "Drain Flow (in/day)"
+        .Axes(xlCategory).MinimumScale = 0
+        .Axes(xlValue).HasTitle = True
+        .Axes(xlValue).AxisTitle.Text = "P.O.E. (%)"
+        .Axes(xlValue).MinimumScale = 0
+        .HasLegend = True
+        .Legend.Position = xlLegendPositionBottom
+    End With
+    PoeStyleChart co
+End Sub
+
+' the look of the yield charts (StyleChart) without its yield-axis scale
+Private Sub PoeStyleChart(co As ChartObject)
+    Dim ax As Variant, grey As Long
+    grey = RGB(89, 89, 89)
+    On Error Resume Next            ' formatting only
+    With co.Chart
+        With .ChartTitle.Format.TextFrame2.TextRange.Font
+            .Size = 16: .Bold = msoTrue: .Fill.ForeColor.RGB = grey
+        End With
+        For Each ax In Array(xlValue, xlCategory)
+            With .Axes(ax)
+                .HasMajorGridlines = True
+                .MajorGridlines.Format.Line.ForeColor.RGB = RGB(217, 217, 217)
+                .MajorGridlines.Format.Line.Weight = 0.75
+                .Format.Line.ForeColor.RGB = RGB(191, 191, 191)
+                .TickLabels.Font.Bold = True
+                .TickLabels.Font.Size = 11
+                .TickLabels.Font.Color = grey
+                With .AxisTitle.Format.TextFrame2.TextRange.Font
+                    .Size = 12: .Bold = msoTrue: .Fill.ForeColor.RGB = grey
+                End With
+            End With
+        Next ax
+        With .Legend.Font
+            .Bold = True: .Size = 11: .Color = grey
+        End With
+        .PlotArea.Format.Line.Visible = msoFalse
+        With .ChartArea.Format.Line
+            .Visible = msoTrue: .ForeColor.RGB = RGB(68, 114, 196): .Weight = 2
+        End With
+    End With
+End Sub
+
+Private Sub PoeInitMonths()
+    poeMbase(0) = 0: poeMbase(1) = 31: poeMbase(2) = 59: poeMbase(3) = 90
+    poeMbase(4) = 120: poeMbase(5) = 151: poeMbase(6) = 181: poeMbase(7) = 212
+    poeMbase(8) = 243: poeMbase(9) = 273: poeMbase(10) = 304: poeMbase(11) = 334
+End Sub
+
+' descending shell sort of V(1..n) (frmPOE "shelsort")
+Private Sub PoeSort(V() As Single, ByVal n As Long)
+    Dim gap As Single, vdum As Single, i As Long, j As Long, K As Long
+    gap = n * 1.5
+    Do
+        gap = Int(gap / 2)
+        If gap = 0 Then Exit Do
+        For i = 1 To n - gap
+            j = i
+            Do
+                K = j + gap
+                If V(j) >= V(K) Then Exit Do
+                vdum = V(j): V(j) = V(K): V(K) = vdum
+                j = j - gap
+            Loop While j > 0
+        Next i
+    Loop
+End Sub
+
+' month (1-12) of a decimal-year date such as 1980.003 (frmPOE "FindMonth")
+Private Function PoeMonth(ByVal ddate As Single) As Integer
+    Dim DYear As Single, MCheck(12) As Integer, ILeap As Integer, Iday As Integer, i As Integer, ip As Integer
+    DYear = Int(ddate): ILeap = 0
+    If (DYear Mod 4) = 0 Then ILeap = 1
+    For i = 0 To 11
+        MCheck(i) = poeMbase(i) + Sgn(i) * ILeap
+    Next i
+    Iday = (365 + ILeap) * (ddate - DYear)
+    For i = 2 To 11
+        If Iday > MCheck(i - 1) And Iday <= MCheck(i) Then
+            ip = i: Exit For
+        End If
+    Next i
+    If Iday <= MCheck(1) Then ip = 1
+    If Iday > MCheck(11) Then ip = 12
+    PoeMonth = ip
+End Function
+
+' the original's Str() -> text box -> Val() round trip of a Single
+Private Function PoeTxt(ByVal x As Single) As Double
+    PoeTxt = Val(Str(x))
 End Function
