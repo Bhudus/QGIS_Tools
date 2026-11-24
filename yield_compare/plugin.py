@@ -8,7 +8,7 @@ try:  # Qt6 / QGIS 4
 except ImportError:  # Qt5 / QGIS 3
     from qgis.PyQt.QtWidgets import QAction
 
-MENU = "&Yield Compare"
+TILE_DRAINAGE_MENU = "&Tile Drainage"  # submenu shared by the QGIS_Tools drainage plugins
 
 
 class YieldComparePlugin:
@@ -22,11 +22,11 @@ class YieldComparePlugin:
         self.action = QAction(icon, "Compare Field Yields…", self.iface.mainWindow())
         self.action.setToolTip("Compare yield statistics of two fields")
         self.action.triggered.connect(self.run)
-        self.iface.addPluginToVectorMenu(MENU, self.action)
+        self.iface.addPluginToVectorMenu(TILE_DRAINAGE_MENU, self.action)
         self.iface.addVectorToolBarIcon(self.action)
 
     def unload(self):
-        self.iface.removePluginVectorMenu(MENU, self.action)
+        self.iface.removePluginVectorMenu(TILE_DRAINAGE_MENU, self.action)
         self.iface.removeVectorToolBarIcon(self.action)
         if self.dlg is not None:
             self.dlg.close()

@@ -5,7 +5,7 @@ A QGIS 3.22+ / QGIS 4 port of the VB6 + MapWinGIS **Yield Statistics** program (
 ## Install
 1. Download [`yield_compare.zip`](https://github.com/Bhudus/QGIS_Tools/raw/main/yield_compare/yield_compare.zip).
    In QGIS: **Plugins → Manage and Install Plugins… → Install from ZIP**, then choose the zip.
-2. Open it from **Vector → Yield Compare → Compare Field Yields…** or the toolbar icon.
+2. Open it from **Vector → Tile Drainage → Compare Field Yields…** or the toolbar icon.
 
 ## Use
 1. Load the two yield shapefiles into QGIS (e.g. `md_North-2007.shp`, `fd_North-2007.shp`).
