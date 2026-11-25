@@ -1,6 +1,6 @@
 # Illini Drainage Design Tables and Calculators
 
-**Workbook:** `Illini_Drainage_Design_Tables_and_Calculators.xlsm` · Version 1 ·
+**Workbook:** `Illini_Drainage_Design_Tables_and_Calculators.xlsm` · Version 2 ·
 [download zip](https://github.com/Bhudus/QGIS_Tools/raw/main/spreadsheets/illini_drainage_design_tables/illini_drainage_design_tables.zip)
 
 Drainage design tables and small calculators, one per sheet, converted from the University of
@@ -17,6 +17,7 @@ unchanged from the originals.
 | **Max Trench Depth (T10)** | Maximum allowable trench depth for drain tile, from crushing strength, tile diameter and trench width |
 | **Pumping Plants** | Drainage pump capacity (GPM), power requirement (HP), and active storage and sump area for automatic or manual operation |
 | **Manning** | Manning's equation for open channels (rectangular, triangular, trapezoidal, circular, parabolic or irregular): velocity and discharge, or the depth, slope or Manning's n for a given velocity or discharge |
+| **Drainage Curves** | Design rate of discharge (cfs) for an outlet channel from the watershed area, using drainage curve B (excellent), C (good) or D (satisfactory), with the curves charted on log-log axes. Converted from the Ditch Sizing Routine (`prjCapacity`) |
 
 ## Use
 
@@ -53,3 +54,4 @@ Manning sheet need them. The buttons are Form Controls, not ActiveX controls.
 ## Versions
 
 * **1** – First published version: the table sheets, Pumping Plants and Manning in one workbook.
+* **2** – Adds the Drainage Curves sheet, converted from the Ditch Sizing Routine (`prjCapacity`). Formulas only; no new macros.
