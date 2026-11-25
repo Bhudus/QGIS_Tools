@@ -1,6 +1,6 @@
 # Illini Drainage Design Tables and Calculators
 
-**Workbook:** `Illini_Drainage_Design_Tables_and_Calculators.xlsm` · Version 2 ·
+**Workbook:** `Illini_Drainage_Design_Tables_and_Calculators.xlsm` · Version 3 ·
 [download zip](https://github.com/Bhudus/QGIS_Tools/raw/main/spreadsheets/illini_drainage_design_tables/illini_drainage_design_tables.zip)
 
 Drainage design tables and small calculators, one per sheet, converted from the University of
@@ -18,6 +18,7 @@ unchanged from the originals.
 | **Pumping Plants** | Drainage pump capacity (GPM), power requirement (HP), and active storage and sump area for automatic or manual operation |
 | **Manning** | Manning's equation for open channels (rectangular, triangular, trapezoidal, circular, parabolic or irregular): velocity and discharge, or the depth, slope or Manning's n for a given velocity or discharge |
 | **Drainage Curves** | Design rate of discharge (cfs) for an outlet channel from the watershed area, using drainage curve B (excellent), C (good) or D (satisfactory), with the curves charted on log-log axes. Converted from the Ditch Sizing Routine (`prjCapacity`) |
+| **Frost Depth** | Mean annual frost penetration depth (in and cm) for any Illinois county, interpolated from the Fig. 15 frost-depth lines with the original program's surface; a table of all 102 counties and the map alongside. Converted from the Frost Penetration program (`FrostP`) |
 
 ## Use
 
@@ -55,3 +56,4 @@ Manning sheet need them. The buttons are Form Controls, not ActiveX controls.
 
 * **1** – First published version: the table sheets, Pumping Plants and Manning in one workbook.
 * **2** – Adds the Drainage Curves sheet, converted from the Ditch Sizing Routine (`prjCapacity`). Formulas only; no new macros.
+* **3** – Adds the Frost Depth sheet, converted from the Frost Penetration program (`FrostP`). Formulas only; no new macros.
