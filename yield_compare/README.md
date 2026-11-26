@@ -8,9 +8,12 @@ Compares crop yields from two or more yield-monitor point layers (up to 8 fields
 2. Open it from **Vector → Tile Drainage → Compare Field Yields…** or the toolbar icon.
 
 ## Try it with the sample fields
-Click **Load sample fields** at the top of the dialog, then **Calculate Statistics**. This adds two bundled fields, their tile networks and boundaries to the project in a group, and fills in the dialog (yield and pass columns, network, drain spacings).
+Click **Load sample fields** at the top of the dialog and choose a sample set, then **Calculate Statistics**. This adds the yield layers, tile network and boundaries to the project in a group, and fills in the dialog (yield and pass columns, network, drain spacings, thresholds).
 
-The sample fields are **synthetic**. They are not, and are not derived from, any real field, and they sit on a made-up local grid in feet (the `.prj` is a local coordinate system), so they have no real-world location and no background map lines up with them. Open them in a new project. If QGIS asks for a coordinate system, choose *No CRS*.
+Two sample sets are bundled. Both sit on the same made-up local grid in feet, with no real-world location; open them in a new project. If QGIS asks for a coordinate system, choose *No CRS*.
+
+### Synthetic fields A and B (known answers)
+The synthetic fields are They are not, and are not derived from, any real field, and they sit on a made-up local grid in feet (the `.prj` is a local coordinate system), so they have no real-world location and no background map lines up with them.
 
 | | Sample Field A (29 ac) | Sample Field B (24 ac) |
 |---|---|---|
@@ -32,7 +35,27 @@ What the plugin finds with the defaults and **Reset from tails** at 1 %:
 * **Field A vs Field B:** Field A averages 9 bu/ac less, but the interval (−24.5 to +6.6) includes zero. With soil patches hundreds of feet across, each field carries the information of only a handful of independent points, so a difference in field means of this size can't be told apart from soil differences. Untick *Allow for spatial autocorrelation* to see how confidently the ordinary test (p < 10⁻²⁰⁰) would claim otherwise.
 * **Without the pass column**, Field A's interval narrows to 14–18 bu/ac: overconfident, because the pass offsets are ignored.
 
-`tools/make_sample_data.py` (in the repository, not in the plugin zip) regenerates the sample files and documents exactly how they were built.
+`tools/make_sample_data.py` (in the repository, not in the plugin zip) regenerates the synthetic sample files and documents exactly how they were built.
+
+### Real strips A–D (location masked)
+Four drained strips of 4.1–5.0 acres in one real field, harvested for corn in 2019, with the Illini tile network designed for them:
+* laterals 30 ft apart, plus submains and mains
+* a 30 ft header
+
+**What was done to the data:**
+* **Location masked:** the strips, network and boundaries were rotated by a random angle, mirrored and moved onto the sample grid, together, so all distances and the tile-to-yield geometry are unchanged. Headings were rotated and mirrored to match.
+* **Elevations** in the yield points, the network attributes and the network's Z values were shifted by one undisclosed constant, so relief, depths and grades are exact but the true elevation is not.
+* **Removed:** harvest dates and times, variety, machine and section IDs, and the original names and IDs.
+* **Added:** `Pass_Num`, derived from the time sequence (a new pass at a time gap, a turn or a jump).
+
+The loader sets the thresholds to **50–350 bu/ac**. Between 4 % and 8 % of readings are near zero (turns, fill delay), so trimming 1 % of each tail would leave them in.
+
+What the plugin finds:
+* **Mean yields** of 187, 211, 223 and 211 bu/ac (strips A–D), but no clear difference between strips: overall p = 0.12, and no pair after adjusting for six comparisons. Each strip of about 1,100 points carries the information of only 16–33 independent points. Ignoring autocorrelation, five of the six pairs would be "highly significant".
+* **No clear midway loss in any strip.** Strip B shows −19.5 bu/ac (p = 0.11; p = 0.00009 if autocorrelation is ignored).
+* **The header is as wide as the drain spacing**, and the plugin says so in the results. In strips A–C the combine also ran parallel to the laterals, so each reading averages the full width between two laterals, whether the pass is centred over a tile or midway. A yield monitor simply cannot see yield change across a 30 ft spacing here. Only in strip D did the combine cross the laterals (at about 64°).
+
+This makes the strips a good example of what the tool can and cannot tell you. A field designed to answer the drainage question would have passes crossing the laterals, or a header narrower than half the spacing.
 
 ## Use
 1. Load the yield layers into QGIS.
@@ -74,6 +97,7 @@ The Equivalence tests tab also shows the p-value ignoring autocorrelation, for c
 * The fields are treated as independent of each other. For the same field in two years, the shared soil pattern makes the test conservative.
 * Pass effects are treated as independent of each other.
 * The correlation is assumed the same in all directions apart from the pass terms.
+* The histogram test is very conservative under strong autocorrelation: values in neighbouring histogram bins are less correlated than the yields themselves, so scaling by the yields' effective number of points over-corrects. Rely on the tests of means and medians.
 
 ## Comparing three or more fields
 With two fields the results are the two-field tests above. With three or more, the **Equivalence tests** tab shows:
@@ -94,7 +118,7 @@ Two fields can share a layer, for example two parts of one field chosen with **S
 
 ## Yield vs distance to tile
 Tick **Yield vs distance to tile**, choose the tile network layer and check the **drain spacing of each field**. Comparing two spacings is often the point, so each field has its own.
-* For an Illini Subsurface Drain Layout network, each field's spacing is read from `DRAIN_SPACE` of the laterals within that field, and **Laterals only** uses `kind = 'lateral'`.
+* For an Illini Subsurface Drain Layout network, each field's spacing is read from `DRAIN_SPACE` (`DRAIN_SPAC` in a shapefile, which cuts names to 10 characters) of the laterals within that field, and **Laterals only** uses `kind = 'lateral'`.
 * Any line layer works. One layer can hold the networks of every field.
 * With two or more fields, the tab also tests whether the **midway loss is the same in every field**, as a percentage of yield over the tile. This answers questions such as "is the loss worse at 100 ft spacing than at 60 ft?". The test is an F test that allows for each field's uncertainty, including how few effective points each estimate rests on.
 
@@ -107,6 +131,8 @@ For each yield point the plugin finds the distance to the nearest tile line (QGI
 **Choose the pass column.** When laterals run parallel to the harvest passes, distance to tile is largely "which pass", and differences between passes (header, flow lag, direction) can look like a drainage effect.
 
 In tests on real yield data (fd_North-2007) with made-up laterals parallel to the passes at 50 and 70 ft, the ordinary test flagged a "drainage effect" in about half the cases. With the pass column the plugin flagged none.
+
+**Header width.** Each yield reading averages the crop across the header. When the header is at least half the drain spacing, and especially when the passes run parallel to the laterals, yield change across the spacing is smoothed out. If a yield layer has a swath-width column (a name containing "swath" or "swth"), the plugin checks this and warns in the results.
 
 The analysis shows an association, not a cause. Anything else that repeats at the drain spacing, such as sprayer wheel tracks or old tile, can produce the same pattern. The fd_North-2007 data itself has a strong pattern repeating every ~120 ft parallel to the harvest passes, which would be worth checking against the field's tile map.
 
@@ -146,7 +172,7 @@ Most of these are bugs in the original that were fixed. With **Allow for spatial
 * `stats_core.py`: all statistics (pure Python + numpy, no QGIS dependency; replaces the ALGLIB `.bas` modules)
 * `dialog.py`: user interface, tile distances, map styling, plots, export
 * `plugin.py`, `__init__.py`, `metadata.txt`, `icon.png`: QGIS plugin plumbing
-* `sample_data/`: the two synthetic sample fields (yield points), their tile networks and boundaries
+* `sample_data/`: the two synthetic sample fields (`sample_*`) and the four masked real strips (`real_*`): yield points, tile networks and boundaries
 * `tests/test_stats_core.py`: checks of the statistics on synthetic fields (run with `python tests/test_stats_core.py`; needs numpy only). In the repository only.
 * `tools/make_sample_data.py`: regenerates `sample_data/`. In the repository only.
 

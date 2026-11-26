@@ -22,7 +22,7 @@ from qgis.PyQt.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                                  QDialog, QDoubleSpinBox, QFileDialog,
                                  QFormLayout, QGridLayout, QGroupBox,
                                  QHBoxLayout, QHeaderView, QLabel,
-                                 QMessageBox, QPushButton, QScrollArea,
+                                 QMenu, QMessageBox, QPushButton, QScrollArea,
                                  QSpinBox, QTableWidget, QTableWidgetItem,
                                  QTabWidget, QVBoxLayout, QWidget)
 
@@ -123,6 +123,29 @@ def unit_name(crs):
     except Exception:
         return "map units"
     return name if name and "unknown" not in name.lower() else "map units"
+
+
+def spacing_field_index(layer):
+    """Index of the drain spacing column: DRAIN_SPACE, or DRAIN_SPAC as a
+    shapefile stores it (names are cut to 10 characters); -1 if none."""
+    for f_i, fld in enumerate(layer.fields()):
+        if fld.name().upper() in ("DRAIN_SPACE", "DRAIN_SPAC"):
+            return f_i
+    return -1
+
+
+def swath_width(layer):
+    """(column name, median) of a header / swath width column, or None."""
+    for fld in layer.fields():
+        n = fld.name().lower()
+        if ("swath" in n or "swth" in n) and fld.isNumeric():
+            i = layer.fields().indexFromName(fld.name())
+            req = QgsFeatureRequest()
+            req.setFlags(NO_GEOMETRY)
+            req.setSubsetOfAttributes([i])
+            vals = [v for v in (sc._num(f[i]) for f in layer.getFeatures(req)) if v and v > 0]
+            return (fld.name(), float(np.median(vals))) if vals else None
+    return None
 
 
 def working_crs(layers, network=None):
@@ -379,6 +402,29 @@ class FieldPanel(QGroupBox):
 # ---------------------------------------------------------------------------
 
 MAX_FIELDS = 8
+
+SAMPLES = {
+    "synthetic": dict(
+        group="Yield Compare sample fields",
+        yields=[("sample_field_A_yield", "Sample Field A yield"),
+                ("sample_field_B_yield", "Sample Field B yield")],
+        boundaries=("sample_field_boundaries", "Sample field boundaries"),
+        network=("sample_tile_networks", "Sample tile networks"),
+        thresholds=None,
+        message="Synthetic sample fields loaded (made up, on a local grid with no real "
+                "location). Field A: laterals 100 ft apart, too wide for the soil. "
+                "Field B: laterals 60 ft apart with an untiled corner. Click Calculate "
+                "Statistics."),
+    "real": dict(
+        group="Yield Compare real strips (location masked)",
+        yields=[(f"real_strip_{c}_yield", f"Real strip {c} yield") for c in "ABCD"],
+        boundaries=("real_strip_boundaries", "Real strip boundaries"),
+        network=("real_tile_network", "Real tile network"),
+        thresholds=(50.0, 350.0),
+        message="Real strips loaded: four drained strips harvested for corn in 2019, "
+                "laterals 30 ft apart, location masked. Thresholds set to 50-350 to drop "
+                "zero readings at turns. Click Calculate Statistics."),
+}
 COLORS = ["#1d4ed8", "#c2410c", "#15803d", "#7e22ce", "#b91c1c", "#0e7490",
           "#a16207", "#be185d"]
 
@@ -399,9 +445,14 @@ class YieldCompareDialog(QDialog):
         lv = QVBoxLayout(left)
         self.btn_samples = QPushButton("Load sample fields")
         self.btn_samples.setToolTip(
-            "Add the two bundled synthetic fields and their tile networks to the project "
-            "and fill in this dialog. The fields are made up and sit on a local grid "
-            "with no real-world location.")
+            "Add bundled sample fields and their tile networks to the project and fill "
+            "in this dialog. Both sets sit on a local grid with no real-world location.")
+        menu = QMenu(self.btn_samples)
+        act = menu.addAction("Synthetic fields A and B (known answers)")
+        act.triggered.connect(lambda *_: self.load_samples("synthetic"))
+        act = menu.addAction("Real strips A–D (2019 corn, location masked)")
+        act.triggered.connect(lambda *_: self.load_samples("real"))
+        self.btn_samples.setMenu(menu)
         top = QHBoxLayout()
         top.addWidget(QLabel("New to Yield Compare?"))
         top.addWidget(self.btn_samples)
@@ -593,7 +644,6 @@ class YieldCompareDialog(QDialog):
         self.chk_con.toggled.connect(self._update_enabled)
         self.grp_dist.toggled.connect(self._update_enabled)
         self.btn_calc.clicked.connect(self.calculate)
-        self.btn_samples.clicked.connect(self.load_samples)
         self.btn_add.clicked.connect(lambda *_: self.add_field())
         self.btn_trim.clicked.connect(self.reset_thresholds)
         self.btn_clear_thr.clicked.connect(self._clear_thresholds)
@@ -732,7 +782,7 @@ class YieldCompareDialog(QDialog):
         net = self.network.currentLayer()
         if net is None:
             return
-        i = net.fields().indexFromName("DRAIN_SPACE")
+        i = spacing_field_index(net)
         if i < 0:
             return
         crs = net.crs()
@@ -771,19 +821,17 @@ class YieldCompareDialog(QDialog):
             if ft:
                 panel.spacing.setValue(ft * fac)
 
-    def load_samples(self):
-        """Load the bundled synthetic sample fields and set up the dialog."""
+    def load_samples(self, which="synthetic"):
+        """Load a bundled sample set and set up the dialog."""
+        spec = SAMPLES[which]
         folder = os.path.join(os.path.dirname(__file__), "sample_data")
-        specs = [("sample_field_A_yield", "Sample Field A yield"),
-                 ("sample_field_B_yield", "Sample Field B yield"),
-                 ("sample_field_boundaries", "Sample field boundaries"),
-                 ("sample_tile_networks", "Sample tile networks")]
+        keys = spec["yields"] + [spec["boundaries"], spec["network"]]
         proj = QgsProject.instance()
         had_layers = bool(proj.mapLayers())
         root = proj.layerTreeRoot()
         group = None
         lyrs = {}
-        for key, title in specs:
+        for key, title in keys:
             path = os.path.join(folder, key + ".shp")
             lyr = next((l for l in proj.mapLayers().values()
                         if isinstance(l, QgsVectorLayer) and
@@ -796,47 +844,48 @@ class YieldCompareDialog(QDialog):
                                         f"Could not load the sample layer {path}.")
                     return
                 if group is None:
-                    group = root.findGroup("Yield Compare sample fields") or \
-                        root.insertGroup(0, "Yield Compare sample fields")
+                    group = root.findGroup(spec["group"]) or root.insertGroup(0, spec["group"])
                 proj.addMapLayer(lyr, False)
                 group.insertLayer(0, lyr)
-                if key == "sample_tile_networks":
+                if key == spec["network"][0]:
                     cats = []
-                    for kind, color, width, label in (("main", "185,28,28", "0.9", "Main"),
-                                                      ("lateral", "37,99,235", "0.4",
-                                                       "Lateral")):
+                    for kind, color, width, label in (
+                            ("main", "185,28,28", "0.9", "Main"),
+                            ("submain", "234,88,12", "0.6", "Submain"),
+                            ("lateral", "37,99,235", "0.4", "Lateral")):
                         sym = QgsLineSymbol.createSimple({"color": color, "width": width})
                         cats.append(QgsRendererCategory(kind, sym, label))
                     lyr.setRenderer(QgsCategorizedSymbolRenderer("kind", cats))
-                elif key == "sample_field_boundaries":
+                elif key == spec["boundaries"][0]:
                     lyr.setRenderer(QgsSingleSymbolRenderer(QgsFillSymbol.createSimple(
                         {"color": "0,0,0,0", "outline_color": "40,40,40",
                          "outline_width": "0.5"})))
             lyrs[key] = lyr
-        a, b = lyrs["sample_field_A_yield"], lyrs["sample_field_B_yield"]
+        yl = [lyrs[k] for k, _ in spec["yields"]]
         if not had_layers or not proj.crs().isValid() or proj.crs().isGeographic():
-            proj.setCrs(a.crs())
-        while len(self.panels) > 2:
+            proj.setCrs(yl[0].crs())
+        while len(self.panels) > len(yl):
             self.remove_field(self.panels[-1])
-        self.panels[0].layer.setLayer(a)
-        self.panels[1].layer.setLayer(b)
-        self.network.setLayer(lyrs["sample_tile_networks"])
+        while len(self.panels) < len(yl):
+            self.add_field()
+        for p, lyr in zip(self.panels, yl):
+            p.layer.setLayer(lyr)
+        self.network.setLayer(lyrs[spec["network"][0]])
         self.chk_spatial.setChecked(True)
         self.grp_dist.setChecked(True)
         self._fill_spacing()
+        if spec["thresholds"]:
+            self.lthresh.setValue(spec["thresholds"][0])
+            self.uthresh.setValue(spec["thresholds"][1])
         try:
-            ext = QgsCoordinateTransform(a.crs(), proj.crs(), proj) \
-                .transformBoundingBox(lyrs["sample_field_boundaries"].extent())
+            ext = QgsCoordinateTransform(yl[0].crs(), proj.crs(), proj) \
+                .transformBoundingBox(lyrs[spec["boundaries"][0]].extent())
             canvas = self.iface.mapCanvas()
             canvas.setExtent(ext.buffered(0.05 * ext.width()))
             canvas.refresh()
         except Exception:
             pass
-        self.iface.messageBar().pushInfo(
-            "Yield Compare",
-            "Sample fields loaded (synthetic, on a local grid with no real location). "
-            "Field A: laterals 100 ft apart, too wide for the soil. Field B: laterals "
-            "60 ft apart with an untiled corner. Click Calculate Statistics.")
+        self.iface.messageBar().pushInfo("Yield Compare", spec["message"])
 
     def _clear_thresholds(self, *args):
         self.lthresh.setValue(0.0)
@@ -923,6 +972,8 @@ class YieldCompareDialog(QDialog):
         res["xnames"] = [p.reg_field.currentField() for p in panels]
         res["units"] = unit_name(crs) if crs is not None else ""
         res["has_passes"] = [f["g"] is not None for f in fields]
+        res["swath"] = [swath_width(p.layer.currentLayer()) if use_dist else None
+                        for p in panels]
         res["settings"] = dict(regression=reg, rls=rls, thresholds=thr, spatial=spatial,
                                constraint=self._z_limits() if con else None,
                                network=net.name() if net else None, reach=reaches)
@@ -1217,6 +1268,20 @@ class YieldCompareDialog(QDialog):
             else:
                 lines.append(f"No clear difference in the midway loss between {what} "
                              f"({p_eq(t['p'])}).")
+        narrow = []
+        for lbl, sw, r in zip(res["labels"], res.get("swath") or [],
+                              res["settings"]["reach"]):
+            if sw and r > 0 and sw[1] >= r:
+                narrow.append(f"{html.escape(lbl)} (header {sw[1]:g} from {sw[0]}, "
+                              f"spacing {2 * r:g})")
+        if narrow:
+            lines.append("<span style='color:#a00'>Header at least half the drain spacing: "
+                         + "; ".join(narrow) + ". Each yield reading averages the crop "
+                         "across the header, so yield change across the spacing is "
+                         "largely smoothed out, completely so when the passes run "
+                         "parallel to the laterals. A difference found here is then more "
+                         "likely a difference between passes than a drainage effect. "
+                         "(Assumes the width column is in the network's units.)</span>")
         if res["spatial"] and not all(res["has_passes"]):
             lines.append("<span style='color:#a00'>No harvest pass column for every field: "
                          "if the laterals run parallel to the harvest passes, differences "

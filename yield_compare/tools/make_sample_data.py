@@ -282,7 +282,7 @@ def network_records(fields_):
             geoms.append([np.vstack([a, b])])
             recs.append((k, k, "main", float(np.hypot(*(b - a))), sp, size, 2, f["name"]))
     fields = [("id", "N", 6, 0), ("pipe_id", "N", 6, 0), ("kind", "C", 10, 0),
-              ("length", "N", 10, 2), ("DRAIN_SPACE", "N", 5, 0), ("NOMINAL", "N", 4, 0),
+              ("length", "N", 10, 2), ("DRAIN_SPAC", "N", 5, 0), ("NOMINAL", "N", 4, 0),
               ("TILE_ORDER", "N", 3, 0), ("field", "C", 20, 0)]
     return geoms, fields, recs
 
@@ -325,7 +325,7 @@ def main():
         r = np.vstack([b, b[:1]])
         area = 0.5 * np.sum(r[:-1, 0] * r[1:, 1] - r[1:, 0] * r[:-1, 1])
         return r[::-1] if area > 0 else r
-    bfields = [("name", "C", 20, 0), ("acres", "N", 8, 2), ("DRAIN_SPACE", "N", 5, 0)]
+    bfields = [("name", "C", 20, 0), ("acres", "N", 8, 2), ("DRAIN_SPAC", "N", 5, 0)]
     brecs = []
     for f in (fA, fB):
         r = ring(f["boundary"])
