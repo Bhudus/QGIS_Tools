@@ -861,7 +861,8 @@ def analyse(f1, f2, regression=False, rls=False, rls_iter=500, spatial=True,
 
     f1/f2: dicts with keys y, x, xy (arrays from prepare), exceed_prob and,
     for the distance-to-tile analysis, d (distance of each point to the
-    nearest tile line).  distance: dict(reach=..., n_bins=...) or None.
+    nearest tile line).  distance: dict(reach=..., n_bins=...) or None;
+    reach is half the drain spacing, one value or one per field.
     spatial: correct every test for spatial autocorrelation (needs xy).
     """
     s1 = field_statistics(f1["y"], f1.get("x"), regression, rls, rls_iter,
@@ -956,13 +957,15 @@ def analyse(f1, f2, regression=False, rls=False, rls_iter=500, spatial=True,
     # distance to tile
     if distance:
         out["distance"] = []
-        for f, s in ((f1, s1), (f2, s2)):
+        reach = distance["reach"]
+        reaches = tuple(reach) if isinstance(reach, (tuple, list)) else (reach, reach)
+        for f, s, reach_f in ((f1, s1, reaches[0]), (f2, s2, reaches[1])):
             if f.get("d") is None:
                 out["distance"].append(None)
                 continue
             model = s["spatial"]["model"] if use_sp else None
             out["distance"].append(distance_profile(
-                f["y"], f["d"], f.get("xy"), distance["reach"],
+                f["y"], f["d"], f.get("xy"), reach_f,
                 distance.get("n_bins", 8), s["mean"], model, use_sp, f.get("g")))
     return out
 

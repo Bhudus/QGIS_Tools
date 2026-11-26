@@ -7,8 +7,35 @@ Compares crop yields from two yield-monitor point layers (two fields, two years 
    In QGIS: **Plugins → Manage and Install Plugins… → Install from ZIP**, then choose the zip.
 2. Open it from **Vector → Tile Drainage → Compare Field Yields…** or the toolbar icon.
 
+## Try it with the sample fields
+Click **Load sample fields** at the top of the dialog, then **Calculate Statistics**. This adds two bundled fields, their tile networks and boundaries to the project in a group, and fills in the dialog (yield and pass columns, network, drain spacings).
+
+The sample fields are **synthetic**. They are not, and are not derived from, any real field, and they sit on a made-up local grid in feet (the `.prj` is a local coordinate system), so they have no real-world location and no background map lines up with them. Open them in a new project. If QGIS asks for a coordinate system, choose *No CRS*.
+
+| | Sample Field A (29 ac) | Sample Field B (24 ac) |
+|---|---|---|
+| Laterals | East–west, **100 ft** apart: too wide for the soil | North–south, **60 ft** apart: well drained |
+| Built-in drainage effect | Yield loss grows with distance from the tile, 22 bu/ac midway | 3 bu/ac midway; untiled wet north-east corner about 30 bu/ac lower |
+| Harvest passes | 30 ft, parallel to the laterals (1° off) | 30 ft, parallel to the laterals (1.5° off) |
+
+Both fields also have the other features of real yield-monitor data:
+* a random offset for each pass (sd 5 bu/ac)
+* flow-delay smoothing along the pass
+* low readings at the start of each pass
+* a few spikes
+* soil patches at two scales
+* a gentle trend across the field
+
+What the plugin finds with the defaults and **Reset from tails** at 1 %:
+* **Field A:** midway yield is **16 bu/ac (8 %) lower** than over the tile (95 % CI 7 to 25 lower, p ≈ 0.007). The spacing is too wide.
+* **Field B:** no difference between midway and over the tile (−0.3 bu/ac, CI −4.0 to +3.5). The untiled corner (*Beyond reach*) is about 19 bu/ac lower than the tiled area. It is about 30 bu/ac lower in its core; the average includes the edge of the corner, where the loss is still building.
+* **Field A vs Field B:** Field A averages 9 bu/ac less, but the interval (−24.5 to +6.6) includes zero. With soil patches hundreds of feet across, each field carries the information of only a handful of independent points, so a difference in field means of this size can't be told apart from soil differences. Untick *Allow for spatial autocorrelation* to see how confidently the ordinary test (p < 10⁻²⁰⁰) would claim otherwise.
+* **Without the pass column**, Field A's interval narrows to 14–18 bu/ac: overconfident, because the pass offsets are ignored.
+
+`tools/make_sample_data.py` (in the repository, not in the plugin zip) regenerates the sample files and documents exactly how they were built.
+
 ## Use
-1. Load the two yield layers into QGIS (e.g. `fd_North-2007.shp`).
+1. Load the two yield layers into QGIS.
 2. Pick each one as **Field 1** / **Field 2**. Choose the yield column (a `Yld…` column is picked automatically) and an optional scale factor, and the **harvest pass column** (a column with "pass" in its name, such as `Pass_Num`, is picked automatically).
 3. Leave **Allow for spatial autocorrelation** ticked (see below).
 4. Optional:
@@ -49,9 +76,9 @@ The Equivalence tests tab also shows the p-value ignoring autocorrelation, for c
 * The correlation is assumed the same in all directions apart from the pass terms.
 
 ## Yield vs distance to tile
-Tick **Yield vs distance to tile**, choose the tile network layer and check the **drain spacing**.
-* For an Illini Subsurface Drain Layout network the spacing is read from `DRAIN_SPACE`, and **Laterals only** uses `kind = 'lateral'`.
-* Any line layer works.
+Tick **Yield vs distance to tile**, choose the tile network layer and check the **drain spacing of each field**. Comparing two spacings is often the point, so each field has its own.
+* For an Illini Subsurface Drain Layout network, each field's spacing is read from `DRAIN_SPACE` of the laterals within that field, and **Laterals only** uses `kind = 'lateral'`.
+* Any line layer works. One layer can hold the networks of both fields.
 
 For each yield point the plugin finds the distance to the nearest tile line (QGIS spatial index, in a projected CRS: the network's, or UTM if the layers are in latitude/longitude). It then reports:
 * **Yield in distance bands** from the tile out to half the drain spacing, plotted with 95 % confidence intervals.
@@ -101,4 +128,8 @@ Most of these are bugs in the original that were fixed. With **Allow for spatial
 * `stats_core.py`: all statistics (pure Python + numpy, no QGIS dependency; replaces the ALGLIB `.bas` modules)
 * `dialog.py`: user interface, tile distances, map styling, plots, export
 * `plugin.py`, `__init__.py`, `metadata.txt`, `icon.png`: QGIS plugin plumbing
-* `tests/test_stats_core.py`: checks of the statistics on synthetic fields (run with `python tests/test_stats_core.py`; needs numpy only)
+* `sample_data/`: the two synthetic sample fields (yield points), their tile networks and boundaries
+* `tests/test_stats_core.py`: checks of the statistics on synthetic fields (run with `python tests/test_stats_core.py`; needs numpy only). In the repository only.
+* `tools/make_sample_data.py`: regenerates `sample_data/`. In the repository only.
+
+Layers on a local grid (an engineering CRS, or no CRS) are analysed in their own units. Layers in latitude/longitude are projected to UTM for distances.

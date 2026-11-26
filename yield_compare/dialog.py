@@ -4,15 +4,17 @@
 import csv
 import html
 import math
+import os
 
 import numpy as np
-from qgis.core import (Qgis, QgsCoordinateReferenceSystem,
+from qgis.core import (Qgis, QgsCategorizedSymbolRenderer, QgsCoordinateReferenceSystem,
                        QgsCoordinateTransform, QgsFeature, QgsFeatureRequest,
                        QgsFieldProxyModel, QgsGeometry,
                        QgsGraduatedSymbolRenderer, QgsMapLayerProxyModel,
                        QgsMarkerSymbol, QgsPointXY, QgsProject,
                        QgsRendererRange, QgsSpatialIndex, QgsSymbol,
-                       QgsUnitTypes, QgsVectorLayer)
+                       QgsUnitTypes, QgsVectorLayer, QgsFillSymbol, QgsLineSymbol,
+                       QgsRendererCategory, QgsSingleSymbolRenderer)
 from qgis.gui import QgsColorButton, QgsFieldComboBox, QgsMapLayerComboBox
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QColor
@@ -107,20 +109,33 @@ def fmt_ci(d, nd=1):
 
 
 def unit_name(crs):
+    """Name of the CRS's distance units ("map units" when unknown)."""
+    if crs is None or not crs.isValid():
+        return "map units"
     try:
-        return QgsUnitTypes.toString(crs.mapUnits())
+        name = QgsUnitTypes.toString(crs.mapUnits())
     except Exception:
         return "map units"
+    return name if name and "unknown" not in name.lower() else "map units"
 
 
 def working_crs(layers, network=None):
-    """A projected CRS for distances: the network's, a field layer's, or UTM."""
-    for lyr in ([network] if network else []) + layers:
-        if lyr is not None and lyr.crs().isValid() and not lyr.crs().isGeographic():
-            return lyr.crs()
-    lyr = next((l for l in layers if l is not None), None)
-    if lyr is None:
+    """A projected CRS for distances: the network's, a field layer's, or UTM.
+
+    Layers on a local grid (an engineering CRS such as the bundled sample
+    fields, or no CRS at all) are used as they are: QGIS does not transform
+    between unknown or identical CRSs, so their coordinates pass through.
+    """
+    cands = [l for l in ([network] if network else []) + list(layers) if l is not None]
+    if not any(l is not None for l in layers):
         raise ValueError("Choose a layer for Field 1 and Field 2.")
+    for lyr in cands:
+        if not lyr.crs().isValid():
+            return lyr.crs()
+    for lyr in cands:
+        if not lyr.crs().isGeographic():
+            return lyr.crs()
+    lyr = next(l for l in layers if l is not None)
     wgs = QgsCoordinateReferenceSystem("EPSG:4326")
     ext = QgsCoordinateTransform(lyr.crs(), wgs, QgsProject.instance()) \
         .transformBoundingBox(lyr.extent())
@@ -354,6 +369,16 @@ class YieldCompareDialog(QDialog):
         lv = QVBoxLayout(left)
         self.f1 = FieldPanel("Field 1")
         self.f2 = FieldPanel("Field 2")
+        self.btn_samples = QPushButton("Load sample fields")
+        self.btn_samples.setToolTip(
+            "Add the two bundled synthetic fields and their tile networks to the project "
+            "and fill in this dialog. The fields are made up and sit on a local grid "
+            "with no real-world location.")
+        top = QHBoxLayout()
+        top.addWidget(QLabel("New to Yield Compare?"))
+        top.addWidget(self.btn_samples)
+        top.addStretch(1)
+        lv.addLayout(top)
         lv.addWidget(self.f1)
         lv.addWidget(self.f2)
 
@@ -426,13 +451,8 @@ class YieldCompareDialog(QDialog):
         self.chk_laterals = QCheckBox("Laterals only (kind = 'lateral')")
         self.chk_laterals.setChecked(True)
         self.chk_net_sel = QCheckBox("Selected lines only")
-        self.spacing = QDoubleSpinBox()
-        self.spacing.setRange(0.0, 1e6)
-        self.spacing.setDecimals(1)
-        self.spacing.setValue(0.0)
-        self.spacing.setToolTip("Drain (lateral) spacing. Filled in from DRAIN_SPACE "
-                                "for Illini networks. Points more than half a spacing "
-                                "from any tile count as beyond the reach of the tile.")
+        self.spacing1 = self._spacing_box()
+        self.spacing2 = self._spacing_box()
         self.spacing_units = QLabel("")
         self.bands = QSpinBox()
         self.bands.setRange(3, 30)
@@ -441,11 +461,13 @@ class YieldCompareDialog(QDialog):
         dg.addWidget(self.network, 0, 1, 1, 2)
         dg.addWidget(self.chk_laterals, 1, 0, 1, 3)
         dg.addWidget(self.chk_net_sel, 2, 0, 1, 3)
-        dg.addWidget(QLabel("Drain spacing"), 3, 0)
-        dg.addWidget(self.spacing, 3, 1)
-        dg.addWidget(self.spacing_units, 3, 2)
-        dg.addWidget(QLabel("Distance bands"), 4, 0)
-        dg.addWidget(self.bands, 4, 1)
+        dg.addWidget(QLabel("Drain spacing, Field 1"), 3, 0)
+        dg.addWidget(self.spacing1, 3, 1)
+        dg.addWidget(self.spacing_units, 3, 2, 2, 1)
+        dg.addWidget(QLabel("Drain spacing, Field 2"), 4, 0)
+        dg.addWidget(self.spacing2, 4, 1)
+        dg.addWidget(QLabel("Distance bands"), 5, 0)
+        dg.addWidget(self.bands, 5, 1)
         lv.addWidget(dist)
 
         sty = QGroupBox("Map colouring")
@@ -529,11 +551,14 @@ class YieldCompareDialog(QDialog):
         self.chk_rls.toggled.connect(self._update_enabled)
         self.chk_con.toggled.connect(self._update_enabled)
         self.btn_calc.clicked.connect(self.calculate)
+        self.btn_samples.clicked.connect(self.load_samples)
         self.btn_trim.clicked.connect(self.reset_thresholds)
         self.btn_clear_thr.clicked.connect(self._clear_thresholds)
         self.btn_export.clicked.connect(self.export_report)
         self.btn_close.clicked.connect(self.close)
         self.network.layerChanged.connect(self._network_changed)
+        self.f1.layer.layerChanged.connect(lambda *_: self._fill_spacing())
+        self.f2.layer.layerChanged.connect(lambda *_: self._fill_spacing())
         for p in (self.f1, self.f2):
             p.yield_field.fieldChanged.connect(self._clear_thresholds)
             p.layer.layerChanged.connect(self._clear_thresholds)
@@ -547,6 +572,18 @@ class YieldCompareDialog(QDialog):
         s.setRange(-BIG, BIG)
         s.setDecimals(4)
         s.setValue(v)
+        return s
+
+    @staticmethod
+    def _spacing_box():
+        s = QDoubleSpinBox()
+        s.setRange(0.0, 1e6)
+        s.setDecimals(1)
+        s.setValue(0.0)
+        s.setToolTip("Drain (lateral) spacing in this field. Filled in from DRAIN_SPACE "
+                     "of the laterals within the field, for Illini networks. Points more "
+                     "than half a spacing from any tile count as beyond the reach of the "
+                     "tile.")
         return s
 
     @staticmethod
@@ -609,32 +646,121 @@ class YieldCompareDialog(QDialog):
         if lyr is None:
             self.spacing_units.setText("")
             return
-        crs = lyr.crs() if not lyr.crs().isGeographic() else \
-            QgsCoordinateReferenceSystem("EPSG:3857")
-        units = unit_name(crs) if not lyr.crs().isGeographic() else "meters"
-        self.spacing_units.setText(units)
+        geo = lyr.crs().isValid() and lyr.crs().isGeographic()
+        self.spacing_units.setText("meters" if geo else unit_name(lyr.crs()))
         has_kind = lyr.fields().indexFromName("kind") >= 0
         self.chk_laterals.setEnabled(has_kind)
         self.chk_laterals.setChecked(has_kind)
-        i = lyr.fields().indexFromName("DRAIN_SPACE")
+        self._fill_spacing()
+
+    def _fill_spacing(self):
+        """Each field's spacing: median DRAIN_SPACE (feet) of the laterals within
+        the field's extent, converted to the network's units."""
+        net = self.network.currentLayer()
+        if net is None:
+            return
+        i = net.fields().indexFromName("DRAIN_SPACE")
         if i < 0:
             return
-        vals = []
-        req = QgsFeatureRequest()
-        req.setFlags(NO_GEOMETRY)
-        req.setSubsetOfAttributes([i])
-        for f in lyr.getFeatures(req):
-            v = sc._num(f[i])
-            if v and v > 0:
-                vals.append(v)
-        if vals:
-            ft = float(np.median(vals))
+        crs = net.crs()
+        if crs.isValid() and crs.isGeographic():
+            fac = 1.0 / 3.28084                     # spacing shown in meters
+        elif not crs.isValid():
+            fac = 1.0                               # unknown units: assume feet
+        else:
             try:
-                fac = 0.3048 if lyr.crs().isGeographic() else \
-                    QgsUnitTypes.fromUnitToUnitFactor(UNIT_FEET, crs.mapUnits())
+                fac = QgsUnitTypes.fromUnitToUnitFactor(UNIT_FEET, crs.mapUnits())
             except Exception:
                 fac = 1.0
-            self.spacing.setValue(ft * fac)
+        laterals = net.fields().indexFromName("kind") >= 0
+
+        def median_spacing(rect=None):
+            req = QgsFeatureRequest()
+            if rect is not None:
+                req.setFilterRect(rect)
+            if laterals:
+                req.setFilterExpression("\"kind\" = 'lateral'")
+            vals = [v for v in (sc._num(f[i]) for f in net.getFeatures(req)) if v and v > 0]
+            return float(np.median(vals)) if vals else None
+
+        overall = median_spacing()
+        for panel, box in ((self.f1, self.spacing1), (self.f2, self.spacing2)):
+            ft = None
+            lyr = panel.layer.currentLayer()
+            if lyr is not None:
+                try:
+                    rect = QgsCoordinateTransform(lyr.crs(), crs, QgsProject.instance()) \
+                        .transformBoundingBox(lyr.extent())
+                    ft = median_spacing(rect)
+                except Exception:
+                    ft = None
+            ft = ft or overall
+            if ft:
+                box.setValue(ft * fac)
+
+    def load_samples(self):
+        """Load the bundled synthetic sample fields and set up the dialog."""
+        folder = os.path.join(os.path.dirname(__file__), "sample_data")
+        specs = [("sample_field_A_yield", "Sample Field A yield"),
+                 ("sample_field_B_yield", "Sample Field B yield"),
+                 ("sample_field_boundaries", "Sample field boundaries"),
+                 ("sample_tile_networks", "Sample tile networks")]
+        proj = QgsProject.instance()
+        had_layers = bool(proj.mapLayers())
+        root = proj.layerTreeRoot()
+        group = None
+        lyrs = {}
+        for key, title in specs:
+            path = os.path.join(folder, key + ".shp")
+            lyr = next((l for l in proj.mapLayers().values()
+                        if isinstance(l, QgsVectorLayer) and
+                        os.path.normcase(os.path.abspath(l.source().split("|")[0])) ==
+                        os.path.normcase(os.path.abspath(path))), None)
+            if lyr is None:
+                lyr = QgsVectorLayer(path, title, "ogr")
+                if not lyr.isValid():
+                    QMessageBox.warning(self, "Yield Compare",
+                                        f"Could not load the sample layer {path}.")
+                    return
+                if group is None:
+                    group = root.findGroup("Yield Compare sample fields") or \
+                        root.insertGroup(0, "Yield Compare sample fields")
+                proj.addMapLayer(lyr, False)
+                group.insertLayer(0, lyr)
+                if key == "sample_tile_networks":
+                    cats = []
+                    for kind, color, width, label in (("main", "185,28,28", "0.9", "Main"),
+                                                      ("lateral", "37,99,235", "0.4",
+                                                       "Lateral")):
+                        sym = QgsLineSymbol.createSimple({"color": color, "width": width})
+                        cats.append(QgsRendererCategory(kind, sym, label))
+                    lyr.setRenderer(QgsCategorizedSymbolRenderer("kind", cats))
+                elif key == "sample_field_boundaries":
+                    lyr.setRenderer(QgsSingleSymbolRenderer(QgsFillSymbol.createSimple(
+                        {"color": "0,0,0,0", "outline_color": "40,40,40",
+                         "outline_width": "0.5"})))
+            lyrs[key] = lyr
+        a, b = lyrs["sample_field_A_yield"], lyrs["sample_field_B_yield"]
+        if not had_layers or not proj.crs().isValid() or proj.crs().isGeographic():
+            proj.setCrs(a.crs())
+        self.f1.layer.setLayer(a)
+        self.f2.layer.setLayer(b)
+        self.network.setLayer(lyrs["sample_tile_networks"])
+        self.chk_spatial.setChecked(True)
+        self.grp_dist.setChecked(True)
+        try:
+            ext = QgsCoordinateTransform(a.crs(), proj.crs(), proj) \
+                .transformBoundingBox(lyrs["sample_field_boundaries"].extent())
+            canvas = self.iface.mapCanvas()
+            canvas.setExtent(ext.buffered(0.05 * ext.width()))
+            canvas.refresh()
+        except Exception:
+            pass
+        self.iface.messageBar().pushInfo(
+            "Yield Compare",
+            "Sample fields loaded (synthetic, on a local grid with no real location). "
+            "Field A: laterals 100 ft apart, too wide for the soil. Field B: laterals "
+            "60 ft apart with an untiled corner. Click Calculate Statistics.")
 
     def _clear_thresholds(self, *args):
         self.lthresh.setValue(0.0)
@@ -671,8 +797,9 @@ class YieldCompareDialog(QDialog):
             net = self.network.currentLayer() if use_dist else None
             if use_dist and net is None:
                 raise ValueError("Yield vs distance to tile: choose the tile network layer.")
-            if use_dist and self.spacing.value() <= 0:
-                raise ValueError("Yield vs distance to tile: enter the drain spacing.")
+            if use_dist and min(self.spacing1.value(), self.spacing2.value()) <= 0:
+                raise ValueError("Yield vs distance to tile: enter the drain spacing "
+                                 "for each field.")
             crs = None
             if spatial or use_dist:
                 crs = working_crs([self.f1.layer.currentLayer(),
@@ -685,13 +812,17 @@ class YieldCompareDialog(QDialog):
             f1 = {"y": y1, "x": x1, "xy": xy1, "g": g1, "exceed_prob": self.f1.exceed.value()}
             f2 = {"y": y2, "x": x2, "xy": xy2, "g": g2, "exceed_prob": self.f2.exceed.value()}
             distance = None
-            reach = 0.0
+            reach = (0.0, 0.0)
             if use_dist:
-                # spacing is in the network CRS units; convert to the working CRS
-                reach = self.spacing.value() / 2.0
-                if not net.crs().isGeographic() and net.crs() != crs:
-                    reach *= QgsUnitTypes.fromUnitToUnitFactor(net.crs().mapUnits(),
-                                                               crs.mapUnits())
+                # spacing is in the network's units (meters if geographic);
+                # convert to the working CRS
+                fac = 1.0
+                if net.crs().isValid() and crs.isValid() and net.crs() != crs:
+                    src = _first(lambda: Qgis.DistanceUnit.Meters,
+                                 lambda: QgsUnitTypes.DistanceMeters) \
+                        if net.crs().isGeographic() else net.crs().mapUnits()
+                    fac = QgsUnitTypes.fromUnitToUnitFactor(src, crs.mapUnits())
+                reach = (self.spacing1.value() / 2.0 * fac, self.spacing2.value() / 2.0 * fac)
                 f1["d"], f2["d"] = tile_distances(net, self.chk_laterals.isChecked()
                                                   and self.chk_laterals.isEnabled(),
                                                   self.chk_net_sel.isChecked(), crs,
@@ -924,10 +1055,13 @@ class YieldCompareDialog(QDialog):
         if not res["spatial"]:
             lines.append("<span style='color:#a00'>Spatial autocorrelation is ignored: "
                          "p-values will be far too small.</span>")
-        reach = res["settings"]["reach"]
-        lines.append(f"<span style='color:#555'>Over the tile = within {reach / 4:.1f} "
-                     f"{res['units']} of a tile line; midway = {0.75 * reach:.1f} to "
-                     f"{reach:.1f} {res['units']} (half the drain spacing).</span>")
+        u = res["units"]
+        parts = []
+        for lbl, r in zip(res["labels"], res["settings"]["reach"]):
+            parts.append(f"{html.escape(lbl)}: over the tile = within {r / 4:.1f} {u} of a "
+                         f"tile line, midway = {0.75 * r:.1f} to {r:.1f} {u} (half the "
+                         f"{2 * r:.0f}-{singular(u)} spacing)")
+        lines.append("<span style='color:#555'>" + "; ".join(parts) + ".</span>")
         return "<br>".join(lines)
 
     def _fill_distance(self, res):
@@ -952,11 +1086,14 @@ class YieldCompareDialog(QDialog):
             fig._canvas.draw_idle()
             return
         ax = fig.add_subplot(111)
-        reach = res["settings"]["reach"]
-        ax.axvspan(0, reach / 4, color="#2563eb", alpha=0.07, lw=0)
-        ax.axvspan(0.75 * reach, reach, color="#dc2626", alpha=0.07, lw=0)
+        reaches = res["settings"]["reach"]
+        same = abs(reaches[0] - reaches[1]) < 1e-6 * max(reaches)
         colors = ("#1d4ed8", "#c2410c")
-        for k, (prof, lbl) in enumerate(zip(res["distance"], res["labels"])):
+        if same:
+            r = reaches[0]
+            ax.axvspan(0, r / 4, color="#2563eb", alpha=0.07, lw=0)
+            ax.axvspan(0.75 * r, r, color="#dc2626", alpha=0.07, lw=0)
+        for k, (prof, lbl, r) in enumerate(zip(res["distance"], res["labels"], reaches)):
             if prof is None or "error" in prof:
                 continue
             bins = [b for b in prof["bins"] if math.isfinite(b["mean"])]
@@ -964,16 +1101,19 @@ class YieldCompareDialog(QDialog):
             ys = [b["mean"] for b in bins]
             es = [b["ci"] if math.isfinite(b["ci"]) else 0 for b in bins]
             ax.errorbar(xs, ys, yerr=es, color=colors[k], marker="o", capsize=3,
-                        lw=1.5, label=lbl)
+                        lw=1.5, label=f"{lbl} (spacing {2 * r:.0f})")
             t = prof.get("trend")
             if t:
-                ax.plot([0, reach], [t["intercept"], t["intercept"] + t["slope"] * reach],
+                ax.plot([0, r], [t["intercept"], t["intercept"] + t["slope"] * r],
                         color=colors[k], ls="--", lw=1, alpha=0.7)
-        ax.set_xlim(0, reach)
+            if not same:
+                ax.axvline(r, color=colors[k], ls=":", lw=1)
+        ax.set_xlim(0, max(reaches))
         ax.set_xlabel(f"Distance to nearest tile ({res['units']})")
         ax.set_ylabel(f"Mean yield ({res['ynames'][0]})")
-        ax.set_title("Yield across the drain spacing  (shaded: over tile | midway)",
-                     fontsize=10)
+        ax.set_title("Yield across the drain spacing  " +
+                     ("(shaded: over tile | midway)" if same
+                      else "(dotted: midway, half of each field's spacing)"), fontsize=10)
         ax.text(0.01, 0.01, "Error bars: 95 % CI of each band's difference from the "
                 "average within reach" + (", allowing for spatial autocorrelation"
                                           if res["spatial"] else ""),
@@ -1157,7 +1297,8 @@ class YieldCompareDialog(QDialog):
             if res.get("distance"):
                 w.writerow([])
                 w.writerow(["Yield vs distance to tile", f"network: {st['network']}",
-                            f"half spacing: {st['reach']:.2f} {res['units']}"])
+                            f"half spacing: {st['reach'][0]:.2f} / {st['reach'][1]:.2f} "
+                            f"{res['units']}"])
                 w.writerow(["Result", "Field 1", "Field 2"])
                 w.writerows(self._distance_rows(res))
                 w.writerow([])
