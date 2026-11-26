@@ -1,6 +1,6 @@
 # Yield Compare: QGIS plugin
 
-Compares crop yields from two yield-monitor point layers (two fields, two years or two treatments), and checks whether yield drops midway between tile drains. Started as a QGIS 3.22+ / QGIS 4 port of the University of Illinois VB6 + MapWinGIS **Yield Statistics** program (`prjYields.vbp`).
+Compares crop yields from two or more yield-monitor point layers (up to 8 fields, years or treatments), and checks whether yield drops midway between tile drains. Started as a QGIS 3.22+ / QGIS 4 port of the University of Illinois VB6 + MapWinGIS **Yield Statistics** program (`prjYields.vbp`).
 
 ## Install
 1. Download [`yield_compare.zip`](https://github.com/Bhudus/QGIS_Tools/raw/main/yield_compare/yield_compare.zip).
@@ -35,8 +35,8 @@ What the plugin finds with the defaults and **Reset from tails** at 1 %:
 `tools/make_sample_data.py` (in the repository, not in the plugin zip) regenerates the sample files and documents exactly how they were built.
 
 ## Use
-1. Load the two yield layers into QGIS.
-2. Pick each one as **Field 1** / **Field 2**. Choose the yield column (a `Yld…` column is picked automatically) and an optional scale factor, and the **harvest pass column** (a column with "pass" in its name, such as `Pass_Num`, is picked automatically).
+1. Load the yield layers into QGIS.
+2. Pick each one as **Field 1**, **Field 2**, … (**Add field** for a third and more, up to 8; **Remove** to drop one). For each, choose the yield column (a `Yld…` column is picked automatically) and an optional scale factor, and the **harvest pass column** (a column with "pass" in its name, such as `Pass_Num`, is picked automatically).
 3. Leave **Allow for spatial autocorrelation** ticked (see below).
 4. Optional:
    * **Perform regression analysis**: yield against a regressor column (moisture, elevation, speed…), by least squares or **reweighted least squares**.
@@ -65,20 +65,38 @@ For each field the plugin removes a planar trend and fits a correlation model wi
 Each spatial part is kept only if a permutation test (99 shuffles, 1 % level) finds it, so random noise is left alone.
 
 The model is then used two ways:
-* **Comparing the two fields** (means, medians, variances, histograms) uses the *effective number of independent points* (`n_eff`). The Statistics tab shows it: typically about 100 for a 4,000-point field.
+* **Comparing fields** (means, medians, variances, histograms) uses the *effective number of independent points* (`n_eff`). The Statistics tab shows it: typically about 100 for a 4,000-point field.
 * **Comparisons within a field** (over vs between drains, regression slopes) use the variance of the contrast computed from the model. Patches of good or poor ground that both groups share then cancel out, as they should.
 
 The Equivalence tests tab also shows the p-value ignoring autocorrelation, for comparison with the VB6 program.
 
 **Limits:**
-* The two fields are treated as independent. For the same field in two years, the shared soil pattern makes the test conservative.
+* The fields are treated as independent of each other. For the same field in two years, the shared soil pattern makes the test conservative.
 * Pass effects are treated as independent of each other.
 * The correlation is assumed the same in all directions apart from the pass terms.
+
+## Comparing three or more fields
+With two fields the results are the two-field tests above. With three or more, the **Equivalence tests** tab shows:
+* **Tests across all fields**: whether all the fields share the same
+  * mean (Welch's ANOVA, which allows unequal variances)
+  * median (the same test on medians with robust standard deviations)
+  * variance (Bartlett's test)
+  * histogram (χ² test of homogeneity on 30 common bins)
+  * regression slope (an F test of equal slopes)
+
+  Each allows for spatial autocorrelation through every field's effective number of points, and each also shows the p-value ignoring autocorrelation.
+* **Pairwise comparisons**: for every pair of fields, the difference in mean yield with its 95 % confidence interval, and the p-values of the four (or five) two-field tests. The p-values are **adjusted for the number of pairs** (Holm's method): with 4 fields there are 6 pairs, and without the adjustment a "difference" would turn up by chance far more often than 5 % of the time.
+* A plain-language summary: whether mean yields differ, the fields ranked by mean yield, and which pairs differ.
+
+In tests on four identical but patchy synthetic fields, the overall test flagged a difference in 1 run of 25, and so did the pairwise comparisons; ignoring autocorrelation flagged every run. When one field was 15 bu/ac higher, the overall test found it every time, and the pairs flagged were exactly those involving that field.
+
+Two fields can share a layer, for example two parts of one field chosen with **Selected features only**, or two layers can come from the same field in different years.
 
 ## Yield vs distance to tile
 Tick **Yield vs distance to tile**, choose the tile network layer and check the **drain spacing of each field**. Comparing two spacings is often the point, so each field has its own.
 * For an Illini Subsurface Drain Layout network, each field's spacing is read from `DRAIN_SPACE` of the laterals within that field, and **Laterals only** uses `kind = 'lateral'`.
-* Any line layer works. One layer can hold the networks of both fields.
+* Any line layer works. One layer can hold the networks of every field.
+* With two or more fields, the tab also tests whether the **midway loss is the same in every field**, as a percentage of yield over the tile. This answers questions such as "is the loss worse at 100 ft spacing than at 60 ft?". The test is an F test that allows for each field's uncertainty, including how few effective points each estimate rests on.
 
 For each yield point the plugin finds the distance to the nearest tile line (QGIS spatial index, in a projected CRS: the network's, or UTM if the layers are in latitude/longitude). It then reports:
 * **Yield in distance bands** from the tile out to half the drain spacing, plotted with 95 % confidence intervals.

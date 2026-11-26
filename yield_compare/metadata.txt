@@ -3,9 +3,9 @@ name=Yield Compare
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 supportsQt6=True
-description=Statistically compare crop yields from two yield-monitor point layers, allowing for spatial autocorrelation, and test whether yield drops midway between tile drains.
-about=Choose two point layers (e.g. yield-monitor shapefiles) with a yield column and, ideally, the harvest pass column. Reports descriptive, non-parametric and robust statistics, normality tests and exceedance values, and tests whether the two have equal means, medians, variances and histograms, with the difference in mean yield and its 95% confidence interval. Every test allows for spatial autocorrelation (a variogram-based correlation model with harvest-pass effects), so p-values are honest for yield-monitor data. Yield vs distance to tile: with a tile network (e.g. from Illini Subsurface Drain Layout), compares yield over the tile with yield midway between laterals, in distance bands across the drain spacing, and beyond the reach of the tile. Optional least-squares and reweighted regression of yield against another column, with slope tests. Colours both layers by yield. Includes two synthetic sample fields with tile networks (Load sample fields). Opens from Vector → Tile Drainage → Compare Field Yields. Started as a port of the University of Illinois VB6 Yield Statistics program.
-version=0.3.0
+description=Statistically compare crop yields from two or more yield-monitor point layers, allowing for spatial autocorrelation, and test whether yield drops midway between tile drains.
+about=Choose two or more (up to 8) point layers (e.g. yield-monitor shapefiles) with a yield column and, ideally, the harvest pass column. Reports descriptive, non-parametric and robust statistics, normality tests and exceedance values, and tests whether the fields have equal means, medians, variances and histograms, with the difference in mean yield and its 95% confidence interval; with three or more fields, tests across all fields plus pairwise comparisons adjusted for the number of pairs (Holm). Every test allows for spatial autocorrelation (a variogram-based correlation model with harvest-pass effects), so p-values are honest for yield-monitor data. Yield vs distance to tile: with a tile network (e.g. from Illini Subsurface Drain Layout), compares yield over the tile with yield midway between laterals, in distance bands across the drain spacing, and beyond the reach of the tile. Optional least-squares and reweighted regression of yield against another column, with slope tests. Colours both layers by yield. Includes two synthetic sample fields with tile networks (Load sample fields). Opens from Vector → Tile Drainage → Compare Field Yields. Started as a port of the University of Illinois VB6 Yield Statistics program.
+version=0.4.0
 author=Richard Cooke
 email=raccooke@gmail.com
 
@@ -13,7 +13,8 @@ tracker=https://github.com/Bhudus/QGIS_Tools/issues
 repository=https://github.com/Bhudus/QGIS_Tools
 homepage=https://bhudus.github.io/QGIS_Tools/
 
-changelog=0.3.0 - Two synthetic sample fields with tile networks and a Load sample fields button. Drain spacing per field, read from DRAIN_SPACE of the laterals within each field. Layers on a local grid (engineering CRS or no CRS) are analysed in their own units.
+changelog=0.4.0 - Compare up to 8 fields: Add field / Remove; tests across all fields (Welch ANOVA, robust Welch ANOVA on medians, Bartlett, chi-square homogeneity, equal slopes), pairwise comparisons with Holm-adjusted p-values, plain-language summary; test of equal midway loss between fields; drain spacing per field in each field panel.
+    0.3.0 - Two synthetic sample fields with tile networks and a Load sample fields button. Drain spacing per field, read from DRAIN_SPACE of the laterals within each field. Layers on a local grid (engineering CRS or no CRS) are analysed in their own units.
     0.2.0 - Spatial autocorrelation: every test and confidence interval allows for it (variogram model with harvest-pass effects, permutation tests for structure); difference in mean yield with 95% CI; Spatial correlation tab. Yield vs distance to tile: yield over the tile vs midway between laterals, distance bands, trend and beyond-reach comparison, with drain spacing and laterals read from Illini networks. Harvest pass column per field.
     0.1.0 - First release: port of the VB6 Yield Statistics program.
 tags=yield,yield monitor,precision agriculture,statistics,comparison,t-test,regression

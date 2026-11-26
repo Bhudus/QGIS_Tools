@@ -855,76 +855,118 @@ def _test(name, stat, df, p, p_naive=None, note=""):
                 p_naive=p if p_naive is None else p_naive, note=note)
 
 
-def analyse(f1, f2, regression=False, rls=False, rls_iter=500, spatial=True,
-            distance=None):
-    """Compare two fields.
+def holm(ps):
+    """Holm step-down adjusted p-values (controls the chance of any false
+    'difference' among several comparisons)."""
+    m = len(ps)
+    order = sorted(range(m), key=lambda i: ps[i])
+    adj = [0.0] * m
+    running = 0.0
+    for rank, i in enumerate(order):
+        running = max(running, min(1.0, (m - rank) * ps[i]))
+        adj[i] = running
+    return adj
 
-    f1/f2: dicts with keys y, x, xy (arrays from prepare), exceed_prob and,
-    for the distance-to-tile analysis, d (distance of each point to the
-    nearest tile line).  distance: dict(reach=..., n_bins=...) or None;
-    reach is half the drain spacing, one value or one per field.
-    spatial: correct every test for spatial autocorrelation (needs xy).
+
+def welch_anova(means, sds, ns):
+    """Welch's heteroscedastic one-way ANOVA.  Returns F, df1, df2, p."""
+    k = len(means)
+    w = np.array([n / (s * s) if s > 0 else 1e12 for s, n in zip(sds, ns)])
+    m = np.asarray(means, float)
+    ns = np.asarray(ns, float)
+    mw = (w * m).sum() / w.sum()
+    a = (w * (m - mw) ** 2).sum() / (k - 1)
+    lam = ((1.0 - w / w.sum()) ** 2 / np.maximum(ns - 1, 1e-9)).sum()
+    F = a / (1.0 + 2.0 * (k - 2) * lam / (k * k - 1))
+    df1, df2 = k - 1.0, (k * k - 1.0) / (3.0 * lam) if lam > 0 else 1e9
+    return float(F), df1, float(df2), max(0.0, 1.0 - f_cdf(F, df1, df2))
+
+
+def bartlett(sds, ns):
+    """Bartlett's test of equal variances (nu_i = n_i - 1).  Returns T, df, p."""
+    nu = np.asarray(ns, float) - 1.0
+    v = np.asarray(sds, float) ** 2
+    N = nu.sum()
+    sp = (nu * v).sum() / N
+    k = len(v)
+    T = (N * math.log(sp) - (nu * np.log(v)).sum()) / \
+        (1.0 + ((1.0 / nu).sum() - 1.0 / N) / (3.0 * (k - 1)))
+    return float(T), k - 1, chi2_sf(T, k - 1)
+
+
+def homogeneity_test(ys, lo, hi, bins=30):
+    """Chi-square test that k samples share one histogram (30 bins)."""
+    edges = np.linspace(lo, hi, bins + 1)
+    counts = [np.histogram(np.clip(y, lo, hi), edges)[0] for y in ys]
+    O = np.array(counts, float)
+    used = O.sum(axis=0) > 0
+    O = O[:, used]
+    E = O.sum(axis=1, keepdims=True) * O.sum(axis=0, keepdims=True) / O.sum()
+    stat = float(((O - E) ** 2 / E).sum())
+    df = max((O.shape[1] - 1) * (len(ys) - 1), 1)
+    return dict(stat=stat, df=df, p=chi2_sf(stat, df), edges=edges, counts=counts)
+
+
+def wald_equal(est, var, dfs=None):
+    """Test that k estimates (with variances) are all equal.
+
+    Without dfs: Wald chi-square with k-1 df.  With dfs (the degrees of
+    freedom behind each variance): the statistic / (k-1) is referred to an
+    F distribution with Satterthwaite denominator df, which allows for the
+    variances themselves being estimated from few effective points (with
+    k = 2 this is Welch's t-test).  Returns stat, df, p.
     """
-    s1 = field_statistics(f1["y"], f1.get("x"), regression, rls, rls_iter,
-                          f1.get("exceed_prob"))
-    s2 = field_statistics(f2["y"], f2.get("x"), regression, rls, rls_iter,
-                          f2.get("exceed_prob"))
-    out = {"field1": s1, "field2": s2, "spatial": False}
-    use_sp = spatial and f1.get("xy") is not None and f2.get("xy") is not None
+    est, var = np.asarray(est, float), np.asarray(var, float)
+    w = 1.0 / var
+    m = (w * est).sum() / w.sum()
+    X = float((w * (est - m) ** 2).sum())
+    k = len(est)
+    if dfs is None:
+        return X, k - 1, chi2_sf(X, k - 1)
+    dfs = np.asarray(dfs, float)
+    d2 = float(var.sum() ** 2 / (var ** 2 / dfs).sum())
+    F = X / (k - 1)
+    return F, f"{k - 1}, {d2:.1f}", max(0.0, 1.0 - f_cdf(F, k - 1, d2))
 
-    # effective numbers of points
+
+def analyse_many(fields, regression=False, rls=False, rls_iter=500, spatial=True,
+                 distance=None):
+    """Compare two or more fields.
+
+    fields: list of dicts with keys y, x, xy, g (arrays from prepare) and
+    exceed_prob, and for the distance-to-tile analysis d (distance of each
+    point to the nearest tile line).  distance: dict(reach=..., n_bins=...)
+    or None; reach is half the drain spacing, one value or one per field.
+    spatial: correct every test for spatial autocorrelation (needs xy).
+
+    Returns dict with
+      fields:  per-field statistics
+      tests:   tests across all fields (with 2 fields, the two-field tests)
+      pairs:   every pair of fields, each test with Holm-adjusted p-values
+      histogram, distance, distance_test, spatial, k
+    """
+    k = len(fields)
+    if k < 2:
+        raise ValueError("Choose at least two fields.")
+    stats = [field_statistics(f["y"], f.get("x"), regression, rls, rls_iter,
+                              f.get("exceed_prob")) for f in fields]
+    use_sp = spatial and all(f.get("xy") is not None for f in fields)
     ne = []
-    for f, s in ((f1, s1), (f2, s2)):
+    for f, s in zip(fields, stats):
         if use_sp:
             sp = spatial_summary(f["xy"], f["y"] - s["mean"], groups=f.get("g"))
             s["spatial"] = sp
             ne.append(sp["n_eff"])
         else:
             ne.append(float(s["n"]))
-    out["spatial"] = use_sp
-    ne1, ne2 = ne
-    n1, n2 = s1["n"], s2["n"]
-    tests = []
+    ns = [float(s["n"]) for s in stats]
+    out = {"fields": stats, "spatial": use_sp, "k": k}
 
-    # means, with the difference and its confidence interval
-    t, df, p = welch(s1["mean"], s1["sd"], ne1, s2["mean"], s2["sd"], ne2)
-    _, _, p0 = welch(s1["mean"], s1["sd"], n1, s2["mean"], s2["sd"], n2)
-    tests.append(_test("Equivalence of means (Welch t)", t, df, p, p0))
-    out["difference"] = mean_difference(s1["mean"], s1["sd"], ne1,
-                                        s2["mean"], s2["sd"], ne2)
-    out["difference"]["pct"] = 100.0 * out["difference"]["diff"] / s2["mean"] \
-        if s2["mean"] else float("nan")
-
-    # medians (robust Welch); robust n scaled by n_eff / n
-    rn1 = s1["robust_n"] * ne1 / n1
-    rn2 = s2["robust_n"] * ne2 / n2
-    t, df, p = welch(s1["median"], s1["robust_sd"], rn1, s2["median"], s2["robust_sd"], rn2)
-    _, _, p0 = welch(s1["median"], s1["robust_sd"], s1["robust_n"],
-                     s2["median"], s2["robust_sd"], s2["robust_n"])
-    tests.append(_test("Equivalence of medians (robust Welch t)", t, df, p, p0))
-
-    # variances
-    f, d1, d2, p = variance_test(s1["sd"], ne1, s2["sd"], ne2)
-    _, _, _, p0 = variance_test(s1["sd"], n1, s2["sd"], n2)
-    tests.append(_test("Equivalence of variances (F)", f, f"{d1:.0f}, {d2:.0f}", p, p0))
-
-    # histograms: statistic scales with 1 / (1/n1 + 1/n2)
-    lo = min(s1["min"], s2["min"])
-    hi = max(s1["max"], s2["max"])
-    h = histogram_test(f1["y"], f2["y"], lo, hi)
-    k = (1.0 / n1 + 1.0 / n2) / (1.0 / ne1 + 1.0 / ne2)
-    h["stat_adj"] = h["stat"] * k
-    h["p_adj"] = chi2_sf(h["stat_adj"], h["df"])
-    out["histogram"] = h
-    tests.append(_test("Equivalence of histograms (χ², 30 bins)", h["stat_adj"],
-                       h["df"], h["p_adj"], h["p"]))
-
-    # regression slopes
+    # regression slopes: each against 0, allowing for autocorrelation
+    key = "rls" if rls else "ols"
+    kind = "reweighted LS" if rls else "least squares"
     if regression:
-        key = "rls" if rls else "ols"
-        kind = "reweighted LS" if rls else "least squares"
-        res_slopes = []
-        for f, s in ((f1, s1), (f2, s2)):
+        for f, s in zip(fields, stats):
             fit = s[key]
             var = df = None
             if use_sp:
@@ -936,37 +978,158 @@ def analyse(f1, f2, regression=False, rls=False, rls_iter=500, spatial=True,
                                   g[keep] if g is not None else None)
                 var, df = spatial_slope(f["xy"], f["x"], resid, model, w, g)
                 fit["spatial_df"] = df
-            res_slopes.append((_slope_test(fit, var, df), _slope_test(fit)))
-        for tag, (adj, naive) in zip(("1", "2"), res_slopes):
-            tests.append(_test(f"Slope, Field {tag} vs 0 ({kind})", adj["t"], adj["df"],
+            s["slope_test"] = (_slope_test(fit, var, df), _slope_test(fit))
+
+    # ---- every pair
+    pairs = []
+    for i in range(k):
+        for j in range(i + 1, k):
+            a, b = stats[i], stats[j]
+            fa, fb = fields[i], fields[j]
+            nea, neb, na, nb = ne[i], ne[j], ns[i], ns[j]
+            t = {}
+            st, df, p = welch(a["mean"], a["sd"], nea, b["mean"], b["sd"], neb)
+            _, _, p0 = welch(a["mean"], a["sd"], na, b["mean"], b["sd"], nb)
+            t["means"] = dict(stat=st, df=df, p=p, p_naive=p0)
+            diff = mean_difference(a["mean"], a["sd"], nea, b["mean"], b["sd"], neb)
+            diff["pct"] = 100.0 * diff["diff"] / b["mean"] if b["mean"] else float("nan")
+            rna, rnb = a["robust_n"] * nea / na, b["robust_n"] * neb / nb
+            st, df, p = welch(a["median"], a["robust_sd"], rna, b["median"], b["robust_sd"], rnb)
+            _, _, p0 = welch(a["median"], a["robust_sd"], a["robust_n"],
+                             b["median"], b["robust_sd"], b["robust_n"])
+            t["medians"] = dict(stat=st, df=df, p=p, p_naive=p0)
+            f_, d1, d2, p = variance_test(a["sd"], nea, b["sd"], neb)
+            _, _, _, p0 = variance_test(a["sd"], na, b["sd"], nb)
+            t["variances"] = dict(stat=f_, df=f"{d1:.0f}, {d2:.0f}", p=p, p_naive=p0)
+            h = histogram_test(fa["y"], fb["y"], min(a["min"], b["min"]),
+                               max(a["max"], b["max"]))
+            fac = (1.0 / na + 1.0 / nb) / (1.0 / nea + 1.0 / neb)
+            h["stat_adj"] = h["stat"] * fac
+            h["p_adj"] = chi2_sf(h["stat_adj"], h["df"])
+            t["histograms"] = dict(stat=h["stat_adj"], df=h["df"], p=h["p_adj"],
+                                   p_naive=h["p"])
+            if regression:
+                (xa, ya), (xb, yb) = a["slope_test"], b["slope_test"]
+                ba, bb = a[key]["slope"], b[key]["slope"]
+
+                def dtest(u, v):
+                    var = u["var"] + v["var"]
+                    t12 = abs(ba - bb) / math.sqrt(var) if var > 0 else 0.0
+                    d12 = u["df"] + v["df"]
+                    return t12, d12, t_two_tailed(t12, d12)
+                st, df, p = dtest(xa, xb)
+                _, _, p0 = dtest(ya, yb)
+                t["slopes"] = dict(stat=st, df=df, p=p, p_naive=p0)
+            pairs.append(dict(i=i, j=j, diff=diff, tests=t, histogram=h))
+    for name in pairs[0]["tests"]:
+        for fld in ("p", "p_naive"):
+            adj = holm([pr["tests"][name][fld] for pr in pairs])
+            for pr, v in zip(pairs, adj):
+                pr["tests"][name][fld + "_adj"] = v
+    out["pairs"] = pairs
+
+    # ---- tests across all fields
+    tests = []
+    if k == 2:
+        t = pairs[0]["tests"]
+        tests.append(_test("Equivalence of means (Welch t)", t["means"]["stat"],
+                           t["means"]["df"], t["means"]["p"], t["means"]["p_naive"]))
+        tests.append(_test("Equivalence of medians (robust Welch t)", t["medians"]["stat"],
+                           t["medians"]["df"], t["medians"]["p"], t["medians"]["p_naive"]))
+        tests.append(_test("Equivalence of variances (F)", t["variances"]["stat"],
+                           t["variances"]["df"], t["variances"]["p"],
+                           t["variances"]["p_naive"]))
+        tests.append(_test("Equivalence of histograms (χ², 30 bins)",
+                           t["histograms"]["stat"], t["histograms"]["df"],
+                           t["histograms"]["p"], t["histograms"]["p_naive"]))
+    else:
+        F, d1, d2, p = welch_anova([s["mean"] for s in stats], [s["sd"] for s in stats], ne)
+        _, _, _, p0 = welch_anova([s["mean"] for s in stats], [s["sd"] for s in stats], ns)
+        tests.append(_test("Equal means, all fields (Welch ANOVA, F)", F,
+                           f"{d1:.0f}, {d2:.1f}", p, p0))
+        rn = [s["robust_n"] * e / n for s, e, n in zip(stats, ne, ns)]
+        F, d1, d2, p = welch_anova([s["median"] for s in stats],
+                                   [s["robust_sd"] for s in stats], rn)
+        _, _, _, p0 = welch_anova([s["median"] for s in stats],
+                                  [s["robust_sd"] for s in stats],
+                                  [s["robust_n"] for s in stats])
+        tests.append(_test("Equal medians, all fields (robust Welch ANOVA, F)", F,
+                           f"{d1:.0f}, {d2:.1f}", p, p0))
+        T, df, p = bartlett([s["sd"] for s in stats], ne)
+        _, _, p0 = bartlett([s["sd"] for s in stats], ns)
+        tests.append(_test("Equal variances, all fields (Bartlett χ²)", T, df, p, p0))
+        h = homogeneity_test([f["y"] for f in fields], min(s["min"] for s in stats),
+                             max(s["max"] for s in stats))
+        fac = sum(1.0 / n for n in ns) / sum(1.0 / e for e in ne)
+        tests.append(_test("Equal histograms, all fields (χ², 30 bins)", h["stat"] * fac,
+                           h["df"], chi2_sf(h["stat"] * fac, h["df"]), h["p"]))
+    if regression:
+        for i, s in enumerate(stats):
+            adj, naive = s["slope_test"]
+            tests.append(_test(f"Slope, Field {i + 1} vs 0 ({kind})", adj["t"], adj["df"],
                                adj["p"], naive["p"]))
-        (a1, n1s), (a2, n2s) = res_slopes
-        b1, b2 = s1[key]["slope"], s2[key]["slope"]
-
-        def diff_test(x1, x2):
-            v = x1["var"] + x2["var"]
-            t12 = abs(b1 - b2) / math.sqrt(v) if v > 0 else 0.0
-            df12 = x1["df"] + x2["df"]
-            return t12, df12, t_two_tailed(t12, df12)
-        t12, df12, p12 = diff_test(a1, a2)
-        _, _, p12n = diff_test(n1s, n2s)
-        tests.append(_test("Slope, Field 1 vs Field 2", t12, df12, p12, p12n))
-
+        if k == 2:
+            t = pairs[0]["tests"]["slopes"]
+            tests.append(_test("Slope, Field 1 vs Field 2", t["stat"], t["df"], t["p"],
+                               t["p_naive"]))
+        else:
+            X, df, p = wald_equal([s[key]["slope"] for s in stats],
+                                  [s["slope_test"][0]["var"] for s in stats],
+                                  [s["slope_test"][0]["df"] for s in stats])
+            _, _, p0 = wald_equal([s[key]["slope"] for s in stats],
+                                  [s["slope_test"][1]["var"] for s in stats])
+            tests.append(_test("Equal slopes, all fields (F)", X, df, p, p0))
     out["tests"] = tests
 
-    # distance to tile
+    # histogram of every field on common bins, for the plot
+    lo = min(s["min"] for s in stats)
+    hi = max(s["max"] for s in stats)
+    edges = np.linspace(lo, hi, 31)
+    out["histogram"] = dict(edges=edges, counts=[
+        np.histogram(np.clip(f["y"], lo, hi), edges)[0] for f in fields])
+
+    # ---- distance to tile
     if distance:
-        out["distance"] = []
         reach = distance["reach"]
-        reaches = tuple(reach) if isinstance(reach, (tuple, list)) else (reach, reach)
-        for f, s, reach_f in ((f1, s1, reaches[0]), (f2, s2, reaches[1])):
+        reaches = list(reach) if isinstance(reach, (tuple, list)) else [reach] * k
+        profs = []
+        for f, s, r in zip(fields, stats, reaches):
             if f.get("d") is None:
-                out["distance"].append(None)
+                profs.append(None)
                 continue
             model = s["spatial"]["model"] if use_sp else None
-            out["distance"].append(distance_profile(
-                f["y"], f["d"], f.get("xy"), reach_f,
-                distance.get("n_bins", 8), s["mean"], model, use_sp, f.get("g")))
+            profs.append(distance_profile(f["y"], f["d"], f.get("xy"), r,
+                                          distance.get("n_bins", 8), s["mean"], model,
+                                          use_sp, f.get("g")))
+        out["distance"] = profs
+        # is the loss midway (relative to over the tile) the same in every field?
+        ok = [(i, p["mid_vs_near"]) for i, p in enumerate(profs)
+              if p and "error" not in p and p.get("mid_vs_near")]
+        if len(ok) >= 2:
+            est = [m["pct"] for _, m in ok]
+            var = [(m["se"] / m["mean_a"] * 100.0) ** 2 for _, m in ok]
+            var0 = [(m["se_naive"] / m["mean_a"] * 100.0) ** 2 for _, m in ok]
+            X, df, p = wald_equal(est, var, [m["df"] for _, m in ok])
+            _, _, p0 = wald_equal(est, var0)
+            out["distance_test"] = _test(
+                "Same midway loss (as % of yield over tile) in "
+                + ("both fields" if len(ok) == 2 else "all fields") + " (F)",
+                X, df, p, p0)
+            out["distance_test"]["fields"] = [i for i, _ in ok]
+    return out
+
+
+def analyse(f1, f2, regression=False, rls=False, rls_iter=500, spatial=True,
+            distance=None):
+    """Compare two fields (see analyse_many); the original two-field result."""
+    r = analyse_many([f1, f2], regression, rls, rls_iter, spatial, distance)
+    pr = r["pairs"][0]
+    out = {"field1": r["fields"][0], "field2": r["fields"][1], "spatial": r["spatial"],
+           "tests": r["tests"], "difference": pr["diff"], "histogram": pr["histogram"],
+           "pairs": r["pairs"]}
+    for key in ("distance", "distance_test"):
+        if key in r:
+            out[key] = r[key]
     return out
 
 
@@ -1006,7 +1169,8 @@ def _compare_groups(y, xy, a, b, model, use_sp, groups=None):
     p = t_two_tailed(t, df) if math.isfinite(t) else 0.0
     half = t_ppf(0.975, df) * se
     return dict(mean_a=ma, mean_b=mb, n_a=na, n_b=nb, diff=diff,
-                lo=diff - half, hi=diff + half,
+                lo=diff - half, hi=diff + half, se=se,
+                se_naive=math.sqrt(sa * sa / na + sb * sb / nb),
                 pct=100.0 * diff / ma if ma else float("nan"),
                 t=abs(t), df=df, p=p, p_naive=p0)
 
@@ -1075,14 +1239,16 @@ def distance_profile(y, d, xy, reach, n_bins, field_mean, model=None, use_sp=Fal
     return out
 
 
-def reset_thresholds(y1_untrimmed, y2_untrimmed, e):
+def reset_thresholds(*args):
     """VB cmdResetThresholds: trim a fraction e from each tail.
 
-    Upper threshold = larger of the two fields' e-exceedance values,
-    lower threshold = smaller of the two (1-e)-exceedance values.
+    reset_thresholds(y1, y2, ..., e): upper threshold = largest of the
+    fields' e-exceedance values, lower threshold = smallest of their
+    (1-e)-exceedance values.
     """
+    *ys, e = args
     uppers, lowers = [], []
-    for y in (y1_untrimmed, y2_untrimmed):
+    for y in ys:
         yd = np.sort(y)[::-1]
         if e <= 0 or e >= 1:
             uppers.append(yd[0])

@@ -99,6 +99,12 @@ def fmt_p_html(p):
     return fmt_p(p).replace("<", "&lt;")
 
 
+def p_eq(p):
+    """'p = 0.0123' or 'p &lt; 0.0001', for rich text."""
+    t = fmt_p(p)
+    return "p " + t.replace("<", "&lt;") if t.startswith("<") else "p = " + t
+
+
 def singular(unit):
     return {"meters": "meter", "feet": "foot", "kilometers": "kilometer",
             "miles": "mile", "yards": "yard", "centimeters": "centimeter"}.get(unit, unit)
@@ -191,7 +197,14 @@ class FieldPanel(QGroupBox):
         self.layer = QgsMapLayerComboBox()
         self.layer.setFilters(LAYER_FILTER_VECTOR)
         self.layer.setAllowEmptyLayer(True)
-        form.addRow("Layer", self.layer)
+        self.btn_remove = QPushButton("Remove")
+        self.btn_remove.setToolTip("Remove this field from the comparison")
+        lay = QWidget()
+        h = QHBoxLayout(lay)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(self.layer, 1)
+        h.addWidget(self.btn_remove)
+        form.addRow("Layer", lay)
 
         self.selected_only = QCheckBox("Selected features only")
         form.addRow("", self.selected_only)
@@ -231,6 +244,17 @@ class FieldPanel(QGroupBox):
         self.exceed.setToolTip("Report the yield exceeded with this probability "
                                "(Gaussian and empirical distribution).")
         form.addRow("Exceedance probability", self.exceed)
+
+        self.spacing = QDoubleSpinBox()
+        self.spacing.setRange(0.0, 1e6)
+        self.spacing.setDecimals(1)
+        self.spacing.setToolTip(
+            "Drain (lateral) spacing in this field, in the tile network's units. Filled "
+            "in from DRAIN_SPACE of the laterals within the field, for Illini networks. "
+            "Points more than half a spacing from any tile count as beyond the reach "
+            "of the tile.")
+        self.spacing_label = QLabel("Drain spacing")
+        form.addRow(self.spacing_label, self.spacing)
 
         for cb in (self.yield_field, self.reg_field, self.con_field, self.pass_field):
             self.layer.layerChanged.connect(cb.setLayer)
@@ -354,21 +378,25 @@ class FieldPanel(QGroupBox):
 # Main dialog
 # ---------------------------------------------------------------------------
 
+MAX_FIELDS = 8
+COLORS = ["#1d4ed8", "#c2410c", "#15803d", "#7e22ce", "#b91c1c", "#0e7490",
+          "#a16207", "#be185d"]
+
+
 class YieldCompareDialog(QDialog):
     def __init__(self, iface, parent=None):
         super().__init__(parent)
         self.iface = iface
         self.result = None
+        self.panels = []
         self.setWindowTitle("Yield Compare – Yield Statistics")
-        self.resize(1300, 820)
+        self.resize(1350, 840)
 
         root = QHBoxLayout(self)
 
         # ---------------- left: inputs ----------------
         left = QWidget()
         lv = QVBoxLayout(left)
-        self.f1 = FieldPanel("Field 1")
-        self.f2 = FieldPanel("Field 2")
         self.btn_samples = QPushButton("Load sample fields")
         self.btn_samples.setToolTip(
             "Add the two bundled synthetic fields and their tile networks to the project "
@@ -379,8 +407,18 @@ class YieldCompareDialog(QDialog):
         top.addWidget(self.btn_samples)
         top.addStretch(1)
         lv.addLayout(top)
-        lv.addWidget(self.f1)
-        lv.addWidget(self.f2)
+
+        self.fields_box = QWidget()
+        self.fields_layout = QVBoxLayout(self.fields_box)
+        self.fields_layout.setContentsMargins(0, 0, 0, 0)
+        lv.addWidget(self.fields_box)
+        self.btn_add = QPushButton("Add field")
+        self.btn_add.setToolTip(f"Compare up to {MAX_FIELDS} fields (or years, or "
+                                "treatments) at once")
+        row = QHBoxLayout()
+        row.addWidget(self.btn_add)
+        row.addStretch(1)
+        lv.addLayout(row)
 
         opt = QGroupBox("Analysis options")
         og = QGridLayout(opt)
@@ -402,7 +440,6 @@ class YieldCompareDialog(QDialog):
         og.addWidget(self.chk_rls, 2, 0)
         og.addWidget(QLabel("Iterations"), 2, 1, alignment=Qt.AlignmentFlag.AlignRight)
         og.addWidget(self.iter, 2, 2)
-
         self.chk_con = QCheckBox("Confine to range of constraining column")
         self.lower_lim = self._num_box(0.0)
         self.upper_lim = self._num_box(99999.0)
@@ -413,7 +450,7 @@ class YieldCompareDialog(QDialog):
         og.addWidget(self.upper_lim, 5, 1, 1, 2)
         lv.addWidget(opt)
 
-        thr = QGroupBox("Yield thresholds (applied to both fields)")
+        thr = QGroupBox("Yield thresholds (applied to every field)")
         tg = QGridLayout(thr)
         self.lthresh = self._num_box(0.0)
         self.uthresh = self._num_box(99999.0)
@@ -451,8 +488,6 @@ class YieldCompareDialog(QDialog):
         self.chk_laterals = QCheckBox("Laterals only (kind = 'lateral')")
         self.chk_laterals.setChecked(True)
         self.chk_net_sel = QCheckBox("Selected lines only")
-        self.spacing1 = self._spacing_box()
-        self.spacing2 = self._spacing_box()
         self.spacing_units = QLabel("")
         self.bands = QSpinBox()
         self.bands.setRange(3, 30)
@@ -461,18 +496,15 @@ class YieldCompareDialog(QDialog):
         dg.addWidget(self.network, 0, 1, 1, 2)
         dg.addWidget(self.chk_laterals, 1, 0, 1, 3)
         dg.addWidget(self.chk_net_sel, 2, 0, 1, 3)
-        dg.addWidget(QLabel("Drain spacing, Field 1"), 3, 0)
-        dg.addWidget(self.spacing1, 3, 1)
-        dg.addWidget(self.spacing_units, 3, 2, 2, 1)
-        dg.addWidget(QLabel("Drain spacing, Field 2"), 4, 0)
-        dg.addWidget(self.spacing2, 4, 1)
-        dg.addWidget(QLabel("Distance bands"), 5, 0)
-        dg.addWidget(self.bands, 5, 1)
+        dg.addWidget(QLabel("Drain spacing: set in each field above"), 3, 0, 1, 2)
+        dg.addWidget(self.spacing_units, 3, 2)
+        dg.addWidget(QLabel("Distance bands"), 4, 0)
+        dg.addWidget(self.bands, 4, 1)
         lv.addWidget(dist)
 
         sty = QGroupBox("Map colouring")
         sg = QGridLayout(sty)
-        self.chk_style = QCheckBox("Colour both layers by yield after calculating")
+        self.chk_style = QCheckBox("Colour every field's layer by yield after calculating")
         self.chk_style.setChecked(True)
         self.min_color = QgsColorButton()
         self.min_color.setColor(QColor(255, 255, 0))
@@ -500,13 +532,15 @@ class YieldCompareDialog(QDialog):
         btns.addWidget(self.btn_calc)
         btns.addWidget(self.btn_export)
         btns.addWidget(self.btn_close)
-        lv.addLayout(btns)
 
         scroll = QScrollArea()
         scroll.setWidget(left)
         scroll.setWidgetResizable(True)
-        scroll.setMinimumWidth(440)
-        root.addWidget(scroll, 0)
+        scroll.setMinimumWidth(460)
+        lcol = QVBoxLayout()
+        lcol.addWidget(scroll, 1)
+        lcol.addLayout(btns)
+        root.addLayout(lcol, 0)
 
         # ---------------- right: results ----------------
         self.tabs = QTabWidget()
@@ -518,8 +552,15 @@ class YieldCompareDialog(QDialog):
         self.lbl_summary = self._summary_label()
         self.tbl_tests = self._table(["Test", "Statistic", "Deg. of freedom", "p-value",
                                       "Different at 5 %?", "p ignoring autocorrelation"])
+        self.lbl_pairs = QLabel("<b>Pairwise comparisons</b> – p-values adjusted for the "
+                                "number of pairs (Holm); confidence intervals are 95 % "
+                                "for each pair")
+        self.lbl_pairs.setWordWrap(True)
+        self.tbl_pairs = self._table(["Pair"])
         v.addWidget(self.lbl_summary)
-        v.addWidget(self.tbl_tests)
+        v.addWidget(self.tbl_tests, 2)
+        v.addWidget(self.lbl_pairs)
+        v.addWidget(self.tbl_pairs, 3)
         self.tabs.addTab(w, "Equivalence tests")
 
         w = QWidget()
@@ -550,20 +591,59 @@ class YieldCompareDialog(QDialog):
         self.chk_reg.toggled.connect(self._update_enabled)
         self.chk_rls.toggled.connect(self._update_enabled)
         self.chk_con.toggled.connect(self._update_enabled)
+        self.grp_dist.toggled.connect(self._update_enabled)
         self.btn_calc.clicked.connect(self.calculate)
         self.btn_samples.clicked.connect(self.load_samples)
+        self.btn_add.clicked.connect(lambda *_: self.add_field())
         self.btn_trim.clicked.connect(self.reset_thresholds)
         self.btn_clear_thr.clicked.connect(self._clear_thresholds)
         self.btn_export.clicked.connect(self.export_report)
         self.btn_close.clicked.connect(self.close)
         self.network.layerChanged.connect(self._network_changed)
-        self.f1.layer.layerChanged.connect(lambda *_: self._fill_spacing())
-        self.f2.layer.layerChanged.connect(lambda *_: self._fill_spacing())
-        for p in (self.f1, self.f2):
-            p.yield_field.fieldChanged.connect(self._clear_thresholds)
-            p.layer.layerChanged.connect(self._clear_thresholds)
-        self._update_enabled()
+        self.add_field()
+        self.add_field()
         self._preselect_layers()
+
+    # Field 1 / Field 2 as attributes, for scripts written against 0.3
+    @property
+    def f1(self):
+        return self.panels[0]
+
+    @property
+    def f2(self):
+        return self.panels[1]
+
+    # ---------------------------------------------------------------- fields
+    def add_field(self, layer=None):
+        if len(self.panels) >= MAX_FIELDS:
+            return None
+        p = FieldPanel(f"Field {len(self.panels) + 1}")
+        p.btn_remove.clicked.connect(lambda *_, p=p: self.remove_field(p))
+        p.yield_field.fieldChanged.connect(self._clear_thresholds)
+        p.layer.layerChanged.connect(self._clear_thresholds)
+        p.layer.layerChanged.connect(lambda *_, p=p: self._fill_spacing([p]))
+        self.fields_layout.addWidget(p)
+        self.panels.append(p)
+        if layer is not None:
+            p.layer.setLayer(layer)
+        self._renumber()
+        self._update_enabled()
+        return p
+
+    def remove_field(self, p):
+        if len(self.panels) <= 2 or p not in self.panels:
+            return
+        self.panels.remove(p)
+        self.fields_layout.removeWidget(p)
+        p.setParent(None)
+        p.deleteLater()
+        self._renumber()
+
+    def _renumber(self):
+        for i, p in enumerate(self.panels):
+            p.setTitle(f"Field {i + 1}")
+            p.btn_remove.setVisible(len(self.panels) > 2)
+        self.btn_add.setEnabled(len(self.panels) < MAX_FIELDS)
 
     # ---------------------------------------------------------------- helpers
     @staticmethod
@@ -572,18 +652,6 @@ class YieldCompareDialog(QDialog):
         s.setRange(-BIG, BIG)
         s.setDecimals(4)
         s.setValue(v)
-        return s
-
-    @staticmethod
-    def _spacing_box():
-        s = QDoubleSpinBox()
-        s.setRange(0.0, 1e6)
-        s.setDecimals(1)
-        s.setValue(0.0)
-        s.setToolTip("Drain (lateral) spacing in this field. Filled in from DRAIN_SPACE "
-                     "of the laterals within the field, for Illini networks. Points more "
-                     "than half a spacing from any tile count as beyond the reach of the "
-                     "tile.")
         return s
 
     @staticmethod
@@ -601,11 +669,15 @@ class YieldCompareDialog(QDialog):
         t.verticalHeader().setVisible(False)
         t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         t.setAlternatingRowColors(True)
+        YieldCompareDialog._stretch_first(t)
+        return t
+
+    @staticmethod
+    def _stretch_first(t):
         hh = t.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for i in range(1, len(headers)):
+        for i in range(1, t.columnCount()):
             hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
-        return t
 
     def _figure(self):
         fig = Figure(figsize=(7, 5), tight_layout=True)
@@ -623,23 +695,24 @@ class YieldCompareDialog(QDialog):
                 if isinstance(lyr, QgsVectorLayer)]
         pts = [l for l in vecs if l.geometryType() == _first(
             lambda: Qgis.GeometryType.Point, lambda: 0)] or vecs
-        if pts:
-            self.f1.layer.setLayer(pts[0])
-        if len(pts) > 1:
-            self.f2.layer.setLayer(pts[1])
+        for p, lyr in zip(self.panels, pts[:2]):
+            p.layer.setLayer(lyr)
 
-    def _update_enabled(self):
+    def _update_enabled(self, *args):
         reg = self.chk_reg.isChecked()
         self.chk_rls.setEnabled(reg)
         self.iter.setEnabled(reg and self.chk_rls.isChecked())
         con = self.chk_con.isChecked()
         self.lower_lim.setEnabled(con)
         self.upper_lim.setEnabled(con)
-        for p in (self.f1, self.f2):
+        dist = self.grp_dist.isChecked()
+        for p in self.panels:
             for w in (p.reg_field, p.scale_x, p.reg_label):
                 w.setEnabled(reg)
             for w in (p.con_field, p.con_label):
                 w.setEnabled(con)
+            for w in (p.spacing, p.spacing_label):
+                w.setEnabled(dist)
 
     def _network_changed(self, lyr):
         """Laterals filter and drain spacing from an Illini network."""
@@ -647,13 +720,13 @@ class YieldCompareDialog(QDialog):
             self.spacing_units.setText("")
             return
         geo = lyr.crs().isValid() and lyr.crs().isGeographic()
-        self.spacing_units.setText("meters" if geo else unit_name(lyr.crs()))
+        self.spacing_units.setText("(meters)" if geo else f"({unit_name(lyr.crs())})")
         has_kind = lyr.fields().indexFromName("kind") >= 0
         self.chk_laterals.setEnabled(has_kind)
         self.chk_laterals.setChecked(has_kind)
         self._fill_spacing()
 
-    def _fill_spacing(self):
+    def _fill_spacing(self, panels=None):
         """Each field's spacing: median DRAIN_SPACE (feet) of the laterals within
         the field's extent, converted to the network's units."""
         net = self.network.currentLayer()
@@ -684,7 +757,7 @@ class YieldCompareDialog(QDialog):
             return float(np.median(vals)) if vals else None
 
         overall = median_spacing()
-        for panel, box in ((self.f1, self.spacing1), (self.f2, self.spacing2)):
+        for panel in (panels or self.panels):
             ft = None
             lyr = panel.layer.currentLayer()
             if lyr is not None:
@@ -696,7 +769,7 @@ class YieldCompareDialog(QDialog):
                     ft = None
             ft = ft or overall
             if ft:
-                box.setValue(ft * fac)
+                panel.spacing.setValue(ft * fac)
 
     def load_samples(self):
         """Load the bundled synthetic sample fields and set up the dialog."""
@@ -743,11 +816,14 @@ class YieldCompareDialog(QDialog):
         a, b = lyrs["sample_field_A_yield"], lyrs["sample_field_B_yield"]
         if not had_layers or not proj.crs().isValid() or proj.crs().isGeographic():
             proj.setCrs(a.crs())
-        self.f1.layer.setLayer(a)
-        self.f2.layer.setLayer(b)
+        while len(self.panels) > 2:
+            self.remove_field(self.panels[-1])
+        self.panels[0].layer.setLayer(a)
+        self.panels[1].layer.setLayer(b)
         self.network.setLayer(lyrs["sample_tile_networks"])
         self.chk_spatial.setChecked(True)
         self.grp_dist.setChecked(True)
+        self._fill_spacing()
         try:
             ext = QgsCoordinateTransform(a.crs(), proj.crs(), proj) \
                 .transformBoundingBox(lyrs["sample_field_boundaries"].extent())
@@ -773,17 +849,22 @@ class YieldCompareDialog(QDialog):
     def reset_thresholds(self):
         try:
             use_con = self.chk_con.isChecked()
-            y1 = self.f1.read(False, use_con, self._z_limits(), None)[0]
-            y2 = self.f2.read(False, use_con, self._z_limits(), None)[0]
-            if len(y1) == 0 or len(y2) == 0:
+            ys = [p.read(False, use_con, self._z_limits(), None)[0] for p in self.panels]
+            if any(len(y) == 0 for y in ys):
                 raise ValueError("A field has no usable points.")
-            lo, hi = sc.reset_thresholds(y1, y2, self.trim.value())
+            lo, hi = sc.reset_thresholds(*ys, self.trim.value())
         except Exception as e:
             QMessageBox.warning(self, "Yield Compare", str(e))
             return
         self.lthresh.setValue(lo)
         self.uthresh.setValue(hi)
         self.calculate()
+
+    def _labels(self):
+        names = [p.label() for p in self.panels]
+        if len(set(names)) < len(names):
+            names = [f"Field {i + 1}: {n}" for i, n in enumerate(names)]
+        return names
 
     def calculate(self):
         reg = self.chk_reg.isChecked()
@@ -792,27 +873,26 @@ class YieldCompareDialog(QDialog):
         spatial = self.chk_spatial.isChecked()
         use_dist = self.grp_dist.isChecked()
         thr = (self.lthresh.value(), self.uthresh.value())
+        panels = list(self.panels)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             net = self.network.currentLayer() if use_dist else None
             if use_dist and net is None:
                 raise ValueError("Yield vs distance to tile: choose the tile network layer.")
-            if use_dist and min(self.spacing1.value(), self.spacing2.value()) <= 0:
+            if use_dist and min(p.spacing.value() for p in panels) <= 0:
                 raise ValueError("Yield vs distance to tile: enter the drain spacing "
                                  "for each field.")
             crs = None
             if spatial or use_dist:
-                crs = working_crs([self.f1.layer.currentLayer(),
-                                   self.f2.layer.currentLayer()], net)
-            y1, x1, xy1, g1 = self.f1.read(reg, con, self._z_limits(), thr, crs)
-            y2, x2, xy2, g2 = self.f2.read(reg, con, self._z_limits(), thr, crs)
-            if (spatial or use_dist) and (xy1 is None or xy2 is None):
-                raise ValueError("Both layers need point locations (geometry) for the "
+                crs = working_crs([p.layer.currentLayer() for p in panels], net)
+            reads = [p.read(reg, con, self._z_limits(), thr, crs) for p in panels]
+            if (spatial or use_dist) and any(r[2] is None for r in reads):
+                raise ValueError("Every layer needs point locations (geometry) for the "
                                  "spatial analysis.")
-            f1 = {"y": y1, "x": x1, "xy": xy1, "g": g1, "exceed_prob": self.f1.exceed.value()}
-            f2 = {"y": y2, "x": x2, "xy": xy2, "g": g2, "exceed_prob": self.f2.exceed.value()}
+            fields = [{"y": y, "x": x, "xy": xy, "g": g, "exceed_prob": p.exceed.value()}
+                      for (y, x, xy, g), p in zip(reads, panels)]
             distance = None
-            reach = (0.0, 0.0)
+            reaches = [0.0] * len(panels)
             if use_dist:
                 # spacing is in the network's units (meters if geographic);
                 # convert to the working CRS
@@ -822,28 +902,31 @@ class YieldCompareDialog(QDialog):
                                  lambda: QgsUnitTypes.DistanceMeters) \
                         if net.crs().isGeographic() else net.crs().mapUnits()
                     fac = QgsUnitTypes.fromUnitToUnitFactor(src, crs.mapUnits())
-                reach = (self.spacing1.value() / 2.0 * fac, self.spacing2.value() / 2.0 * fac)
-                f1["d"], f2["d"] = tile_distances(net, self.chk_laterals.isChecked()
-                                                  and self.chk_laterals.isEnabled(),
-                                                  self.chk_net_sel.isChecked(), crs,
-                                                  (xy1, xy2))
-                distance = {"reach": reach, "n_bins": self.bands.value()}
-            res = sc.analyse(f1, f2, regression=reg, rls=rls,
-                             rls_iter=self.iter.value(), spatial=spatial,
-                             distance=distance)
+                reaches = [p.spacing.value() / 2.0 * fac for p in panels]
+                ds = tile_distances(net, self.chk_laterals.isChecked()
+                                    and self.chk_laterals.isEnabled(),
+                                    self.chk_net_sel.isChecked(), crs,
+                                    [f["xy"] for f in fields])
+                for f, d in zip(fields, ds):
+                    f["d"] = d
+                distance = {"reach": reaches, "n_bins": self.bands.value()}
+            res = sc.analyse_many(fields, regression=reg, rls=rls,
+                                  rls_iter=self.iter.value(), spatial=spatial,
+                                  distance=distance)
         except Exception as e:
             QApplication.restoreOverrideCursor()
             QMessageBox.warning(self, "Yield Compare", str(e))
             return
-        res["data"] = ((y1, x1), (y2, x2))
-        res["labels"] = (self.f1.label(), self.f2.label())
-        res["ynames"] = tuple(p.yield_field.currentField() for p in (self.f1, self.f2))
-        res["xnames"] = tuple(p.reg_field.currentField() for p in (self.f1, self.f2))
+        res["data"] = [(f["y"], f.get("x")) for f in fields]
+        res["labels"] = self._labels()
+        res["ynames"] = [p.yield_field.currentField() for p in panels]
+        res["xnames"] = [p.reg_field.currentField() for p in panels]
         res["units"] = unit_name(crs) if crs is not None else ""
-        res["has_passes"] = (g1 is not None, g2 is not None)
+        res["has_passes"] = [f["g"] is not None for f in fields]
         res["settings"] = dict(regression=reg, rls=rls, thresholds=thr, spatial=spatial,
                                constraint=self._z_limits() if con else None,
-                               network=net.name() if net else None, reach=reach)
+                               network=net.name() if net else None, reach=reaches)
+        res["panels"] = panels
         self.result = res
         try:
             self._fill_stats(res)
@@ -863,8 +946,12 @@ class YieldCompareDialog(QDialog):
             self.tabs.setCurrentWidget(self.tab_dist)
 
     # ---------------------------------------------------------------- output
+    def _headers(self, res, first):
+        return [first] + [f"Field {i + 1}: {l}" if not l.startswith("Field ") else l
+                          for i, l in enumerate(res["labels"])]
+
     def _stats_rows(self, res):
-        a, b = res["field1"], res["field2"]
+        S = res["fields"]
         rows = [
             ("No. of points", "n", 0),
             ("Minimum", "min", 3), ("Maximum", "max", 3),
@@ -884,50 +971,72 @@ class YieldCompareDialog(QDialog):
             ("Skewness", "skewness", 3), ("Kurtosis (excess)", "kurtosis", 3),
             ("Jarque-Bera test statistic", "jb_stat", 3),
         ]
-        out = [(lbl, fmt(a.get(k), nd), fmt(b.get(k), nd)) for lbl, k, nd in rows]
-        out.append(("Jarque-Bera p-value (normality)", fmt_p(a["jb_p"]), fmt_p(b["jb_p"])))
+        out = [(lbl, *[fmt(s.get(k), nd) for s in S]) for lbl, k, nd in rows]
+        out.append(("Jarque-Bera p-value (normality)", *[fmt_p(s["jb_p"]) for s in S]))
         if res["spatial"]:
-            sa, sb = a["spatial"], b["spatial"]
-            ma, mb = sa["model"] or {}, sb["model"] or {}
+            ms = [s["spatial"]["model"] or {} for s in S]
 
             def rng_(m, share, key):
                 return fmt(m.get(key) if m.get(share, 0) > 0 else float("nan"), 0)
             out += [
-                ("Effective no. of independent points", fmt(round(sa["n_eff"])),
-                 fmt(round(sb["n_eff"]))),
+                ("Effective no. of independent points",
+                 *[fmt(round(s["spatial"]["n_eff"])) for s in S]),
                 ("Variance share: between harvest passes",
-                 fmt(ma.get("pass_share", 0.0), 2) if ma.get("has_groups") else "no pass column",
-                 fmt(mb.get("pass_share", 0.0), 2) if mb.get("has_groups") else "no pass column"),
+                 *[fmt(m.get("pass_share", 0.0), 2) if m.get("has_groups")
+                   else "no pass column" for m in ms]),
                 ("Variance share: spatially correlated",
-                 fmt(ma.get("spatial_share", 0.0), 2), fmt(mb.get("spatial_share", 0.0), 2)),
-                (f"  correlation range ({res['units']})", rng_(ma, "spatial_share", "range"),
-                 rng_(mb, "spatial_share", "range")),
+                 *[fmt(m.get("spatial_share", 0.0), 2) for m in ms]),
+                (f"  correlation range ({res['units']})",
+                 *[rng_(m, "spatial_share", "range") for m in ms]),
                 ("Variance share: extra correlation along a pass",
-                 fmt(ma.get("along_share", 0.0), 2), fmt(mb.get("along_share", 0.0), 2)),
-                (f"  along-pass range ({res['units']})", rng_(ma, "along_share", "along_range"),
-                 rng_(mb, "along_share", "along_range")),
+                 *[fmt(m.get("along_share", 0.0), 2) for m in ms]),
+                (f"  along-pass range ({res['units']})",
+                 *[rng_(m, "along_share", "along_range") for m in ms]),
                 ("Variance share: independent (nugget)",
-                 fmt(ma.get("nugget_share", 1.0), 2), fmt(mb.get("nugget_share", 1.0), 2)),
+                 *[fmt(m.get("nugget_share", 1.0), 2) for m in ms]),
             ]
         for key, name in (("ols", "Least squares"), ("rls", "Reweighted LS")):
-            if key in a:
-                out += [(f"{name}: slope", fmt(a[key]["slope"], 4), fmt(b[key]["slope"], 4)),
-                        (f"{name}: intercept", fmt(a[key]["intercept"], 3),
-                         fmt(b[key]["intercept"], 3)),
-                        (f"{name}: r²", fmt(a[key]["r2"], 4), fmt(b[key]["r2"], 4)),
-                        (f"{name}: points used", fmt(a[key]["n"], 0), fmt(b[key]["n"], 0))]
+            if key in S[0]:
+                out += [(f"{name}: slope", *[fmt(s[key]["slope"], 4) for s in S]),
+                        (f"{name}: intercept", *[fmt(s[key]["intercept"], 3) for s in S]),
+                        (f"{name}: r²", *[fmt(s[key]["r2"], 4) for s in S]),
+                        (f"{name}: points used", *[fmt(s[key]["n"], 0) for s in S])]
         return out
 
     def _test_rows(self, res):
-        return [(t["name"], fmt(t["stat"]),
+        rows = [(t["name"], fmt(t["stat"]),
                  t["df"] if isinstance(t["df"], str) else fmt(t["df"], 1),
                  t["p"], t["p_naive"]) for t in res["tests"]]
+        t = res.get("distance_test")
+        if t:
+            rows.append((t["name"], fmt(t["stat"]),
+                         t["df"] if isinstance(t["df"], str) else fmt(t["df"], 1),
+                         t["p"], t["p_naive"]))
+        return rows
+
+    def _pair_columns(self, res):
+        cols = [("means", "Means p"), ("medians", "Medians p"),
+                ("variances", "Variances p"), ("histograms", "Histograms p")]
+        if "slopes" in res["pairs"][0]["tests"]:
+            cols.append(("slopes", "Slopes p"))
+        return cols
+
+    def _pair_rows(self, res):
+        labels = res["labels"]
+        rows = []
+        for pr in res["pairs"]:
+            d = pr["diff"]
+            row = [f"{labels[pr['i']]}  −  {labels[pr['j']]}", fmt_ci(d), f"{d['pct']:+.1f} %"]
+            ps = [pr["tests"][k]["p_adj"] for k, _ in self._pair_columns(res)]
+            rows.append((row, ps))
+        return rows
 
     def _fill_stats(self, res):
         rows = self._stats_rows(res)
         t = self.tbl_stats
-        t.setHorizontalHeaderLabels(["Statistic", "Field 1: " + res["labels"][0],
-                                     "Field 2: " + res["labels"][1]])
+        t.setColumnCount(1 + res["k"])
+        t.setHorizontalHeaderLabels(self._headers(res, "Statistic"))
+        self._stretch_first(t)
         self._put_rows(t, rows)
 
     @staticmethod
@@ -941,22 +1050,49 @@ class YieldCompareDialog(QDialog):
                 t.setItem(r, c, it)
 
     def _summary_text(self, res):
-        d = res["difference"]
-        a, b = res["labels"]
-        p = res["tests"][0]["p"]
-        more = "more" if d["diff"] >= 0 else "less"
-        a, b = html.escape(a), html.escape(b)
-        txt = (f"<b>{a}</b> averaged <b>{abs(d['diff']):.1f}</b> ({abs(d['pct']):.1f} %) "
-               f"{more} than <b>{b}</b> (95 % confidence interval "
-               f"{d['lo']:+.1f} to {d['hi']:+.1f}; p = {fmt_p_html(p)}).")
-        if d["lo"] <= 0 <= d["hi"]:
-            txt += " The interval includes zero: no clear difference in mean yield."
+        labels = [html.escape(l) for l in res["labels"]]
+        S = res["fields"]
+        if res["k"] == 2:
+            d = res["pairs"][0]["diff"]
+            p = res["tests"][0]["p"]
+            more = "more" if d["diff"] >= 0 else "less"
+            txt = (f"<b>{labels[0]}</b> averaged <b>{abs(d['diff']):.1f}</b> "
+                   f"({abs(d['pct']):.1f} %) {more} than <b>{labels[1]}</b> (95 % "
+                   f"confidence interval {d['lo']:+.1f} to {d['hi']:+.1f}; "
+                   f"{p_eq(p)}).")
+            if d["lo"] <= 0 <= d["hi"]:
+                txt += " The interval includes zero: no clear difference in mean yield."
+        else:
+            p = res["tests"][0]["p"]
+            order = sorted(range(res["k"]), key=lambda i: -S[i]["mean"])
+            ranking = ", ".join(f"{labels[i]} {S[i]['mean']:.1f}" for i in order)
+            if p < 0.05:
+                txt = (f"Mean yields <b>differ</b> between the {res['k']} fields "
+                       f"({p_eq(p)}). ")
+            else:
+                txt = (f"<b>No clear difference</b> in mean yield between the {res['k']} "
+                       f"fields ({p_eq(p)}). ")
+            txt += f"Mean yields: {ranking}."
+            sig = [pr for pr in res["pairs"] if pr["tests"]["means"]["p_adj"] < 0.05]
+            if sig:
+                bits = []
+                for pr in sig:
+                    a, b, d = pr["i"], pr["j"], pr["diff"]
+                    hi_, lo_ = (a, b) if d["diff"] >= 0 else (b, a)
+                    bits.append(f"{labels[hi_]} &gt; {labels[lo_]} by {abs(d['diff']):.1f} "
+                                f"(95 % CI {min(abs(d['lo']), abs(d['hi'])):.1f} to "
+                                f"{max(abs(d['lo']), abs(d['hi'])):.1f})")
+                txt += ("<br>Pairs that differ after allowing for "
+                        f"{len(res['pairs'])} comparisons: " + "; ".join(bits) + ".")
+            else:
+                txt += ("<br>No pair of fields differs clearly after allowing for "
+                        f"{len(res['pairs'])} comparisons.")
         if res["spatial"]:
-            n1 = round(res["field1"]["spatial"]["n_eff"])
-            n2 = round(res["field2"]["spatial"]["n_eff"])
+            pts = ", ".join(f"{S[i]['n']} → {round(S[i]['spatial']['n_eff'])}"
+                            for i in range(res["k"]))
             txt += (f"<br><span style='color:#555'>Allowing for spatial autocorrelation, "
-                    f"the {res['field1']['n']} and {res['field2']['n']} points carry the "
-                    f"information of about {n1} and {n2} independent points.</span>")
+                    f"each field's points carry the information of far fewer independent "
+                    f"points (points → effective points: {pts}).</span>")
         else:
             txt += ("<br><span style='color:#a00'>Spatial autocorrelation is ignored: "
                     "p-values will be far too small for yield-monitor data.</span>")
@@ -979,6 +1115,28 @@ class YieldCompareDialog(QDialog):
                 if c == 5:
                     it.setForeground(QColor(120, 120, 120))
                 t.setItem(r, c, it)
+        # pairwise table, for three or more fields
+        many = res["k"] > 2
+        self.lbl_pairs.setVisible(many)
+        self.tbl_pairs.setVisible(many)
+        if not many:
+            return
+        cols = self._pair_columns(res)
+        t = self.tbl_pairs
+        t.setColumnCount(3 + len(cols))
+        t.setHorizontalHeaderLabels(["Pair (first − second)", "Mean difference (95 % CI)",
+                                     "% of second"] + [c for _, c in cols])
+        self._stretch_first(t)
+        prs = self._pair_rows(res)
+        t.setRowCount(len(prs))
+        for r, (row, ps) in enumerate(prs):
+            for c, v in enumerate(row + [fmt_p(p) for p in ps]):
+                it = QTableWidgetItem(v)
+                if c:
+                    it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                if c >= 3 and ps[c - 3] < 0.05:
+                    it.setForeground(QColor(170, 0, 0))
+                t.setItem(r, c, it)
 
     # -------- distance to tile
     def _distance_rows(self, res):
@@ -990,6 +1148,7 @@ class YieldCompareDialog(QDialog):
                 col["note"] = prof["error"] if prof else "no distances"
                 cols.append(col)
                 continue
+            col["Drain spacing"] = f"{2 * prof['reach']:.1f} {u}"
             col["Points within half a spacing of tile"] = fmt(prof["n_within"])
             col["Points beyond half a spacing"] = fmt(prof["n_beyond"])
             m = prof["mid_vs_near"]
@@ -1018,10 +1177,10 @@ class YieldCompareDialog(QDialog):
             for k in c:
                 if k != "note" and k not in keys:
                     keys.append(k)
-        rows = [(k.rstrip(), cols[0].get(k, ""), cols[1].get(k, "")) for k in keys]
+        rows = [(k.rstrip(), *[c.get(k, "") for c in cols]) for k in keys]
         notes = [c.get("note", "") for c in cols]
         if any(notes):
-            rows.insert(0, ("Note", notes[0], notes[1]))
+            rows.insert(0, ("Note", *notes))
         return rows
 
     def _distance_summary(self, res):
@@ -1044,24 +1203,32 @@ class YieldCompareDialog(QDialog):
             else:
                 verdict = "no clear difference between over the tile and midway"
             lines.append(
-                f"<b>{lbl}</b>: midway yield {m['mean_b']:.1f} vs {m['mean_a']:.1f} over "
+                f"<b>{lbl}</b> ({2 * prof['reach']:.0f}-{singular(res['units'])} spacing): "
+                f"midway yield {m['mean_b']:.1f} vs {m['mean_a']:.1f} over "
                 f"the tile, a difference of {m['diff']:+.1f} ({m['pct']:+.1f} %; 95 % CI "
-                f"{m['lo']:+.1f} to {m['hi']:+.1f}; p = {fmt_p_html(m['p'])}) – {verdict}.")
+                f"{m['lo']:+.1f} to {m['hi']:+.1f}; {p_eq(m['p'])}) – {verdict}.")
+        t = res.get("distance_test")
+        if t:
+            n = len(t["fields"])
+            what = "both fields" if n == 2 else f"the {n} fields"
+            if t["p"] < 0.05:
+                lines.append(f"The midway loss <b>differs</b> between {what} "
+                             f"({p_eq(t['p'])}).")
+            else:
+                lines.append(f"No clear difference in the midway loss between {what} "
+                             f"({p_eq(t['p'])}).")
         if res["spatial"] and not all(res["has_passes"]):
-            lines.append("<span style='color:#a00'>No harvest pass column: if the laterals "
-                         "run parallel to the harvest passes, differences between passes "
-                         "(header, flow delay) can look like a drainage effect. Choose the "
-                         "pass column (e.g. Pass_Num) for each field.</span>")
+            lines.append("<span style='color:#a00'>No harvest pass column for every field: "
+                         "if the laterals run parallel to the harvest passes, differences "
+                         "between passes (header, flow delay) can look like a drainage "
+                         "effect. Choose the pass column (e.g. Pass_Num) for each "
+                         "field.</span>")
         if not res["spatial"]:
             lines.append("<span style='color:#a00'>Spatial autocorrelation is ignored: "
                          "p-values will be far too small.</span>")
-        u = res["units"]
-        parts = []
-        for lbl, r in zip(res["labels"], res["settings"]["reach"]):
-            parts.append(f"{html.escape(lbl)}: over the tile = within {r / 4:.1f} {u} of a "
-                         f"tile line, midway = {0.75 * r:.1f} to {r:.1f} {u} (half the "
-                         f"{2 * r:.0f}-{singular(u)} spacing)")
-        lines.append("<span style='color:#555'>" + "; ".join(parts) + ".</span>")
+        lines.append("<span style='color:#555'>Over the tile = the quarter of the half "
+                     "spacing nearest a tile line; midway = the quarter farthest from "
+                     "it.</span>")
         return "<br>".join(lines)
 
     def _fill_distance(self, res):
@@ -1075,9 +1242,11 @@ class YieldCompareDialog(QDialog):
                 self.fig_dist._canvas.draw_idle()
             return
         self.lbl_dist.setText(self._distance_summary(res))
-        self.tbl_dist.setHorizontalHeaderLabels(["Result", "Field 1: " + res["labels"][0],
-                                                 "Field 2: " + res["labels"][1]])
-        self._put_rows(self.tbl_dist, self._distance_rows(res))
+        t = self.tbl_dist
+        t.setColumnCount(1 + res["k"])
+        t.setHorizontalHeaderLabels(self._headers(res, "Result"))
+        self._stretch_first(t)
+        self._put_rows(t, self._distance_rows(res))
 
     def _plot_distance(self, res):
         fig = self.fig_dist
@@ -1086,28 +1255,29 @@ class YieldCompareDialog(QDialog):
             fig._canvas.draw_idle()
             return
         ax = fig.add_subplot(111)
-        reaches = res["settings"]["reach"]
-        same = abs(reaches[0] - reaches[1]) < 1e-6 * max(reaches)
-        colors = ("#1d4ed8", "#c2410c")
+        reaches = [r for r, p in zip(res["settings"]["reach"], res["distance"]) if p]
+        same = max(reaches) - min(reaches) < 1e-6 * max(reaches)
         if same:
             r = reaches[0]
             ax.axvspan(0, r / 4, color="#2563eb", alpha=0.07, lw=0)
             ax.axvspan(0.75 * r, r, color="#dc2626", alpha=0.07, lw=0)
-        for k, (prof, lbl, r) in enumerate(zip(res["distance"], res["labels"], reaches)):
+        for k, (prof, lbl, r) in enumerate(zip(res["distance"], res["labels"],
+                                               res["settings"]["reach"])):
             if prof is None or "error" in prof:
                 continue
+            col = COLORS[k % len(COLORS)]
             bins = [b for b in prof["bins"] if math.isfinite(b["mean"])]
             xs = [(b["lo"] + b["hi"]) / 2 for b in bins]
             ys = [b["mean"] for b in bins]
             es = [b["ci"] if math.isfinite(b["ci"]) else 0 for b in bins]
-            ax.errorbar(xs, ys, yerr=es, color=colors[k], marker="o", capsize=3,
+            ax.errorbar(xs, ys, yerr=es, color=col, marker="o", capsize=3,
                         lw=1.5, label=f"{lbl} (spacing {2 * r:.0f})")
             t = prof.get("trend")
             if t:
                 ax.plot([0, r], [t["intercept"], t["intercept"] + t["slope"] * r],
-                        color=colors[k], ls="--", lw=1, alpha=0.7)
+                        color=col, ls="--", lw=1, alpha=0.7)
             if not same:
-                ax.axvline(r, color=colors[k], ls=":", lw=1)
+                ax.axvline(r, color=col, ls=":", lw=1)
         ax.set_xlim(0, max(reaches))
         ax.set_xlabel(f"Distance to nearest tile ({res['units']})")
         ax.set_ylabel(f"Mean yield ({res['ynames'][0]})")
@@ -1122,23 +1292,32 @@ class YieldCompareDialog(QDialog):
         fig._canvas.draw_idle()
 
     # -------- other plots
+    @staticmethod
+    def _grid(fig, k, max_cols, **kw):
+        cols = min(k, max_cols)
+        rows = int(math.ceil(k / cols))
+        axes = np.atleast_1d(fig.subplots(rows, cols, squeeze=False, **kw)).ravel()
+        for ax in axes[k:]:
+            ax.axis("off")
+        return axes[:k]
+
     def _plot_hist(self, res):
         fig = self.fig_hist
         fig.clear()
         h = res["histogram"]
         edges = h["edges"]
-        axes = fig.subplots(2, 1, sharex=True)
-        for ax, counts, key, lbl in zip(axes, (h["counts1"], h["counts2"]),
-                                        ("field1", "field2"), res["labels"]):
-            s = res[key]
+        k = res["k"]
+        axes = self._grid(fig, k, 1 if k <= 3 else 2, sharex=True)
+        for i, (ax, counts, s, lbl) in enumerate(zip(axes, h["counts"], res["fields"],
+                                                     res["labels"])):
             ax.bar(edges[:-1], counts, width=edges[1:] - edges[:-1], align="edge",
                    color="#e33", edgecolor="#a00", linewidth=0.5)
             ax.axvline(s["mean"], color="black", lw=1.5, label=f"Mean {s['mean']:.2f}")
             ax.axvline(s["median"], color="blue", lw=1.5, label=f"Median {s['median']:.2f}")
-            ax.set_title(lbl, fontsize=10)
-            ax.set_ylabel("Points")
-            ax.legend(fontsize=8)
-        axes[-1].set_xlabel(f"Yield ({res['ynames'][0]} / {res['ynames'][1]})")
+            ax.set_title(lbl, fontsize=9)
+            ax.set_ylabel("Points", fontsize=8)
+            ax.legend(fontsize=7)
+        axes[-1].set_xlabel("Yield (" + " / ".join(dict.fromkeys(res["ynames"])) + ")")
         fig._canvas.draw_idle()
 
     def _plot_reg(self, res):
@@ -1151,10 +1330,9 @@ class YieldCompareDialog(QDialog):
                     "yield vs regressor plots.", ha="center", va="center")
             fig._canvas.draw_idle()
             return
-        axes = fig.subplots(1, 2, sharey=True)
-        for ax, (y, x), key, lbl, xname in zip(axes, res["data"], ("field1", "field2"),
-                                                res["labels"], res["xnames"]):
-            s = res[key]
+        axes = self._grid(fig, res["k"], 3, sharey=True)
+        for ax, (y, x), s, lbl, xname in zip(axes, res["data"], res["fields"],
+                                              res["labels"], res["xnames"]):
             if "rls" in s:
                 w = s["rls"]["weights"].astype(bool)
                 ax.scatter(x[w], y[w], s=2, color="#2156c9", label="Points")
@@ -1170,7 +1348,7 @@ class YieldCompareDialog(QDialog):
                 ax.plot(xs, [r["intercept"] + r["slope"] * v for v in xs],
                         color="#0a0", lw=1.5,
                         label=f"Reweighted LS (slope {r['slope']:.3f})")
-            ax.set_title(lbl, fontsize=10)
+            ax.set_title(lbl, fontsize=9)
             ax.set_xlabel(xname)
             ax.legend(fontsize=7, markerscale=4)
         axes[0].set_ylabel(res["ynames"][0])
@@ -1186,9 +1364,9 @@ class YieldCompareDialog(QDialog):
                     "variograms.", ha="center", va="center")
             fig._canvas.draw_idle()
             return
-        axes = fig.subplots(1, 2)
-        for ax, key, lbl in zip(axes, ("field1", "field2"), res["labels"]):
-            sp = res[key]["spatial"]
+        axes = self._grid(fig, res["k"], 2 if res["k"] <= 4 else 3)
+        for ax, s, lbl in zip(axes, res["fields"], res["labels"]):
+            sp = s["spatial"]
             m = sp["model"]
             vg = m["vg"] if m else None
             if vg is None:
@@ -1196,10 +1374,10 @@ class YieldCompareDialog(QDialog):
                         transform=ax.transAxes)
                 continue
             tag = "different passes" if m["has_groups"] else "all pairs"
-            ax.scatter(vg["h"], vg["gamma"], color="#1d4ed8", s=18, label=f"Pairs in {tag}")
+            ax.scatter(vg["h"], vg["gamma"], color="#1d4ed8", s=14, label=f"Pairs in {tag}")
             if m.get("vg_same") is not None:
                 v2 = m["vg_same"]
-                ax.scatter(v2["h"], v2["gamma"], color="#c2410c", s=18, marker="^",
+                ax.scatter(v2["h"], v2["gamma"], color="#c2410c", s=14, marker="^",
                            label="Pairs in the same pass")
             hh = np.linspace(0, vg["max_dist"], 300)[1:]
             wv = m["within_var"]
@@ -1213,28 +1391,32 @@ class YieldCompareDialog(QDialog):
                                   - s_a * np.exp(-3 * hh / m["along_range"])),
                         color="#c2410c", lw=1.5, label="Model, same pass")
             ax.set_xscale("log")
-            ax.set_title(f"{lbl}\neffective points {sp['n_eff']:.0f} of {sp['n']}", fontsize=9)
-            ax.set_xlabel(f"Distance between points ({res['units']}, log scale)")
+            ax.set_title(f"{lbl}\neffective points {sp['n_eff']:.0f} of {sp['n']}", fontsize=8)
+            ax.set_xlabel(f"Distance ({res['units']}, log scale)", fontsize=8)
             ax.set_ylim(bottom=0)
-            ax.legend(fontsize=7)
-        axes[0].set_ylabel("Semivariance (after trend" +
-                           (" and pass means)" if any(res["has_passes"]) else ")"))
+            ax.legend(fontsize=6)
+        axes[0].set_ylabel("Semivariance", fontsize=8)
+        fig.suptitle("Variograms of yield after removing the trend" +
+                     (" and pass means" if any(res["has_passes"]) else ""), fontsize=9)
         fig._canvas.draw_idle()
 
     def _style_layers(self, res):
-        """Graduated colours from min to max colour (VB LinearPlots)."""
-        a, b = res["field1"], res["field2"]
-        vmin = min(a["gauss_95"], b["gauss_95"])
-        vmax = max(a["gauss_05"], b["gauss_05"])
+        """Graduated colours from min to max colour (VB LinearPlots), on a scale
+        shared by every field."""
+        S = res["fields"]
+        vmin = min(s["gauss_95"] for s in S)
+        vmax = max(s["gauss_05"] for s in S)
         if not (math.isfinite(vmin) and math.isfinite(vmax)) or vmax <= vmin:
-            vmin, vmax = min(a["min"], b["min"]), max(a["max"], b["max"])
+            vmin, vmax = min(s["min"] for s in S), max(s["max"] for s in S)
         n = self.classes.value()
         c1, c2 = self.min_color.color(), self.max_color.color()
         step = (vmax - vmin) / n
-        for panel in (self.f1, self.f2):
+        done = set()
+        for panel in res["panels"]:
             lyr = panel.layer.currentLayer()
-            if lyr is None:
+            if lyr is None or lyr.id() in done:
                 continue
+            done.add(lyr.id())
             ranges = []
             for i in range(n):
                 t = i / (n - 1) if n > 1 else 0
@@ -1276,30 +1458,35 @@ class YieldCompareDialog(QDialog):
         with open(path, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
             w.writerow(["Yield comparison"])
-            w.writerow(["Field 1", res["labels"][0]])
-            w.writerow(["Field 2", res["labels"][1]])
+            for i, lbl in enumerate(res["labels"]):
+                w.writerow([f"Field {i + 1}", lbl])
             w.writerow(["Thresholds", *st["thresholds"]])
             if st["constraint"]:
                 w.writerow(["Constraint limits", *st["constraint"]])
             w.writerow(["Spatial autocorrelation allowed for", "yes" if st["spatial"] else "no"])
-            d = res["difference"]
-            w.writerow(["Field 1 minus Field 2 (mean)", f"{d['diff']:.3f}",
-                        "95% CI", f"{d['lo']:.3f}", f"{d['hi']:.3f}",
-                        "% of Field 2", f"{d['pct']:.2f}"])
             w.writerow([])
-            w.writerow(["Statistic", "Field 1", "Field 2"])
+            w.writerow(self._headers(res, "Statistic"))
             w.writerows(self._stats_rows(res))
             w.writerow([])
             w.writerow(["Test", "Statistic", "Degrees of freedom", "p-value",
                         "p ignoring autocorrelation"])
             for name, stat, df, p, p0 in self._test_rows(res):
                 w.writerow([name, stat, df, f"{p:.6g}", f"{p0:.6g}"])
+            w.writerow([])
+            cols = self._pair_columns(res)
+            w.writerow(["Pair (first - second)", "Mean difference", "95% CI low",
+                        "95% CI high", "% of second"] +
+                       [f"{c} (Holm-adjusted)" for _, c in cols])
+            for pr in res["pairs"]:
+                d = pr["diff"]
+                w.writerow([f"{res['labels'][pr['i']]} - {res['labels'][pr['j']]}",
+                            f"{d['diff']:.3f}", f"{d['lo']:.3f}", f"{d['hi']:.3f}",
+                            f"{d['pct']:.2f}"] +
+                           [f"{pr['tests'][k]['p_adj']:.6g}" for k, _ in cols])
             if res.get("distance"):
                 w.writerow([])
-                w.writerow(["Yield vs distance to tile", f"network: {st['network']}",
-                            f"half spacing: {st['reach'][0]:.2f} / {st['reach'][1]:.2f} "
-                            f"{res['units']}"])
-                w.writerow(["Result", "Field 1", "Field 2"])
+                w.writerow(["Yield vs distance to tile", f"network: {st['network']}"])
+                w.writerow(self._headers(res, "Result"))
                 w.writerows(self._distance_rows(res))
                 w.writerow([])
                 w.writerow(["Field", "Band from", "Band to", "Points", "Mean yield",

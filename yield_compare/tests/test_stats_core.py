@@ -107,6 +107,31 @@ def test_pass_effects():
     assert flagged <= 3, flagged
 
 
+def test_many_fields():
+    """Three or more fields: Welch ANOVA reduces to Welch t for two fields,
+    identical patchy fields are rarely flagged, and a field that really is
+    higher is found."""
+    F, _, d2, p = sc.welch_anova([10, 12], [3, 4], [50, 40])
+    t, df, pt = sc.welch(10, 3, 50, 12, 4, 40)
+    close(F, t * t, 1e-9)
+    close(d2, df, 1e-9)
+    close(p, pt, 1e-9)
+    close(sc.holm([0.01, 0.04, 0.03, 0.005])[1], 0.06, 1e-12)
+    flagged = 0
+    for i in range(8):
+        fs = [dict(zip(("y", "xy"), field(3000 + 4 * i + j))) for j in range(4)]
+        r = sc.analyse_many(fs)
+        flagged += r["tests"][0]["p"] < 0.05
+        assert len(r["pairs"]) == 6
+    assert flagged <= 2, flagged
+    fs = [dict(zip(("y", "xy"), field(5000 + j, mean=200 if j == 2 else 180)))
+          for j in range(4)]
+    r = sc.analyse_many(fs)
+    assert r["tests"][0]["p"] < 0.05
+    sig = {(pr["i"], pr["j"]) for pr in r["pairs"] if pr["tests"]["means"]["p_adj"] < 0.05}
+    assert sig and all(2 in pair for pair in sig), sig
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
