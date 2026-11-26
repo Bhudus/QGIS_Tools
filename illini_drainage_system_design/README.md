@@ -18,7 +18,7 @@ Steps G to K are done by the engine of [Illini Subsurface Drain Layout](../illin
 
 | Parameter | Notes |
 |---|---|
-| Proposed Tile Lines | Line layer of the mains and submains |
+| Proposed Tile Lines | Line layer of the mains, submains and laterals |
 | Outlet Location | Click on the map near the outlet end of the main; the closest segment becomes the outlet |
 | Original Field DEM | Elevation raster covering the tile lines |
 | Coordinate Reference System | Default EPSG:3435 |
@@ -36,11 +36,11 @@ Defaults match the individual Illini Drainage Tools. Pipe sizing uses a single d
 
 The same form as the network of Illini Subsurface Drain Layout, so Tile Profile, the Tile Size Calculator and its bill of materials work on it directly:
 
-- One line from node to node for every pipe between junctions, flowing from `from_node` to `to_node`, with `ds_link` the line it drains into (0 at the outlet). The drawn lines become one **main** (from the outlet up its longest branch) and **submains** (each carrying on up its own longest branch).
+- One line from node to node for every pipe between junctions, flowing from `from_node` to `to_node`, with `ds_link` the line it drains into (0 at the outlet). The drawn lines become one **main** (from the outlet up its longest branch), **submains** (each carrying on up its own longest branch) and **laterals**: a line that no other line drains into is a lateral.
 - The tile elevation (Z) and ground elevation (M) at every vertex, in feet, including every grade break; the DEM is sampled along the pipes, not only at their ends.
 - Fields: `id`, `pipe_id`, `kind`, `pipe`, `from_node`, `to_node`, `ds_link`, `length`, `TileLength`, `ground_us`, `ground_ds`, `terrain_grade_pct`, `invert_us`, `invert_ds`, `design_grade_pct`, `max_depth`, `min_depth`, `depth_ds`, `upstream_length`, `drained_area` (acres), Routine J's `ElevDepth1`, `BuryDepth1`, `ElevDepth2`, `BuryDepth2`, `InSlope`, `OutSlope`, `BURY_CHECK`, Routine K's `TILE_ORDER`, `FLOW_LENGTH`, `SIZE_SLOPE`, `D_COEFF`, `DRAIN_SPACE`, `D_AREA`, `CUM_SEG_FLOW`, `ACTUAL_SIZE`, `NOMINAL`, `PIPE_TYPE`, and `flag` (layout problems, such as a main arriving below the outlet invert or needing more than 42 in pipe).
 - Every drawn line is drained tile: a line is sized for the tile length upstream of it (`FLOW_LENGTH`) times the drain spacing, and `drained_area` is that area.
-- Mains and submains are drawn red, layout problems orange and grade problems (BURY_CHECK) purple.
+- Mains and submains are drawn red, laterals blue, layout problems orange and grade problems (BURY_CHECK) purple.
 
 Segments that close a loop, or are not connected to the outlet, are left out, with a warning in the log.
 
@@ -54,7 +54,7 @@ To re-bury a layout after changing it (moving, adding or deleting pipes):
 2. Run Drainage System Design with that layer as the *Proposed Tile Lines*, the outlet clicked at the outlet end of the main, the same DEM, and the same drain spacing, depths and slopes as the layout.
 3. The Drainage Network it writes replaces the layout's, ready for Tile Profile and the Tile Size Calculator.
 
-Every line is treated as drained tile, as in the layout. The pipes are rebuilt from the outlet up the longest branches, so the laterals of the layout come out as submains (`kind`); their burying and sizing are not affected.
+Every line is treated as drained tile, as in the layout. The pipes are rebuilt from the outlet up the longest branches; the lines nothing drains into come out as laterals (`kind`), as in the layout. Where the longest branch runs up a drawn lateral, that lateral carries on the main or submain and the rest of the line it joined becomes a lateral.
 
 ## Install
 Download [`illini_drainage_system_design.zip`](https://github.com/Bhudus/QGIS_Tools/raw/main/illini_drainage_system_design/illini_drainage_system_design.zip), then in QGIS use

@@ -8,7 +8,9 @@ lines from node to node with the tile (Z) and ground (M) elevation at every
 vertex, Routine J and K fields, BURY_CHECK and flag.
 
 Every drawn line is drained tile, so a line's drained area is the tile length
-upstream of it times the drain spacing (Routine K's FLOW_LENGTH x spacing).
+upstream of it times the drain spacing (Routine K's FLOW_LENGTH x spacing). A
+line that no other line drains into is a lateral; the rest are the main and
+its submains.
 """
 import math
 from collections import defaultdict
@@ -194,8 +196,33 @@ def build_pipes(segments, outlet_xy, step, tol):
     return cols, notes
 
 
+def split_laterals(cols):
+    """Mains and submains, and laterals: a drawn line that no other line drains
+    into is a lateral (the main stays the main). Returns (cols, lats) in the
+    engine's form, the laterals joining their collector at its vertex."""
+    fed = {c["to"][0] for c in cols if c["to"] is not None}
+    keep = [P for P in range(len(cols)) if P == 0 or P in fed]
+    new_of = {P: i for i, P in enumerate(keep)}
+    out = []
+    for P in keep:
+        c = dict(cols[P])
+        if c["to"] is not None:
+            c["to"] = (new_of[c["to"][0]], c["to"][1])
+        out.append(c)
+    lats = []
+    for P, c in enumerate(cols):
+        if P in new_of:
+            continue
+        H, v = c["to"]
+        lats.append({"pts": np.asarray(c["pts"], float), "region": 0, "origin": "drawn",
+                     "conn": ("collector", new_of[H], v), "flags": [], "bearing": None,
+                     "user": True})
+    return out, lats
+
+
 class DesignNetwork(DrainageLayout):
-    """The layout engine on a given set of mains and submains (no laterals)."""
+    """The layout engine on a drawn network: its mains and submains as given,
+    and the lines nothing drains into as laterals."""
 
     def __init__(self, dem, valid, grid, rings, cols, params, progress=None, cancel=None,
                  order_coeffs=None):
@@ -207,8 +234,7 @@ class DesignNetwork(DrainageLayout):
     def run(self):
         self._progress(5, "Preparing terrain")
         self._prepare()
-        self.cols = self._given
-        self.lats = []
+        self.cols, self.lats = split_laterals(self._given)
         for c in self.cols:
             c.setdefault("nlat", 0)
         self._progress(40, "Burying the tile")
@@ -258,4 +284,6 @@ def run_design(dem, valid, grid, segments, outlet_xy, params, progress=None, can
     res = eng.run()
     res["warnings"] = notes + res["warnings"]
     res["pipes"] = len(cols)
+    res["n_laterals"] = len(eng.lats)
+    res["n_submains"] = len(eng.cols) - 1
     return res

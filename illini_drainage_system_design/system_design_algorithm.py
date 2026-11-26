@@ -461,9 +461,10 @@ class SystemDesignAlgorithm(QgsProcessingAlgorithm):
             context.layerToLoadOnCompletionDetails(net_id).setPostProcessor(_POST[net_id])
 
         s = res["summary"]
-        feedback.pushInfo(self.tr('Drainage network: {} pipes (1 main, {} submains), {} lines, '
-                                  '{:,.0f} ft of tile').format(
-            res["pipes"], res["pipes"] - 1, len(res["network"]), s["total_length_m"] / FT))
+        feedback.pushInfo(self.tr('Drainage network: {} pipes (1 main, {} submains, {} laterals), '
+                                  '{} lines, {:,.0f} ft of tile').format(
+            res["pipes"], res["n_submains"], res["n_laterals"], len(res["network"]),
+            s["total_length_m"] / FT))
         if s.get("outlet_depth_m") is not None:
             feedback.pushInfo(self.tr('Outlet tile depth: {:.2f} ft{}.').format(
                 s["outlet_depth_m"] / FT,
