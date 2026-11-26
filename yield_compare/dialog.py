@@ -402,6 +402,7 @@ class FieldPanel(QGroupBox):
 # ---------------------------------------------------------------------------
 
 MAX_FIELDS = 8
+ROW_HEIGHT = 260   # pixels per row of plot panels
 
 SAMPLES = {
     "synthetic": dict(
@@ -730,14 +731,27 @@ class YieldCompareDialog(QDialog):
             hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
 
     def _figure(self):
+        """A figure in a scroll area, below its zoom / pan / save toolbar.
+
+        Plots with one panel per field get taller as fields are added
+        (see _grid), and the scroll area lets every panel be reached."""
         fig = Figure(figsize=(7, 5), tight_layout=True)
         canvas = FigureCanvas(fig)
         w = QWidget()
         v = QVBoxLayout(w)
-        v.addWidget(NavToolbar(canvas, w))   # zoom / pan / save-as-image
-        v.addWidget(canvas)
+        v.addWidget(NavToolbar(canvas, w))
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(canvas)
+        v.addWidget(scroll)
         fig._canvas = canvas
         return fig, w
+
+    @staticmethod
+    def _clear(fig):
+        """Clear a figure and let it shrink back to the visible area."""
+        fig.clear()
+        fig._canvas.setMinimumHeight(0)
 
     def _preselect_layers(self):
         """Pick the first two point layers (else vector layers) in the project."""
@@ -1303,7 +1317,7 @@ class YieldCompareDialog(QDialog):
                                   "yield midway between drains.")
             self.tbl_dist.setRowCount(0)
             if HAVE_MPL:
-                self.fig_dist.clear()
+                self._clear(self.fig_dist)
                 self.fig_dist._canvas.draw_idle()
             return
         self.lbl_dist.setText(self._distance_summary(res))
@@ -1315,7 +1329,7 @@ class YieldCompareDialog(QDialog):
 
     def _plot_distance(self, res):
         fig = self.fig_dist
-        fig.clear()
+        self._clear(fig)
         if not res.get("distance"):
             fig._canvas.draw_idle()
             return
@@ -1361,6 +1375,9 @@ class YieldCompareDialog(QDialog):
     def _grid(fig, k, max_cols, **kw):
         cols = min(k, max_cols)
         rows = int(math.ceil(k / cols))
+        # each row of panels at least ROW_HEIGHT pixels tall: with many fields
+        # the figure is taller than the tab and scrolls
+        fig._canvas.setMinimumHeight(rows * ROW_HEIGHT)
         axes = np.atleast_1d(fig.subplots(rows, cols, squeeze=False, **kw)).ravel()
         for ax in axes[k:]:
             ax.axis("off")
@@ -1368,7 +1385,7 @@ class YieldCompareDialog(QDialog):
 
     def _plot_hist(self, res):
         fig = self.fig_hist
-        fig.clear()
+        self._clear(fig)
         h = res["histogram"]
         edges = h["edges"]
         k = res["k"]
@@ -1387,7 +1404,7 @@ class YieldCompareDialog(QDialog):
 
     def _plot_reg(self, res):
         fig = self.fig_reg
-        fig.clear()
+        self._clear(fig)
         if not res["settings"]["regression"]:
             ax = fig.add_subplot(111)
             ax.axis("off")
@@ -1421,7 +1438,7 @@ class YieldCompareDialog(QDialog):
 
     def _plot_variograms(self, res):
         fig = self.fig_vg
-        fig.clear()
+        self._clear(fig)
         if not res["spatial"]:
             ax = fig.add_subplot(111)
             ax.axis("off")
