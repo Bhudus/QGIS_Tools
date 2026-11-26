@@ -256,15 +256,18 @@ def _num(v):
 
 
 def prepare(y_raw, x_raw=None, z_raw=None, scale_y=1.0, scale_x=1.0,
-            z_limits=None, thresholds=None):
+            z_limits=None, thresholds=None, coords=None, groups=None):
     """Filter one field's records the way every VB loop does.
 
-    * records with missing values are skipped (new: VB had no NULLs)
+    * records with missing values (or, when coords are given, without a
+      location) are skipped
     * optional 'Confine to range' on a constraint column z
     * thresholds are applied to the *scaled* yield
-    Returns numpy arrays y, x (x is None when no regressor is given).
+    Returns numpy arrays y, x, xy (x is None when no regressor is given,
+    xy is None when no coordinates are given; xy has shape (n, 2)), or
+    y, x, xy, g when a groups (harvest pass) column is given.
     """
-    ys, xs = [], []
+    ys, xs, pts, gs = [], [], [], []
     for i, yv in enumerate(y_raw):
         y = _num(yv)
         if y is None:
@@ -282,11 +285,450 @@ def prepare(y_raw, x_raw=None, z_raw=None, scale_y=1.0, scale_x=1.0,
                 continue
         if thresholds is not None and (y < thresholds[0] or y > thresholds[1]):
             continue
+        if coords is not None:
+            if coords[i] is None:
+                continue
+        if groups is not None:
+            g = groups[i]
+            if g is None or (isinstance(g, float) and math.isnan(g)):
+                continue
+            try:
+                g = float(g)
+            except (TypeError, ValueError):
+                g = str(g)
+            gs.append(g)
+        if coords is not None:
+            pts.append(coords[i])
         ys.append(y)
         xs.append(x)
     y = np.asarray(ys, dtype=float)
     x = np.asarray(xs, dtype=float) if x_raw is not None else None
-    return y, x
+    xy = np.asarray(pts, dtype=float).reshape(-1, 2) if coords is not None else None
+    if groups is not None:
+        g = np.asarray(gs) if gs and not isinstance(gs[0], str) else \
+            np.unique(np.asarray(gs, dtype=object).astype(str), return_inverse=True)[1]
+        return y, x, xy, g
+    return y, x, xy
+
+
+# ---------------------------------------------------------------------------
+# Spatial autocorrelation
+#
+# Neighbouring yield-monitor points are not independent, so ordinary tests
+# treat thousands of points as thousands of independent observations and
+# find "significant" differences everywhere.  The correlation between two
+# points i, j is modelled as
+#
+#     rho_ij = s_pass * [i, j in the same harvest pass]
+#            + s_sp   * exp(-3 d_ij / range)
+#
+# s_pass: share of the variance between harvest passes (optional, needs a
+#         pass / track column), estimated by the method of moments;
+# s_sp:   share of the remaining variance that is spatially correlated,
+#         from an exponential variogram (nugget + partial sill) fitted to the
+#         residuals after removing a planar trend and the pass means.
+#
+# The model is then used two ways:
+# * the effective number of independent points  n_eff = n / (1 + (n-1) rho)
+#   (rho = average correlation between pairs) for tests of a field's mean,
+#   variance and histogram (Clifford, Richardson & Hemon 1989; Dutilleul 1993);
+# * the variance of a contrast sum(c_i y_i) = sigma^2 sum_ij c_i c_j rho_ij
+#   for comparisons within a field (over vs between drains, regression
+#   slopes), where noise shared by both groups cancels.
+# ---------------------------------------------------------------------------
+
+_SEED = 20261126
+VARIOGRAM_POINTS = 3000      # global subsample for the variogram
+LOCAL_CLUSTERS = 15          # local clusters of neighbours for short lags
+LOCAL_SIZE = 400             # points per local cluster
+CORR_POINTS = 2500           # subsample for averaging pair correlations
+N_LAG_BINS = 20
+STRUCTURE_PERMUTATIONS = 99  # permutations for the tests of spatial structure
+STRUCTURE_ALPHA = 0.01
+
+
+def _subsample(n, m, rng):
+    return np.arange(n) if n <= m else np.sort(rng.choice(n, m, replace=False))
+
+
+def _pairs(xy, chunk=300):
+    """Yield (i0, i1, dist) for row blocks, dist[k, j] = |xy[i0+k] - xy[j]|."""
+    n = len(xy)
+    for i0 in range(0, n, chunk):
+        i1 = min(n, i0 + chunk)
+        dx = xy[i0:i1, 0][:, None] - xy[None, :, 0]
+        dy = xy[i0:i1, 1][:, None] - xy[None, :, 1]
+        yield i0, i1, np.sqrt(dx * dx + dy * dy)
+
+
+def detrend(xy, r):
+    """Residuals from a least-squares plane a + b x + c y."""
+    if len(r) < 10:
+        return r - r.mean()
+    c = xy - xy.mean(axis=0)
+    A = np.column_stack([np.ones(len(r)), c])
+    coef, *_ = np.linalg.lstsq(A, r, rcond=None)
+    return r - A @ coef
+
+
+def pass_component(r, groups):
+    """Between-pass variance (method of moments) and pass-centred residuals."""
+    if groups is None:
+        return 0.0, r
+    labels, inv = np.unique(groups, return_inverse=True)
+    k = len(labels)
+    if k < 3:
+        return 0.0, r
+    cnt = np.bincount(inv)
+    gm = np.bincount(inv, r) / cnt
+    within = r - gm[inv]
+    s2w = float((within ** 2).sum() / max(len(r) - k, 1))
+    n0 = (len(r) - (cnt ** 2).sum() / len(r)) / (k - 1)     # unbalanced ANOVA
+    msb = float((cnt * (gm - r.mean()) ** 2).sum() / (k - 1))
+    s2p = max((msb - s2w) / n0, 0.0)
+    return s2p, within
+
+
+def _pair_set(xy, rng, n_global=VARIOGRAM_POINTS, n_clusters=LOCAL_CLUSTERS,
+              size=LOCAL_SIZE):
+    """Point pairs for the variogram: all pairs of a global random subsample
+    (up to half the field diagonal apart) plus all pairs inside small local
+    clusters of neighbouring points, so short lags (along a pass, between
+    adjacent passes) are well represented however large the data set."""
+    n = len(xy)
+    ext = xy.max(axis=0) - xy.min(axis=0)
+    max_d = 0.5 * float(math.hypot(ext[0], ext[1]))
+    I, J, D = [], [], []
+
+    def add(idx, lim):
+        p = xy[idx]
+        for i0, i1, d in _pairs(p):
+            k = np.arange(i0, i1)[:, None]
+            j = np.arange(len(p))[None, :]
+            mask = (j > k) & (d <= lim)
+            kk, jx = np.nonzero(mask)
+            I.append(idx[kk + i0])
+            J.append(idx[jx])
+            D.append(d[mask].astype(np.float32))
+
+    add(_subsample(n, n_global, rng), max_d)
+    if n > n_global:
+        for c in rng.choice(n, n_clusters, replace=False):
+            d0 = np.hypot(xy[:, 0] - xy[c, 0], xy[:, 1] - xy[c, 1])
+            near = np.argsort(d0)[:size]
+            add(near, float(d0[near[-1]]))
+    return np.concatenate(I), np.concatenate(J), np.concatenate(D), max_d
+
+
+def _variogram(r, I, J, b, nb, sel):
+    g = 0.5 * (r[I[sel]] - r[J[sel]]) ** 2
+    bs = b[sel]
+    return np.bincount(bs, g, nb), np.bincount(bs, None, nb)
+
+
+def _perm_test(r, I, J, b, nb, sel, rng, groups=None):
+    """Permutation p-value for spatial structure in the pairs `sel`: is the
+    semivariogram further from flat than when the values are shuffled
+    (among all points, or within each pass when groups is given)?"""
+    idx = np.nonzero(sel)[0]
+    if len(idx) > 1_200_000:
+        idx = rng.choice(idx, 1_200_000, replace=False)
+    Ii, Jj, bb = I[idx], J[idx], b[idx]
+    cnt = np.bincount(bb, None, nb)
+    ok = cnt >= 30
+    if ok.sum() < 4:
+        return 1.0
+    w = cnt[ok] / cnt[ok].max()
+
+    def stat(v):
+        g = np.bincount(bb, 0.5 * (v[Ii] - v[Jj]) ** 2, nb)[ok] / cnt[ok]
+        m = (w * g).sum() / w.sum()
+        return float((w * (g - m) ** 2).sum())
+
+    s0 = stat(r)
+    if groups is not None:
+        order = np.argsort(groups, kind="stable")
+        starts = np.flatnonzero(np.r_[True, groups[order][1:] != groups[order][:-1]])
+        ends = np.r_[starts[1:], len(order)]
+    exceed = 0
+    for _ in range(STRUCTURE_PERMUTATIONS):
+        if groups is None:
+            v = r[rng.permutation(len(r))]
+        else:
+            v = r.copy()
+            for s_, e_ in zip(starts, ends):
+                seg = order[s_:e_]
+                v[seg] = r[seg[rng.permutation(len(seg))]]
+        if stat(v) >= s0:
+            exceed += 1
+    return (exceed + 1.0) / (STRUCTURE_PERMUTATIONS + 1.0)
+
+
+def _vg_dict(gs, cs, hs, max_d):
+    ok = cs >= 30
+    if ok.sum() < 4:
+        return None
+    return dict(h=hs[ok] / cs[ok], gamma=gs[ok] / cs[ok], counts=cs[ok], max_dist=max_d)
+
+
+def empirical_variogram(xy, r, seed=_SEED):
+    """Semivariogram of r over all pairs (kept for callers that want one)."""
+    if len(r) < 30:
+        return None
+    rng = np.random.default_rng(seed)
+    I, J, D, max_d = _pair_set(xy, rng)
+    edges = np.concatenate([[0.0], np.geomspace(max_d / 300.0, max_d, N_LAG_BINS)])
+    nb = len(edges) - 1
+    b = np.clip(np.searchsorted(edges, D, side="right") - 1, 0, nb - 1)
+    sel = np.ones(len(I), bool)
+    g, c = _variogram(r, I, J, b, nb, sel)
+    return _vg_dict(g, c, np.bincount(b, D, nb), max_d)
+
+
+def fit_exponential(vg):
+    """Weighted least-squares fit of gamma(h) = c0 + c1 (1 - exp(-3 h / a)),
+    with the range a no longer than 1.5 x the largest lag."""
+    h, g, w = vg["h"], vg["gamma"], vg["counts"]
+    w = w / w.max()
+    best = None
+    for a in np.geomspace(max(h.min(), 1e-9) / 2.0, 1.5 * vg["max_dist"], 150):
+        f = 1.0 - np.exp(-3.0 * h / a)
+        cands = []
+        A = np.array([[w.sum(), (w * f).sum()], [(w * f).sum(), (w * f * f).sum()]])
+        rhs = np.array([(w * g).sum(), (w * f * g).sum()])
+        try:
+            c0, c1 = np.linalg.solve(A, rhs)
+            if c0 >= 0 and c1 >= 0:
+                cands.append((c0, c1))
+        except np.linalg.LinAlgError:
+            pass
+        cands.append((0.0, max((w * f * g).sum() / (w * f * f).sum(), 0.0)))
+        for c0, c1 in cands:
+            sse = float((w * (g - c0 - c1 * f) ** 2).sum())
+            if best is None or sse < best[0]:
+                best = (sse, float(c0), float(c1), float(a))
+    _, c0, c1, a = best
+    return dict(nugget=c0, psill=c1, range=a, sill=c0 + c1)
+
+
+def _fit_excess(h, target, w, max_d):
+    """Fit target(h) ~ s * exp(-3 h / a), s >= 0 (extra along-pass correlation)."""
+    w = w / w.max()
+    best = (float((w * target ** 2).sum()), 0.0, 1.0)
+    for a in np.geomspace(max(h.min(), 1e-9) / 2.0, 1.5 * max_d, 100):
+        f = np.exp(-3.0 * h / a)
+        s_ = max(float((w * f * target).sum() / (w * f * f).sum()), 0.0)
+        sse = float((w * (target - s_ * f) ** 2).sum())
+        if sse < best[0]:
+            best = (sse, s_, float(a))
+    return best[1], best[2]
+
+
+def fit_model(xy, resid, groups=None, seed=_SEED):
+    """Fit the correlation model to residuals (see the section comment):
+    a planar trend is removed, then the between-pass variance, then a
+    variogram over pairs in different passes (or all pairs, without a pass
+    column) and, with a pass column, the extra correlation along each pass.
+    Each spatial part is kept only if a permutation test finds it."""
+    n = len(resid)
+    if n < 30:
+        return None
+    rng = np.random.default_rng(seed)
+    r = detrend(xy, resid)
+    s2p, within = pass_component(r, groups)
+    s2w = float(within.var())
+    total = s2p + s2w
+    if total <= 0:
+        return None
+    I, J, D, max_d = _pair_set(xy, rng)
+    edges = np.concatenate([[0.0], np.geomspace(max_d / 300.0, max_d, N_LAG_BINS)])
+    nb = len(edges) - 1
+    b = np.clip(np.searchsorted(edges, D, side="right") - 1, 0, nb - 1)
+    hsum_all = np.bincount(b, D, nb)
+    if groups is not None:
+        same = groups[I] == groups[J]
+        cross = ~same
+    else:
+        same = None
+        cross = np.ones(len(I), bool)
+
+    # correlation between all points (fitted on pairs in different passes)
+    gs, cs = _variogram(within, I, J, b, nb, cross)
+    hs = np.bincount(b[cross], D[cross], nb)
+    vg = _vg_dict(gs, cs, hs, max_d)
+    fit = fit_exponential(vg) if vg is not None else None
+    p_x = 1.0
+    s_xw, a_x = 0.0, 1.0
+    if fit is not None and fit["psill"] > 0 and fit["sill"] > 0:
+        p_x = _perm_test(within, I, J, b, nb, cross, rng)
+        if p_x <= STRUCTURE_ALPHA:
+            s_xw, a_x = min(fit["psill"] / fit["sill"], 1.0), fit["range"]
+
+    # extra correlation along each pass
+    vg_same = None
+    p_a = 1.0
+    s_aw, a_a = 0.0, 1.0
+    if same is not None and same.any():
+        g2, c2 = _variogram(within, I, J, b, nb, same)
+        vg_same = _vg_dict(g2, c2, np.bincount(b[same], D[same], nb), max_d)
+        if vg_same is not None:
+            rho_same = 1.0 - vg_same["gamma"] / s2w
+            excess = rho_same - s_xw * np.exp(-3.0 * vg_same["h"] / a_x)
+            s_aw, a_a = _fit_excess(vg_same["h"], excess, vg_same["counts"], max_d)
+            s_aw = min(s_aw, 1.0 - s_xw)
+            if s_aw > 0:
+                p_a = _perm_test(within, I, J, b, nb, same, rng, groups)
+                if p_a > STRUCTURE_ALPHA:
+                    s_aw = 0.0
+    del hsum_all
+    s_x = s_xw * s2w / total
+    s_a = s_aw * s2w / total
+    s_p = s2p / total
+    return dict(pass_share=s_p, spatial_share=s_x, range=a_x,
+                along_share=s_a, along_range=a_a,
+                nugget_share=max(1.0 - s_p - s_x - s_a, 0.0),
+                sill=total, pass_var=s2p, within_var=s2w,
+                has_groups=groups is not None,
+                vg=vg, vg_same=vg_same, vg_fit=fit,
+                structure_p=p_x, along_p=p_a)
+
+
+def _correlated(model):
+    return model is not None and (model["spatial_share"] > 0 or model["pass_share"] > 0
+                                  or model["along_share"] > 0)
+
+
+def model_corr(model, d, same=None):
+    """Distance part of the correlation between two points (the pass part is
+    added exactly elsewhere); `same` marks pairs in the same pass."""
+    out = np.zeros_like(d, dtype=float)
+    if model is None:
+        return out
+    if model["spatial_share"] > 0:
+        out = out + model["spatial_share"] * np.exp(-3.0 * d / model["range"])
+    if model["along_share"] > 0 and same is not None:
+        out = out + same * (model["along_share"] * np.exp(-3.0 * d / model["along_range"]))
+    return out
+
+
+def _group_pair_sum(groups, c=None):
+    """Sum over ordered pairs i != j in the same group of c_i c_j (c = 1 if None)."""
+    _, inv = np.unique(groups, return_inverse=True)
+    if c is None:
+        n = np.bincount(inv).astype(float)
+        return float((n * (n - 1)).sum())
+    s = np.bincount(inv, c)
+    s2 = np.bincount(inv, c * c)
+    return float((s * s - s2).sum())
+
+
+def _distance_sum(xy, model, groups, c, rng):
+    """Estimate sum over ordered pairs i != j of c_i c_j model_corr(d_ij)
+    from a random subsample (c = 1 if None)."""
+    n = len(xy)
+    if model["spatial_share"] <= 0 and (model["along_share"] <= 0 or groups is None):
+        return 0.0
+    idx = _subsample(n, CORR_POINTS, rng)
+    m = len(idx)
+    if m < 2:
+        return 0.0
+    p = xy[idx]
+    cc = np.ones(m) if c is None else c[idx]
+    gg = groups[idx] if groups is not None else None
+    tot = 0.0
+    for i0, i1, d in _pairs(p):
+        k = np.arange(i0, i1)[:, None]
+        j = np.arange(m)[None, :]
+        same = (gg[i0:i1][:, None] == gg[None, :]) if gg is not None else None
+        blk = cc[i0:i1, None] * cc[None, :] * model_corr(model, d, same)
+        tot += float(blk[j != k].sum())
+    return tot * n * (n - 1) / (m * (m - 1))
+
+
+def mean_pair_correlation(xy, model, groups=None, seed=_SEED):
+    n = len(xy)
+    if not _correlated(model) or n < 2:
+        return 0.0
+    tot = 0.0
+    if model["pass_share"] > 0 and groups is not None:
+        tot += model["pass_share"] * _group_pair_sum(groups)
+    tot += _distance_sum(xy, model, groups, None, np.random.default_rng(seed + 1))
+    return tot / (n * (n - 1))
+
+
+def n_effective(n, rho):
+    if n < 2 or rho <= 0:
+        return float(n)
+    return float(min(n, max(2.0, n / (1.0 + (n - 1) * rho))))
+
+
+def spatial_summary(xy, resid, model=None, groups=None):
+    """Fit (unless given) the correlation model and return n_eff etc."""
+    n = len(resid)
+    if model is None:
+        model = fit_model(xy, resid, groups)
+    rho = mean_pair_correlation(xy, model, groups)
+    return dict(n=n, rho=rho, n_eff=n_effective(n, rho), model=model,
+                variogram=model["vg"] if model else None)
+
+
+def contrast_variance(xy, c, model, sigma2, groups=None, seed=_SEED):
+    """Variance of sum(c_i * y_i) under the correlation model.
+
+    Var = sigma2 * (sum c_i^2 + sum_{i != j} c_i c_j rho_ij).  The pass part
+    of the double sum is exact; the distance part is estimated from a random
+    subsample of the points and scaled up.  Unlike an effective sample size,
+    this lets noise that two interleaved groups share (e.g. strips over and
+    between drains) cancel in their difference.
+    """
+    nz = c != 0
+    cz = c[nz]
+    n = len(cz)
+    diag = float((cz * cz).sum())
+    if not _correlated(model) or n < 2:
+        return sigma2 * diag
+    gz = groups[nz] if groups is not None else None
+    off = 0.0
+    if model["pass_share"] > 0 and gz is not None:
+        off += model["pass_share"] * _group_pair_sum(gz, cz)
+    off += _distance_sum(xy[nz], model, gz, cz, np.random.default_rng(seed + 2))
+    # the nugget part is uncorrelated, so the variance cannot fall below it
+    return sigma2 * max(diag + off, diag * model["nugget_share"], 1e-12 * diag)
+
+
+def contrast_df(xy, mask, model, groups=None):
+    """Degrees of freedom for a contrast: effective number of the points
+    involved, less 2."""
+    n = int(mask.sum())
+    if not _correlated(model):
+        return max(n - 2, 1)
+    g = groups[mask] if groups is not None else None
+    return max(n_effective(n, mean_pair_correlation(xy[mask], model, g)) - 2, 1.0)
+
+
+def spatial_slope(xy, x, resid, model, weights=None, groups=None):
+    """Slope variance and df of a regression on x with correlated errors
+    (resid: residuals of the fit; weights: 0/1 points kept)."""
+    keep = np.ones(len(x), bool) if weights is None else weights.astype(bool)
+    xk = x[keep]
+    sxx = float(((xk - xk.mean()) ** 2).sum())
+    c = np.zeros(len(x))
+    c[keep] = (xk - xk.mean()) / sxx
+    sigma2 = float((resid[keep] ** 2).sum() / max(keep.sum() - 2, 1))
+    var = contrast_variance(xy, c, model, sigma2, groups)
+    return var, contrast_df(xy, keep, model, groups)
+
+
+def t_ppf(q, df):
+    """Inverse of t_cdf by bisection."""
+    lo, hi = -1e4, 1e4
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if t_cdf(mid, df) < q:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
 
 
 # ---------------------------------------------------------------------------
@@ -354,24 +796,6 @@ def field_statistics(y, x=None, regression=False, rls=False, rls_iter=500,
     return res
 
 
-def slope_tests(s1, s2, use_rls=False):
-    """t-tests: each slope vs 0, and slope 1 vs slope 2."""
-    key = "rls" if use_rls else "ols"
-    if key not in s1 or key not in s2:
-        return None
-    out = {}
-    for tag, s in (("1", s1[key]), ("2", s2[key])):
-        df = s["n"] - 2
-        t = s["slope"] / math.sqrt(s["slope_var"]) if s["slope_var"] > 0 else float("inf")
-        out["t" + tag], out["df" + tag] = t, df
-        out["p" + tag] = t_two_tailed(t, df) if math.isfinite(t) else 0.0
-    v = s1[key]["slope_var"] + s2[key]["slope_var"]
-    t12 = abs(s1[key]["slope"] - s2[key]["slope"]) / math.sqrt(v) if v > 0 else 0.0
-    df12 = out["df1"] + out["df2"]
-    out.update(t12=t12, df12=df12, p12=t_two_tailed(t12, df12))
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Two-field comparison tests
 # ---------------------------------------------------------------------------
@@ -382,6 +806,15 @@ def welch(m1, s1, n1, m2, s2, n2):
     c = v1 / (v1 + v2)
     df = (n1 - 1) * (n2 - 1) / ((n2 - 1) * c * c + (n1 - 1) * (1 - c) ** 2)
     return abs(t), df, t_two_tailed(t, df)
+
+
+def mean_difference(m1, s1, n1, m2, s2, n2, level=0.95):
+    """m1 - m2 with a Welch confidence interval."""
+    diff = m1 - m2
+    se = math.sqrt(s1 * s1 / n1 + s2 * s2 / n2)
+    _, df, _ = welch(m1, s1, n1, m2, s2, n2) if se > 0 else (0, 1, 1)
+    half = t_ppf(0.5 + level / 2.0, df) * se
+    return dict(diff=diff, lo=diff - half, hi=diff + half, se=se, df=df)
 
 
 def variance_test(s1, n1, s2, n2):
@@ -407,22 +840,235 @@ def histogram_test(y1, y2, lo, hi, bins=30):
                 edges=edges, counts1=c1, counts2=c2)
 
 
-def analyse(f1, f2, regression=False, rls=False, rls_iter=500):
-    """f1/f2: dicts with keys y, x (arrays from prepare) and exceed_prob."""
+def _slope_test(fit, var=None, df=None):
+    """t-test of a slope against 0 (var/df override the independent-errors
+    values when spatial correlation is accounted for)."""
+    if var is None:
+        var, df = fit["slope_var"], fit["n"] - 2
+    t = fit["slope"] / math.sqrt(var) if var > 0 else float("inf")
+    p = t_two_tailed(t, df) if math.isfinite(t) else 0.0
+    return dict(t=abs(t), df=df, p=p, var=var)
+
+
+def _test(name, stat, df, p, p_naive=None, note=""):
+    return dict(name=name, stat=stat, df=df, p=p,
+                p_naive=p if p_naive is None else p_naive, note=note)
+
+
+def analyse(f1, f2, regression=False, rls=False, rls_iter=500, spatial=True,
+            distance=None):
+    """Compare two fields.
+
+    f1/f2: dicts with keys y, x, xy (arrays from prepare), exceed_prob and,
+    for the distance-to-tile analysis, d (distance of each point to the
+    nearest tile line).  distance: dict(reach=..., n_bins=...) or None.
+    spatial: correct every test for spatial autocorrelation (needs xy).
+    """
     s1 = field_statistics(f1["y"], f1.get("x"), regression, rls, rls_iter,
                           f1.get("exceed_prob"))
     s2 = field_statistics(f2["y"], f2.get("x"), regression, rls, rls_iter,
                           f2.get("exceed_prob"))
-    out = {"field1": s1, "field2": s2}
-    out["means"] = welch(s1["mean"], s1["sd"], s1["n"], s2["mean"], s2["sd"], s2["n"])
-    out["medians"] = welch(s1["median"], s1["robust_sd"], s1["robust_n"],
-                           s2["median"], s2["robust_sd"], s2["robust_n"])
-    out["variances"] = variance_test(s1["sd"], s1["n"], s2["sd"], s2["n"])
+    out = {"field1": s1, "field2": s2, "spatial": False}
+    use_sp = spatial and f1.get("xy") is not None and f2.get("xy") is not None
+
+    # effective numbers of points
+    ne = []
+    for f, s in ((f1, s1), (f2, s2)):
+        if use_sp:
+            sp = spatial_summary(f["xy"], f["y"] - s["mean"], groups=f.get("g"))
+            s["spatial"] = sp
+            ne.append(sp["n_eff"])
+        else:
+            ne.append(float(s["n"]))
+    out["spatial"] = use_sp
+    ne1, ne2 = ne
+    n1, n2 = s1["n"], s2["n"]
+    tests = []
+
+    # means, with the difference and its confidence interval
+    t, df, p = welch(s1["mean"], s1["sd"], ne1, s2["mean"], s2["sd"], ne2)
+    _, _, p0 = welch(s1["mean"], s1["sd"], n1, s2["mean"], s2["sd"], n2)
+    tests.append(_test("Equivalence of means (Welch t)", t, df, p, p0))
+    out["difference"] = mean_difference(s1["mean"], s1["sd"], ne1,
+                                        s2["mean"], s2["sd"], ne2)
+    out["difference"]["pct"] = 100.0 * out["difference"]["diff"] / s2["mean"] \
+        if s2["mean"] else float("nan")
+
+    # medians (robust Welch); robust n scaled by n_eff / n
+    rn1 = s1["robust_n"] * ne1 / n1
+    rn2 = s2["robust_n"] * ne2 / n2
+    t, df, p = welch(s1["median"], s1["robust_sd"], rn1, s2["median"], s2["robust_sd"], rn2)
+    _, _, p0 = welch(s1["median"], s1["robust_sd"], s1["robust_n"],
+                     s2["median"], s2["robust_sd"], s2["robust_n"])
+    tests.append(_test("Equivalence of medians (robust Welch t)", t, df, p, p0))
+
+    # variances
+    f, d1, d2, p = variance_test(s1["sd"], ne1, s2["sd"], ne2)
+    _, _, _, p0 = variance_test(s1["sd"], n1, s2["sd"], n2)
+    tests.append(_test("Equivalence of variances (F)", f, f"{d1:.0f}, {d2:.0f}", p, p0))
+
+    # histograms: statistic scales with 1 / (1/n1 + 1/n2)
     lo = min(s1["min"], s2["min"])
     hi = max(s1["max"], s2["max"])
-    out["histogram"] = histogram_test(f1["y"], f2["y"], lo, hi)
+    h = histogram_test(f1["y"], f2["y"], lo, hi)
+    k = (1.0 / n1 + 1.0 / n2) / (1.0 / ne1 + 1.0 / ne2)
+    h["stat_adj"] = h["stat"] * k
+    h["p_adj"] = chi2_sf(h["stat_adj"], h["df"])
+    out["histogram"] = h
+    tests.append(_test("Equivalence of histograms (χ², 30 bins)", h["stat_adj"],
+                       h["df"], h["p_adj"], h["p"]))
+
+    # regression slopes
     if regression:
-        out["slopes"] = slope_tests(s1, s2, use_rls=rls)
+        key = "rls" if rls else "ols"
+        kind = "reweighted LS" if rls else "least squares"
+        res_slopes = []
+        for f, s in ((f1, s1), (f2, s2)):
+            fit = s[key]
+            var = df = None
+            if use_sp:
+                w = fit["weights"] if key == "rls" else None
+                resid = f["y"] - fit["intercept"] - fit["slope"] * f["x"]
+                keep = np.ones(len(resid), bool) if w is None else w.astype(bool)
+                g = f.get("g")
+                model = fit_model(f["xy"][keep], resid[keep],
+                                  g[keep] if g is not None else None)
+                var, df = spatial_slope(f["xy"], f["x"], resid, model, w, g)
+                fit["spatial_df"] = df
+            res_slopes.append((_slope_test(fit, var, df), _slope_test(fit)))
+        for tag, (adj, naive) in zip(("1", "2"), res_slopes):
+            tests.append(_test(f"Slope, Field {tag} vs 0 ({kind})", adj["t"], adj["df"],
+                               adj["p"], naive["p"]))
+        (a1, n1s), (a2, n2s) = res_slopes
+        b1, b2 = s1[key]["slope"], s2[key]["slope"]
+
+        def diff_test(x1, x2):
+            v = x1["var"] + x2["var"]
+            t12 = abs(b1 - b2) / math.sqrt(v) if v > 0 else 0.0
+            df12 = x1["df"] + x2["df"]
+            return t12, df12, t_two_tailed(t12, df12)
+        t12, df12, p12 = diff_test(a1, a2)
+        _, _, p12n = diff_test(n1s, n2s)
+        tests.append(_test("Slope, Field 1 vs Field 2", t12, df12, p12, p12n))
+
+    out["tests"] = tests
+
+    # distance to tile
+    if distance:
+        out["distance"] = []
+        for f, s in ((f1, s1), (f2, s2)):
+            if f.get("d") is None:
+                out["distance"].append(None)
+                continue
+            model = s["spatial"]["model"] if use_sp else None
+            out["distance"].append(distance_profile(
+                f["y"], f["d"], f.get("xy"), distance["reach"],
+                distance.get("n_bins", 8), s["mean"], model, use_sp, f.get("g")))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Yield against distance to the nearest tile line
+# ---------------------------------------------------------------------------
+
+MIN_GROUP = 20     # fewest points for a group to be compared
+
+
+def _compare_groups(y, xy, a, b, model, use_sp, groups=None):
+    """Mean of group b minus mean of group a, with CI and test.
+
+    With use_sp the variance of the difference comes from the fitted
+    correlation model (contrast_variance), so patches of good or poor ground
+    that both groups share cancel out, as they should.
+    """
+    na, nb = int(a.sum()), int(b.sum())
+    if na < MIN_GROUP or nb < MIN_GROUP:
+        return None
+    ya, yb = y[a], y[b]
+    ma, mb = float(ya.mean()), float(yb.mean())
+    sa, sb = float(ya.std(ddof=1)), float(yb.std(ddof=1))
+    diff = mb - ma
+    _, _, p0 = welch(mb, sb, nb, ma, sa, na)
+    if use_sp and model is not None:
+        c = np.zeros(len(y))
+        c[b] = 1.0 / nb
+        c[a] = -1.0 / na
+        pooled = ((na - 1) * sa * sa + (nb - 1) * sb * sb) / (na + nb - 2)
+        se = math.sqrt(contrast_variance(xy, c, model, pooled, groups))
+        df = contrast_df(xy, a | b, model, groups)
+    else:
+        se = math.sqrt(sa * sa / na + sb * sb / nb)
+        _, df, _ = welch(mb, sb, nb, ma, sa, na)
+    t = diff / se if se > 0 else float("inf")
+    p = t_two_tailed(t, df) if math.isfinite(t) else 0.0
+    half = t_ppf(0.975, df) * se
+    return dict(mean_a=ma, mean_b=mb, n_a=na, n_b=nb, diff=diff,
+                lo=diff - half, hi=diff + half,
+                pct=100.0 * diff / ma if ma else float("nan"),
+                t=abs(t), df=df, p=p, p_naive=p0)
+
+
+def distance_profile(y, d, xy, reach, n_bins, field_mean, model=None, use_sp=False,
+                     groups=None):
+    """Yield in bands of distance from the nearest tile line.
+
+    reach: half the drain spacing (the farthest a point between two
+    parallel laterals can be from tile).  Points farther than that are
+    treated as beyond the reach of the tile.
+    """
+    within = d <= reach
+    out = dict(reach=reach, n=len(y), n_within=int(within.sum()),
+               n_beyond=int((~within).sum()))
+    if out["n_within"] < 2 * MIN_GROUP:
+        out["error"] = "Too few points within half a drain spacing of the tile."
+        return out
+    sp = use_sp and _correlated(model)
+    mean_w = float(y[within].mean())
+    edges = np.linspace(0.0, reach, n_bins + 1)
+    bins = []
+    for i in range(n_bins):
+        hi_ok = (d < edges[i + 1]) if i < n_bins - 1 else (d <= edges[i + 1])
+        m = within & (d >= edges[i]) & hi_ok
+        nb = int(m.sum())
+        row = dict(lo=edges[i], hi=edges[i + 1], n=nb, mean=float("nan"),
+                   rel=float("nan"), ci=float("nan"), rel_ci=float("nan"))
+        if nb >= 3:
+            mean = float(y[m].mean())
+            # CI of the band's difference from the average within reach
+            g = _compare_groups(y, xy, within & ~m, m, model, sp, groups) \
+                if nb >= MIN_GROUP and (within & ~m).sum() >= MIN_GROUP else None
+            ci = (g["hi"] - g["diff"]) if g else float("nan")
+            row.update(mean=mean, rel=100.0 * mean / field_mean, ci=ci,
+                       rel_ci=100.0 * ci / field_mean)
+        bins.append(row)
+    out["bins"] = bins
+    out["mean_within"] = mean_w
+
+    # over the tile (inner quarter) vs midway between drains (outer quarter)
+    near = within & (d <= 0.25 * reach)
+    mid = within & (d >= 0.75 * reach)
+    out["mid_vs_near"] = _compare_groups(y, xy, near, mid, model, sp, groups)
+
+    # straight-line trend of yield with distance, within reach
+    fit = _wls(d[within], y[within])
+    if fit is not None:
+        naive = _slope_test(fit)
+        st = naive
+        if sp:
+            resid = y[within] - fit["intercept"] - fit["slope"] * d[within]
+            var, df = spatial_slope(xy[within], d[within], resid, model, None,
+                                    groups[within] if groups is not None else None)
+            st = _slope_test(fit, var, df)
+        half = t_ppf(0.975, st["df"]) * math.sqrt(st["var"])
+        out["trend"] = dict(slope=fit["slope"], intercept=fit["intercept"],
+                            lo=fit["slope"] - half, hi=fit["slope"] + half,
+                            change=fit["slope"] * reach,
+                            change_pct=100.0 * fit["slope"] * reach / fit["intercept"]
+                            if fit["intercept"] else float("nan"),
+                            t=st["t"], df=st["df"], p=st["p"], p_naive=naive["p"])
+
+    # beyond the reach of the tile vs within it
+    out["beyond_vs_within"] = _compare_groups(y, xy, within, ~within, model, sp, groups)
     return out
 
 
