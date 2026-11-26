@@ -178,18 +178,6 @@
       <p class="lede">QGIS plugins for drainage and terrain work. Each card links to the plugin's folder on GitHub, with its README, install steps and source code, and to its zip file for installing in QGIS. Once installed, the drainage tools are grouped under <strong>Vector → Tile Drainage</strong> and <strong>Raster → Tile Drainage</strong> in QGIS.</p>
 
       <div class="grid">
-        <div class="card" id="min_curvature">
-          <div class="card-head"><span class="tag">Plugin · v1.2.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/min_curvature">Surface Interpolation</a></h3></div>
-          <div class="card-body"><p>Grids scattered point data into a raster using minimum curvature (with optional tension) or natural neighbor interpolation.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/min_curvature">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/min_curvature/min_curvature.zip" download>Download zip file</a></div></div>
-        </div>
-        <div class="card" id="line_angle">
-          <div class="card-head"><span class="tag">Plugin · v1.3.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/line_angle">Line Angle</a></h3></div>
-          <div class="card-body"><p>Click a line segment, or two points, to get its angle in degrees. Includes a Processing tool that writes every segment's angle to a field.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/line_angle">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/line_angle/line_angle.zip" download>Download zip file</a></div></div>
-        </div>
-        <div class="card" id="random_point_selection">
-          <div class="card-head"><span class="tag">Plugin · v1.1.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/random_point_selection">Random Point Selection</a></h3></div>
-          <div class="card-body"><p>Randomly selects a set number or percentage of points from a layer, with an optional seed for repeatable results.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/random_point_selection">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/random_point_selection/random_point_selection.zip" download>Download zip file</a></div></div>
-        </div>
         <div class="card" id="illini_main_tile_locator">
           <div class="card-head"><span class="tag">Plugin · v0.6.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/illini_main_tile_locator">Illini Main Tile Locator</a></h3></div>
           <div class="card-body"><p>Finds the best tile main from a clicked outlet, a DEM and a field boundary, for laterals parallel or perpendicular to the contours. Scores dozens of candidate mains by how much of the field their laterals can drain to, buries them with Illini Drainage Tools routine J, and returns the chosen main and four runners-up, labelled by rank. Can also add submains until the field is covered. Maximum lateral length defaults to the capacity of a 4-inch tile on a 0.1% slope. A curved main can be smoothed or turned into straight sections of a minimum length, and the chosen main is also written in straight sections as a layer that opens in Tile Profile.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/illini_main_tile_locator">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/illini_main_tile_locator/illini_main_tile_locator.zip" download>Download zip file</a></div></div>
@@ -221,6 +209,18 @@
         <div class="card" id="water_management_zones">
           <div class="card-head"><span class="tag">Plugin · v0.1.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/water_management_zones">Water Management Zones</a></h3></div>
           <div class="card-body"><p>Splits a tile-drained field into water management zones for controlled drainage and subirrigation, and places a control structure for each zone, with its board elevation, latitude and longitude and the share of the zone the managed water table controls. Works from elevation bands alone, or from a drainage network, including several separate systems with their own outlets. Also maps each zone's lowest point and where the tile crosses the field boundary, with surface elevation and tile depth there, and compares zone intervals.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/water_management_zones">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/water_management_zones/water_management_zones.zip" download>Download zip file</a></div></div>
+        </div>
+        <div class="card" id="min_curvature">
+          <div class="card-head"><span class="tag">Plugin · v1.2.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/min_curvature">Surface Interpolation</a></h3></div>
+          <div class="card-body"><p>Grids scattered point data into a raster using minimum curvature (with optional tension) or natural neighbor interpolation.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/min_curvature">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/min_curvature/min_curvature.zip" download>Download zip file</a></div></div>
+        </div>
+        <div class="card" id="line_angle">
+          <div class="card-head"><span class="tag">Plugin · v1.3.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/line_angle">Line Angle</a></h3></div>
+          <div class="card-body"><p>Click a line segment, or two points, to get its angle in degrees. Includes a Processing tool that writes every segment's angle to a field.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/line_angle">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/line_angle/line_angle.zip" download>Download zip file</a></div></div>
+        </div>
+        <div class="card" id="random_point_selection">
+          <div class="card-head"><span class="tag">Plugin · v1.1.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/random_point_selection">Random Point Selection</a></h3></div>
+          <div class="card-body"><p>Randomly selects a set number or percentage of points from a layer, with an optional seed for repeatable results.</p><div class="links"><a class="go" href="https://github.com/Bhudus/QGIS_Tools/tree/main/random_point_selection">View on GitHub</a><a class="go" href="https://github.com/Bhudus/QGIS_Tools/raw/main/random_point_selection/random_point_selection.zip" download>Download zip file</a></div></div>
         </div>
         <div class="card" id="raster_extremes">
           <div class="card-head"><span class="tag">Plugin · v1.1.0</span><h3><a class="card-link" href="https://github.com/Bhudus/QGIS_Tools/tree/main/raster_extremes">Raster Extremes</a></h3></div>
