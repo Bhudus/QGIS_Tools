@@ -182,6 +182,105 @@ def trace_path(start, rcv, stream, max_steps=10_000_000):
     return cells, "edge"
 
 
+def route_to_targets(zfill, valid, targets, starts, cellsize=1.0, climb_weight=100.0,
+                     feedback=None):
+    """
+    Least-cost route from each start cell to the nearest target cell (e.g. a
+    district drain), for starts whose natural downhill path never reaches it.
+
+    Step cost from cell i to neighbour j (in the direction of flow, towards
+    the target) = horizontal distance + ``climb_weight`` * rise, where
+    rise = max(0, zfill[j] - zfill[i]). So the route prefers low ground and
+    only climbs over a ridge when there is no reasonable way around it;
+    ``climb_weight`` = 100 means 1 m of climbing costs as much as 100 m of
+    extra length. Using the depression-filled surface means crossing a
+    pothole or pond costs nothing extra.
+
+    A single multi-source Dijkstra is run outward from all target cells and
+    stopped as soon as every start cell is settled.
+
+    Returns dict start -> list of flat cell indices from the start to the
+    target (inclusive); starts that cannot reach any target are omitted.
+    """
+    nr, nc = zfill.shape
+    zf = np.where(valid, zfill, np.inf).ravel().tolist()
+    vf = valid.ravel().tolist()
+    tgt = np.flatnonzero((targets & valid).ravel()).tolist()
+    if not tgt:
+        return {}
+    INF = float("inf")
+    dist = {}
+    nxt = {}
+    heap = [(0.0, i) for i in tgt]
+    for i in tgt:
+        dist[i] = 0.0
+        nxt[i] = -1
+    heapq.heapify(heap)
+    pending = set(int(s) for s in starts if 0 <= s < nr * nc and vf[s])
+    settled = set()
+    total = int(valid.sum()) or 1
+    step = max(1, total // 50)
+    offs = [(dr, dc, d * cellsize) for (dr, dc), d in zip(_OFFSETS, _DIST)]
+    while heap and pending:
+        dj, j = heapq.heappop(heap)
+        if j in settled:
+            continue
+        settled.add(j)
+        pending.discard(j)
+        if feedback is not None and len(settled) % step == 0:
+            if feedback(min(1.0, len(settled) / total)):
+                raise RuntimeError("Cancelled")
+        r, c = divmod(j, nc)
+        zj = zf[j]
+        for dr, dc, d in offs:
+            rr, cc = r + dr, c + dc
+            if rr < 0 or rr >= nr or cc < 0 or cc >= nc:
+                continue
+            i = rr * nc + cc
+            if not vf[i] or i in settled:
+                continue
+            rise = zj - zf[i]
+            cand = dj + d + (climb_weight * rise if rise > 0 else 0.0)
+            if cand < dist.get(i, INF):
+                dist[i] = cand
+                nxt[i] = j
+                heapq.heappush(heap, (cand, i))
+    routes = {}
+    for s in starts:
+        s = int(s)
+        if s not in settled:
+            continue
+        path = [s]
+        i = s
+        while nxt[i] >= 0:
+            i = nxt[i]
+            path.append(i)
+        routes[s] = path
+    return routes
+
+
+def path_profile_stats(z, dists):
+    """
+    For a path with ground elevations ``z`` and cumulative distances
+    ``dists`` (same length), return (climb, max_cut):
+
+    * climb   - total uphill rise along the path (sum of positive steps)
+    * max_cut - largest height of the ground above the straight grade line
+      joining the start and end elevations (how deep a channel or tile at
+      constant grade would have to cut), never negative.
+    """
+    z = np.asarray(z, dtype=np.float64)
+    if z.size < 2:
+        return 0.0, 0.0
+    dz = np.diff(z)
+    climb = float(dz[dz > 0].sum())
+    L = float(dists[-1])
+    if L <= 0:
+        return climb, 0.0
+    line = z[0] + (z[-1] - z[0]) * np.asarray(dists, dtype=np.float64) / L
+    return climb, float(max(0.0, (z - line).max()))
+
+
 def field_final_outlets(field, stream, rcv):
     """
     Natural outlet(s) of a field on its boundary.
