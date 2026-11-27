@@ -6,6 +6,7 @@ code as text (`vba/`) so you can read the macros before running them.
 
 | Workbook | What it does |
 |---|---|
+| [County Simulations](county_simulations/) | Runs DRAINMOD for a county and soil over a range of drain depths and spacings, with weather from Daymet (observed) or NASA NEX-GDDP-CMIP6 (projected climate) or your own files, and charts corn and soybean yield and the water balance against spacing |
 | [DRAINMOD Calibration](drainmod_calibration/) | Calibrates a DRAINMOD project to measured drain flow and water table depth by maximizing the KGE (DDS search, runs side by side), after a sensitivity analysis that ranks the parameters |
 | [DRAINMOD Drainage Design](drainmod_drainage_design/) | Runs a DRAINMOD project for every combination of drain depth, drain spacing and weather set (current and future), and charts relative yield against spacing; for a chosen depth and spacing, gives the probability of exceedance of daily drain flow and monthly design flows under both weather sets |
 | [DRAINMOD Path Fixer](drainmod_path_fixer/) | Rewrites the paths in a moved or copied DRAINMOD project (.prj, .gen and input files) so DRAINMOD finds its files, with a check first, .bak copies and undo |
