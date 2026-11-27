@@ -6,12 +6,14 @@ Public Const SIM_BASE_Y1 As Integer = 1996
 Public Const SIM_BASE_Y2 As Integer = 2025
 Public Const NEX_HIST_END As Integer = 2014       ' last year of the NEX-GDDP-CMIP6 historical runs
 Public Const TIGER_COUNTIES As String = "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/State_County/MapServer"
+Public Const TIGER_COUNTIES_2020 As String = "https://tigerweb.geo.census.gov/arcgis/rest/services/Census2020/State_County/MapServer/9"
 Private countyCache As Object          ' state FIPS -> Dictionary(normalized county name -> "lat|lon")
 Public gLocating As Boolean            ' True while Locate from Map sets the state/county/soil
 Private gUseCurl As Boolean             ' True once curl.exe worked where Windows' HTTP components failed
 Private Const HTTP_UA As String = "DRAINMOD-County-Simulations-Excel/2.0"
 Private Const DM_APP As String = "DRAINMOD County Simulations"   ' registry key for saved settings
 Private gNoParallel As Boolean          ' True if downloading several files at once did not work here
+Private gCountyUrl As String            ' Census county layer that last answered
 Private Const NEX_PARALLEL As Long = 3  ' NEX-GDDP downloads at a time (NASA's server throttles busy clients)
 #If VBA7 Then
 Private Declare PtrSafe Sub SleepMs Lib "kernel32" Alias "Sleep" (ByVal dwMilliseconds As Long)
@@ -1410,7 +1412,44 @@ Private Function TigerCountyLayerId() As String
         End If
         If InStr(seg, "]") > 0 Then Exit Do
     Loop
-    Err.Raise vbObjectError + 590, "County centroid", "TIGERweb has no 'Counties' layer."
+    TigerCountyLayerId = ""        ' not found: CountyQuery falls back to known layers
+End Function
+
+' Runs a county query (the text after "/query?") on the first Census county
+' layer that gives a valid answer: the one that answered last time, the current
+' TIGERweb counties layer (found by name), that service's layer 1, and the
+' stable Census 2020 counties layer. Census reorganizes TIGERweb from time to
+' time, so the layer number cannot be relied on.
+Private Function CountyQuery(ByVal params As String) As String
+    Dim urls As New Collection, u As Variant, txt As String, lastInfo As String, id As String
+    If gCountyUrl <> "" Then urls.Add gCountyUrl
+    On Error Resume Next
+    id = TigerCountyLayerId()
+    If Err.Number <> 0 Then lastInfo = Err.Description
+    Err.Clear
+    On Error GoTo 0
+    If id <> "" Then urls.Add TIGER_COUNTIES & "/" & id
+    If id <> "1" Then urls.Add TIGER_COUNTIES & "/1"
+    urls.Add TIGER_COUNTIES_2020
+    For Each u In urls
+        txt = ""
+        On Error Resume Next
+        txt = HttpGetText(u & "/query?" & params)
+        If Err.Number <> 0 Then
+            lastInfo = Err.Description
+        Else
+            lastInfo = Left$(Trim$(Replace(Replace(txt, vbCr, " "), vbLf, " ")), 200)
+        End If
+        Err.Clear
+        On Error GoTo 0
+        If InStr(txt, """features""") > 0 And InStr(txt, """error""") = 0 Then
+            gCountyUrl = u
+            CountyQuery = txt
+            Exit Function
+        End If
+    Next u
+    Err.Raise vbObjectError + 590, "County centroid", "the US Census TIGERweb server did not return county data." & _
+        vbLf & "Its last answer began: " & lastInfo
 End Function
 
 Private Function StateCounties(ByVal fips As String) As Object
@@ -1418,9 +1457,9 @@ Private Function StateCounties(ByVal fips As String) As Object
     Dim nm As String, la As String, lo As String
     If countyCache Is Nothing Then Set countyCache = CreateObject("Scripting.Dictionary")
     If countyCache.Exists(fips) Then Set StateCounties = countyCache(fips): Exit Function
-    url = TIGER_COUNTIES & "/" & TigerCountyLayerId() & "/query?where=" & UrlEncode("STATE='" & fips & "'") & _
+    url = "where=" & UrlEncode("STATE='" & fips & "'") & _
           "&outFields=" & UrlEncode("NAME,BASENAME,CENTLAT,CENTLON,INTPTLAT,INTPTLON") & "&returnGeometry=false&f=json"
-    txt = HttpGetText(url)
+    txt = CountyQuery(url)
     Set d = CreateObject("Scripting.Dictionary")
     p = InStr(txt, """attributes""")
     Do While p > 0
@@ -1649,10 +1688,10 @@ End Function
 ' Census county containing a point: returns county name, sets state FIPS
 Private Function CensusCountyAt(ByVal lat As Double, ByVal lon As Double, ByRef fips As String) As String
     Dim url As String, txt As String, p As Long, q As Long, seg As String
-    url = TIGER_COUNTIES & "/" & TigerCountyLayerId() & "/query?geometry=" & NumStr(lon, 6) & "," & NumStr(lat, 6) & _
+    url = "geometry=" & NumStr(lon, 6) & "," & NumStr(lat, 6) & _
           "&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects" & _
           "&outFields=" & UrlEncode("NAME,BASENAME,STATE") & "&returnGeometry=false&f=json"
-    txt = HttpGetText(url)
+    txt = CountyQuery(url)
     p = InStr(txt, """attributes""")
     If p = 0 Then Exit Function
     q = InStr(p, txt, "}")

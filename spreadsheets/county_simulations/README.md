@@ -1,6 +1,6 @@
 # County Simulations
 
-**Workbook:** `County_Simulations.xlsm` · Version 2 ·
+**Workbook:** `County_Simulations.xlsm` · Version 2.1 ·
 [download zip](https://github.com/Bhudus/QGIS_Tools/raw/main/spreadsheets/county_simulations/county_simulations.zip)
 
 Runs DRAINMOD for a county and soil over a range of drain depths and spacings, for
@@ -80,6 +80,9 @@ Excel are blocked (for example by a VPN or firewall), downloads are retried with
 
 ## Versions
 
+* **2.1** – County centroid lookup works with the reorganized US Census TIGERweb service:
+  it tries the current counties layer, then the stable Census 2020 counties layer, and
+  if neither answers the message shows what the server returned.
 * **2** – First published version. Online site, weather (Daymet, NEX-GDDP-CMIP6) and soil
   (SSURGO) data; `dmhydro.exe` chosen by the user instead of the DRAINMOD folder's
   `program` folder; option to use your own `.RAI`/`.TEM` files; NEX-GDDP-CMIP6 downloads
