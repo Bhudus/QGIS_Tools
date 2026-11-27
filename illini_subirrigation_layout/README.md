@@ -57,6 +57,8 @@ Zone and water-management settings:
 
 | Parameter | Notes |
 |---|---|
+| No-tile zones | Optional polygon layer of areas where no tile goes: ponds, waterways, building sites, wetlands. They are cut out of the field like holes in the boundary: laterals keep the boundary setback from their edges, collectors are routed around them, and a solid connector that would cross one goes around it instead. |
+| Mains and submains may cross the no-tile zones | For zones that only laterals stay out of, such as grassed waterways: the main and the solid connectors between control zones may then run across them (zone submains stay in their own control zone, outside the no-tile zones). Default off. |
 | Zone polygons | Optional. Leave empty for elevation bands. Each connected piece of a polygon is a zone; field land outside the polygons joins the neighbouring zone. The *Control zones* layer of the Water Management Zones plugin (band mode) works directly. |
 | Zone elevation interval | Height of each elevation band, in design units. Default 1 ft. |
 | Smallest zone | Acres (hectares in metres). Smaller patches join the neighbour they share most border with. Default 1. |

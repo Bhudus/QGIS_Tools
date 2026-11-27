@@ -40,6 +40,7 @@ from .geometry import (
     moving_average,
     nearest_vertex,
     polyline_length,
+    rasterize_rings,
     resample,
     segments_cross,
 )
@@ -596,13 +597,29 @@ class ZonalLayout(DrainageLayout):
             idx, d = nearest_vertex(self.X[ii, jj], self.Y[ii, jj], hx, hy)
             cseg = self._collector_segments()
             choice = None
-            for q in np.argsort(d)[:40]:
-                ex = (float(self.X[ii[q], jj[q]]), float(self.Y[ii[q], jj[q]]))
-                k, v = hv[int(idx[q])]
-                hp = self.cols[k]["pts"][v]
-                if d[q] < 0.5 * S or not segments_cross(ex[0], ex[1], hp[0], hp[1], cseg):
-                    choice = ((int(ii[q]), int(jj[q])), ex, k, v, float(d[q]))
+            # a clear route: no collector crossed and, for a connector, no hole in
+            # the field (no-tile zone) crossed; failing that, any route clear of
+            # collectors, with a warning
+            for strict in (True, False):
+                for q in np.argsort(d)[:40]:
+                    ex = (float(self.X[ii[q], jj[q]]), float(self.Y[ii[q], jj[q]]))
+                    k, v = hv[int(idx[q])]
+                    hp = self.cols[k]["pts"][v]
+                    if d[q] < 0.5 * S or not segments_cross(ex[0], ex[1], hp[0], hp[1], cseg):
+                        if strict and self._crosses_hole(ex, hp):
+                            continue
+                        choice = ((int(ii[q]), int(jj[q])), ex, k, v, float(d[q]))
+                        break
+                if choice is not None:
                     break
+            detour = None
+            if choice is not None and choice[4] >= 0.5 * S:
+                _, ex_, k_, v_, _ = choice
+                if self._crosses_hole(ex_, self.cols[k_]["pts"][v_]):
+                    detour = self._route_round_holes(ex_, self.cols[k_]["pts"][v_])
+                    if detour is None:
+                        self._warn("The connector from zone {} crosses a hole in the field "
+                                   "(no-tile zone); no route around it was found.".format(z))
             if choice is None:
                 self._warn("Zone {} has no collector and no clear route to one; it gets no "
                            "subsystem.".format(z))
@@ -633,7 +650,7 @@ class ZonalLayout(DrainageLayout):
                 sub = resample(stem, self.hc) if polyline_length(stem) > 0 \
                     else np.array([ex, (float(ex[0]) + 1e-3, float(ex[1]))], dtype=float)
                 sub[-1] = ex
-                conn = resample(np.array([ex, hp]), self.hc)
+                conn = resample(detour if detour is not None else np.array([ex, hp]), self.hc)
                 conn[0], conn[-1] = ex, hp
                 ci = len(self.cols) + 1
                 self.cols.append({"pts": sub, "kind": "submain", "to": (ci, 0), "zone": z,
@@ -646,6 +663,92 @@ class ZonalLayout(DrainageLayout):
             added += 1
         self.n_zone_submains = getattr(self, "n_zone_submains", 0) + added
         return added
+
+    def _crosses_hole(self, a, b):
+        """Whether the straight line a-b runs over a hole in the field (a pond or
+        other no-tile zone cut out of it)."""
+        holes = getattr(self, "_holes", None)
+        if holes is None:
+            holes = np.zeros(self.g.shape, dtype=bool)
+            rings = [np.asarray(r, float) for r in self.rings]
+            for i, r in enumerate(rings):
+                x, y = float(r[0][0]), float(r[0][1])
+                n_in = 0
+                for j, o in enumerate(rings):
+                    if j == i:
+                        continue
+                    x1, y1 = o[:, 0], o[:, 1]
+                    x2, y2 = np.roll(x1, -1), np.roll(y1, -1)
+                    c = (y1 > y) != (y2 > y)
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        xc = x1[c] + (y - y1[c]) * (x2[c] - x1[c]) / (y2[c] - y1[c])
+                    n_in += int((xc > x).sum() % 2)
+                if n_in % 2 == 1:
+                    holes |= rasterize_rings(self.g, [r])
+            self._holes = holes
+        if not holes.any():
+            return False
+        L = math.hypot(b[0] - a[0], b[1] - a[1])
+        n = max(2, int(math.ceil(L / (0.5 * self.g.cell))) + 1)
+        for t in np.linspace(0.0, 1.0, n):
+            if self.g.lookup(holes, a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), False):
+                return True
+        return False
+
+    def _route_round_holes(self, a, b):
+        """The shortest path from a to b over the field, around its holes
+        (no-tile zones), straightened; None if there is none."""
+        import heapq
+        g = self.g
+        holes = self._holes
+        ok = self.field_full & ~holes
+        ca, cb = g.cell_of(*a), g.cell_of(*b)
+        if ca is None or cb is None:
+            return None
+        ok = ok.copy()
+        ok[ca] = ok[cb] = True
+        nr, nc = g.shape
+        dist = {ca: 0.0}
+        prev = {}
+        heap = [(0.0, ca)]
+        steps = [(-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),
+                 (-1, -1, 1.4142), (-1, 1, 1.4142), (1, -1, 1.4142), (1, 1, 1.4142)]
+        while heap:
+            d0, c = heapq.heappop(heap)
+            if c == cb:
+                break
+            if d0 > dist.get(c, 1e300):
+                continue
+            i, j = c
+            for di, dj, w in steps:
+                n = (i + di, j + dj)
+                if not (0 <= n[0] < nr and 0 <= n[1] < nc) or not ok[n]:
+                    continue
+                if di and dj and not (ok[i + di, j] and ok[i, j + dj]):
+                    continue                  # no corner cutting past a hole
+                nd = d0 + w
+                if nd < dist.get(n, 1e300):
+                    dist[n] = nd
+                    prev[n] = c
+                    heapq.heappush(heap, (nd, n))
+        if cb not in prev and cb != ca:
+            return None
+        cells = [cb]
+        while cells[-1] != ca:
+            cells.append(prev[cells[-1]])
+        pts = [g.center_of(i, j) for i, j in reversed(cells)]
+        pts[0], pts[-1] = tuple(a), tuple(b)
+        # straighten: keep a vertex only where the straight line past it would
+        # cross a hole
+        out = [pts[0]]
+        k = 0
+        while k < len(pts) - 1:
+            m = len(pts) - 1
+            while m > k + 1 and self._crosses_hole(pts[k], pts[m]):
+                m -= 1
+            out.append(pts[m])
+            k = m
+        return np.array(out, dtype=float)
 
     def _poorly_served(self):
         """Zones where many laterals reach a collector only through a long

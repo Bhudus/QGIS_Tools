@@ -102,6 +102,9 @@ class LayoutParams:
     excavation_weight: float = 0.0       # least cost: cost of each ft (m) of depth per length
     max_grade_change: float = 0.0        # m/m, largest change of grade at a break (0 = any)
     fix_outlet: bool = False             # hold the outlet tile at outlet_invert (all methods)
+    no_tile: Optional[list] = None       # rings of no-tile zones laterals keep out of
+    #   (mains and submains may cross them); zones that nothing may cross are cut out
+    #   of the field rings instead
     min_bend_angle: float = 120.0        # degrees between tile legs at a bend; 0 = no limit
     tile_raster: bool = False            # also return a raster of tile elevation and depth
 
@@ -217,6 +220,11 @@ class DrainageLayout:
         X, Y = g.centers()
         self.X, self.Y = X, Y
         field = rasterize_rings(g, self.rings)
+        zones = [np.asarray(r, float) for r in (p.no_tile or []) if len(r) >= 3]
+        nt = rasterize_rings(g, zones) if zones else None
+        route_field = field & self.valid
+        if nt is not None:
+            field = field & ~nt
         self.field_full = field
         self.field = field & self.valid
         nf = int(field.sum())
@@ -228,8 +236,18 @@ class DrainageLayout:
         segs = ring_segments(self.rings)
         fi = np.nonzero(self.field)
         db = dist_to_segments(X[fi], Y[fi], segs)
+        if zones:
+            db = np.minimum(db, dist_to_segments(X[fi], Y[fi], ring_segments(zones)))
         self.inner = np.zeros(g.shape, dtype=bool)
         self.inner[fi] = db >= self.setback
+        # where mains and submains may run: the drainable area, and the no-tile
+        # zones they may cross
+        if zones:
+            ri = np.nonzero(route_field)
+            self.route = np.zeros(g.shape, dtype=bool)
+            self.route[ri] = dist_to_segments(X[ri], Y[ri], segs) >= self.setback
+        else:
+            self.route = self.inner
         if self.inner.sum() < 20:
             raise LayoutError("Nothing is left of the field after the boundary setback.")
         self.field_area = float(self.field_full.sum()) * g.cell ** 2
@@ -280,7 +298,7 @@ class DrainageLayout:
             self.outlet_from_main = True
 
         # snap the outlet to the drainable area
-        ii, jj = np.nonzero(self.inner)
+        ii, jj = np.nonzero(self.route)
         d = np.hypot(X[ii, jj] - self.outlet[0], Y[ii, jj] - self.outlet[1])
         k = int(np.argmin(d))
         self.o_cell = (int(ii[k]), int(jj[k]))
@@ -302,7 +320,7 @@ class DrainageLayout:
         zp = np.full((nr + 2, nc + 2), np.inf)
         zp[1:-1, 1:-1] = np.where(np.isfinite(self.zs), self.zs, np.inf)
         mp = np.zeros((nr + 2, nc + 2), dtype=bool)
-        mp[1:-1, 1:-1] = self.inner
+        mp[1:-1, 1:-1] = self.route
         zl = zp.ravel().tolist()
         ml = mp.ravel().tolist()
         visited = [False] * len(zl)
@@ -336,10 +354,10 @@ class DrainageLayout:
     def _thalweg_collectors(self):
         order, parent, acc, P, start = self._flood_tree()
         nreach = len(order)
-        if nreach < 0.9 * self.inner.sum():
+        if nreach < 0.9 * self.route.sum():
             self._warn("{:.0f}% of the field cannot drain to this outlet without "
                        "crossing the setback zone and gets no main."
-                       .format(100 * (1 - nreach / self.inner.sum())))
+                       .format(100 * (1 - nreach / self.route.sum())))
         stop = max(3.0, self.p.main_stop_frac * nreach)
         sub = self.p.submain_frac * nreach if self.p.submain_frac > 0 else float("inf")
         children = {}
@@ -852,6 +870,16 @@ class DrainageLayout:
         nx, ny = -ty / tn * side, tx / tn * side
         off = 1.5 * self.g.cell
         sx, sy = x + off * nx, y + off * ny
+        if not self.inside(sx, sy) and self.route is not self.inner:
+            # a main in a no-tile zone it may cross: the lateral starts past the
+            # zone and its setback, and reaches the main by a connector
+            reach = self.max_conn + self.setback
+            while off < reach and not self.inside(sx, sy):
+                if not self.g.lookup(self.route, sx, sy, False) and \
+                        self.g.lookup(self.field_full, sx, sy, False):
+                    break                       # past the field's own setback
+                off += self.g.cell
+                sx, sy = x + off * nx, y + off * ny
         if not self.inside(sx, sy):
             return "bad", None
         reg = self.region_at(sx, sy)
@@ -919,8 +947,13 @@ class DrainageLayout:
                             dist, q, c2, v2 = self.snap_collector(sx, sy)
                             junction = (q, c2, v2)
                         q, c2, v2 = junction
+                        # started past a no-tile zone: the connector does not count
+                        # towards the shortest lateral
+                        far = math.hypot(q[0] - sx, q[1] - sy) > 3 * self.g.cell
+                        traced = polyline_length(line) if len(line) > 1 else 0.0
                         line = line + [q]
-                        if polyline_length(line) >= self.lmin:
+                        if polyline_length(line) >= self.lmin and (not far or
+                                                                    traced >= self.lmin):
                             last = self._add_lateral(line, reg, "primary",
                                                      ("collector", c2, v2), [], fixed)
                         else:

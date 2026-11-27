@@ -310,6 +310,8 @@ def reset_saved_settings():
 class IlliniSubirrigationLayoutAlgorithm(QgsProcessingAlgorithm):
     DEM = "DEM"
     FIELD = "FIELD"
+    NO_TILE = "NO_TILE"
+    CROSS_NO_TILE = "CROSS_NO_TILE"
     OUTLET = "OUTLET"
     MAIN = "MAIN"
     SPACING = "SPACING"
@@ -381,7 +383,7 @@ class IlliniSubirrigationLayoutAlgorithm(QgsProcessingAlgorithm):
     # default the next time the dialog opens (QGIS builds a fresh algorithm, and
     # so reads these again, for every dialog). Inputs that belong to one field
     # (DEM, boundary, outlet, main line) and the output destinations are not saved.
-    NOT_SAVED = ("DEM", "FIELD", "OUTLET", "MAIN", "ZONES", "NETWORK", "SURFACE_LAYOUT",
+    NOT_SAVED = ("DEM", "FIELD", "NO_TILE", "OUTLET", "MAIN", "ZONES", "NETWORK", "SURFACE_LAYOUT",
                  "REPORT", "TILE_RASTER", "ZONES_OUT", "STRUCTURES", "STATUS")
 
     def addParameter(self, definition, createOutput=True):
@@ -433,6 +435,16 @@ class IlliniSubirrigationLayoutAlgorithm(QgsProcessingAlgorithm):
             "<p>Lays out a subirrigation (controlled drainage) tile system for a field from "
             "a DEM, the field boundary, an outlet location and the lateral spacing, with "
             "the field cut into zones and every subsystem contained within its zone.</p>"
+            "<p><b>No-tile zones</b> (optional): polygons where no tile goes, such as "
+            "ponds, waterways, building sites or wetlands. They are cut out of the field "
+            "like holes in the boundary: laterals keep the boundary setback (default half "
+            "the spacing) from their edges and are split where they would cross one, and "
+            "mains and submains are routed around them. Holes already in the field "
+            "polygon are treated the same way.</p>"
+            "<p><b>Mains and submains may cross the no-tile zones</b>: for zones the "
+            "laterals stay out of but a main may run along or across, such as grassed "
+            "waterways. The laterals still keep the setback from the zones and reach a "
+            "main inside one by a connector.</p>"
             "<p><b>Zones</b>: elevation bands one <i>zone elevation interval</i> high on the "
             "smoothed terrain, each connected patch its own zone, with patches smaller than "
             "the <i>smallest zone</i> merged into a neighbour. Or supply zone polygons (for "
@@ -613,6 +625,14 @@ class IlliniSubirrigationLayoutAlgorithm(QgsProcessingAlgorithm):
             self.DEM, self.tr("Elevation (DEM)")))
         self.addParameter(QgsProcessingParameterFeatureSource(
             self.FIELD, self.tr("Field boundary"), [QgsProcessing.TypeVectorPolygon]))
+        self.addParameter(QgsProcessingParameterFeatureSource(
+            self.NO_TILE, self.tr("No-tile zones [optional; ponds, waterways, building "
+                                  "sites, wetlands...]"),
+            [QgsProcessing.TypeVectorPolygon], optional=True))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.CROSS_NO_TILE, self.tr("Mains and submains may cross the no-tile zones "
+                                        "(for example grassed waterways)"),
+            defaultValue=False))
         self.addParameter(QgsProcessingParameterPoint(
             self.OUTLET, self.tr("Outlet location [optional if a main line is given]"),
             optional=True))
@@ -858,6 +878,53 @@ class IlliniSubirrigationLayoutAlgorithm(QgsProcessingAlgorithm):
         self.addOutput(QgsProcessingOutputString("WARNINGS", self.tr("Warnings")))
 
     # ------------------------------------------------------------ inputs
+    def _cut_no_tile(self, parameters, context, feedback, field, crs):
+        """The field less the no-tile zones (in the DEM CRS)."""
+        self._no_tile = None
+        if parameters.get(self.NO_TILE) in (None, ""):
+            return field
+        src = self.parameterAsSource(parameters, self.NO_TILE, context)
+        if src is None:
+            return field
+        ztr = QgsCoordinateTransform(src.sourceCrs(), crs, context.transformContext())
+        zones = []
+        for f in src.getFeatures():
+            g = QgsGeometry(f.geometry())
+            if g.isEmpty():
+                continue
+            g.transform(ztr)
+            if not g.isGeosValid():
+                g = g.makeValid()
+            zones.append(g)
+        if not zones:
+            return field
+        zone = QgsGeometry.unaryUnion(zones) if len(zones) > 1 else zones[0]
+        hit = zone.intersection(field)
+        cut_area = hit.area() if hit is not None and not hit.isEmpty() else 0.0
+        if cut_area <= 0:
+            msg = self.tr("None of the {} no-tile zone(s) overlaps the field.").format(len(zones))
+            if hasattr(feedback, "pushWarning"):
+                feedback.pushWarning(msg)
+            else:
+                feedback.reportError(msg)
+            return field
+        rest = field.difference(zone)
+        if rest is None or rest.isEmpty() or rest.area() <= 0:
+            raise QgsProcessingException(self.tr(
+                "The no-tile zones cover the whole field."))
+        xf = _meters_factor(crs)
+        cross = self.parameterAsBool(parameters, self.CROSS_NO_TILE, context)
+        feedback.pushInfo(self.tr("No-tile zones: {} polygon(s), {:.2f} ha ({:.2f} ac) {}.")
+                          .format(len(zones), cut_area * xf * xf / 1e4,
+                                  cut_area * xf * xf / 4046.8564224,
+                                  self.tr("kept free of laterals; mains and submains may "
+                                          "cross them") if cross else
+                                  self.tr("cut out of the field")))
+        if cross:
+            self._no_tile = self._rings(hit, xf)
+            return field
+        return rest
+
     @staticmethod
     def _rings(geom, xf):
         """Polygon rings (outer and holes) in metre coordinates."""
@@ -1022,6 +1089,7 @@ class IlliniSubirrigationLayoutAlgorithm(QgsProcessingAlgorithm):
         if source.featureCount() > 1:
             feedback.pushInfo(self.tr("{} field polygons merged into one field.")
                               .format(source.featureCount()))
+        field = self._cut_no_tile(parameters, context, feedback, field, crs)
         outlet = None
         if parameters.get(self.OUTLET) not in (None, ""):
             outlet = self.parameterAsPoint(parameters, self.OUTLET, context, crs)
@@ -1112,6 +1180,7 @@ class IlliniSubirrigationLayoutAlgorithm(QgsProcessingAlgorithm):
             zone_grid = self._rasterize_zones(zone_geoms, xmin, ymax, cell_map, nrows, ncols)
 
         params = LayoutParams(
+            no_tile=getattr(self, "_no_tile", None),
             spacing=spacing,
             units="m" if uf == 1.0 else "ft",
             pattern=PATTERNS[self.parameterAsEnum(parameters, self.PATTERN, context)],

@@ -40,6 +40,8 @@ The plugin is also listed under **Raster → Tile Drainage**, a menu shared by t
 |---|---|
 | Elevation (DEM) | Any GDAL raster in a **projected** CRS (metres or feet). LiDAR DEMs at 0.5–3 m work well. |
 | Field boundary | Polygon layer. All features are merged; holes (waterways, buildings) are excluded. |
+| No-tile zones | Optional polygon layer of areas where no tile goes: ponds, waterways, building sites, wetlands. They are cut out of the field like holes in the boundary: laterals keep the boundary setback (default half the spacing) from their edges and are split where they would cross one, and mains and submains are routed around them. The log gives the area cut out. |
+| Mains and submains may cross the no-tile zones | For zones laterals stay out of but a main may run along or across, such as grassed waterways. The laterals keep the setback from the zones and reach a main inside one by a straight connector. Default off. |
 | Outlet location | Click on the map. It can sit just outside the field; the main is extended to it. Optional when a main line is given. |
 | Main line(s) | Optional line layer with your own main, and any submains. Leave empty to route the main automatically (see below). |
 | Design units | Feet (default) or metres, for spacing, cover, depths and the layer outputs. |
