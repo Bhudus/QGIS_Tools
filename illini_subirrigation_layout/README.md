@@ -197,7 +197,9 @@ settings to defaults** returns to the plugin defaults.
 
 - **Uniform slope:** keep the defaults. The parallel main climbs the slope
   through every zone, with one structure at each zone boundary and laterals
-  along the contours on both sides.
+  along the contours on both sides. In a valley, where a main up the fall line
+  would climb out of the valley floor and leave the far side lower than it,
+  the parallel main follows the low ground instead (you're warned).
 - **Swales and draws:** *Herringbone* with laterals across the slope. The main
   follows the thalweg, the side zones get their own submains, and structures
   sit where each submain leaves its zone.

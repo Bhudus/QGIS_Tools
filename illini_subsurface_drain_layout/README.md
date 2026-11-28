@@ -102,7 +102,12 @@ grade breaks (default 50 ft); and, for sizing, whether to size with InSlope
      laterals — up the slope when laterals run across it, or as a header
      across the low side (both directions from the outlet, rising at the
      minimum main grade and sliding along the field edge) when laterals run
-     down it.
+     down it. In a valley, the fall line up from the outlet leaves the valley
+     floor up one side, and the far side, lower than that main, could not drain
+     to it: where a fall-line main would leave at least 10% of the field lower
+     than it by more than the depth band (min cover to max depth), and the low
+     ground route leaves 10 points less, the main follows the low ground as in
+     the herringbone pattern (with its submains), and you're warned.
 3. **Lateral directions.**
    - *Across the slope, contour-following*: along the contour, turned just
      enough downhill to hold the target grade, heading toward the nearest
@@ -317,6 +322,11 @@ Where to look for problems:
   to has no collector. Add an outlet or submain there, or lower the submain
   threshold.
 - `does not reach the outlet` — drains into an unconnected lateral.
+- `turned to drain downhill; carried …` — the lateral followed the contours to
+  a collector uphill of it (the far side of a submain, or along a rise), so
+  the tile could not fall to it. It is turned round and its low end carried
+  down the ground to a collector or a lateral that drains. Done where the
+  ground rises more than 5 cm toward the collector and falls the other way.
 - `carried downhill …` — the lateral's trace stopped short on flat or rough
   ground with no collector near, so it is carried on down the ground to a
   collector or to a lateral that reaches one. Check its route.

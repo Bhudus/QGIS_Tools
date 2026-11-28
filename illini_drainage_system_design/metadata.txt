@@ -2,7 +2,7 @@
 name=Illini Drainage System Design
 qgisMinimumVersion=3.16
 description=Designs a complete subsurface tile drainage system in one run from drawn mains and submains (Illini Drainage Tools routines E-K), writing an Illini drainage network.
-version=3.0.2
+version=3.0.3
 author=Anamelechi FALASY & Richard COOKE
 email=raccooke@gmail.com
 
@@ -12,7 +12,8 @@ tracker=https://github.com/Bhudus/QGIS_Tools/issues
 repository=https://github.com/Bhudus/QGIS_Tools
 homepage=https://bhudus.github.io/QGIS_Tools/
 
-changelog=3.0.2 - Sizing: no pipe is now sized smaller than a pipe draining into it (a short steep link near the outlet had sized smaller than the flatter pipe above); such links are flagged 'sized up to N in to match the pipe above', also with drainage coefficients by tile order.
+changelog=3.0.3 - Shared layout engine kept in step with Illini Subsurface Drain Layout 0.23.2; designs of drawn networks are unchanged.
+    3.0.2 - Sizing: no pipe is now sized smaller than a pipe draining into it (a short steep link near the outlet had sized smaller than the flatter pipe above); such links are flagged 'sized up to N in to match the pipe above', also with drainage coefficients by tile order.
     3.0.1 - Laterals: a drawn line that no other line drains into is now a lateral in the Drainage Network (it came out as a submain), drawn blue, with the log counting submains and laterals.
     3.0.0 - The design now uses the Illini Subsurface Drain Layout engine for steps G to K, and writes the same Drainage Network as the layout tool: lines from node to node with the tile (Z) and ground (M) elevation at every vertex and the layout's fields, ready for Tile Profile and the Tile Size Calculator (it replaces Network Pipe Sizings). New burying methods Minimum cover, Fewest grade breaks and Least cost besides Routine J, with the shortest run, largest change of grade at a break, cost of a grade break and excavation weight; new Outlet Invert Elevation and Bury from the Outlet Invert; DEM elevation units. Steps G to J remain available as intermediate layers.
     2.1.0 - Also listed under Raster → Tile Drainage with the other drainage tools (existing menu entry kept). Fixed "provider has been deleted" error when unloading or reinstalling.

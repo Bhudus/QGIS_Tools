@@ -553,6 +553,46 @@ class DrainageLayout:
                          "user": True})
         return cols
 
+    def _below_share(self, cols):
+        """Share of the field lying lower than the nearest point of the collectors
+        by more than the depth band (min cover to max depth): ground whose
+        laterals cannot fall to them."""
+        vx = np.concatenate([np.asarray(c["pts"])[:, 0] for c in cols])
+        vy = np.concatenate([np.asarray(c["pts"])[:, 1] for c in cols])
+        gv = np.array([self.g.bilinear(self.zs, x, y) for x, y in zip(vx, vy)])
+        ii, jj = np.nonzero(self.inner)
+        k = max(1, len(ii) // 20000)
+        ii, jj = ii[::k], jj[::k]
+        idx, _ = nearest_vertex(self.X[ii, jj], self.Y[ii, jj], vx, vy)
+        gc = self.zs[ii, jj]
+        ok = np.isfinite(gc) & np.isfinite(gv[idx])
+        if not ok.any():
+            return 0.0
+        band = max(0.05, self.p.max_depth - self.p.min_cover)
+        return float(np.mean(gv[idx][ok] - gc[ok] > band))
+
+    def _parallel_or_low_ground(self, cols):
+        """A parallel main climbs the fall line from the outlet. In a valley that
+        line leaves the valley floor up one side, and the far side, below it,
+        cannot drain to it; there the main follows the low ground (the thalweg,
+        with its submains) instead."""
+        par = self._below_share(cols)
+        if par < 0.10:
+            return cols
+        try:
+            low = self._thalweg_collectors()
+        except LayoutError:
+            return cols
+        th = self._below_share(low)
+        if par - th < 0.10:
+            return cols
+        self._warn("A parallel main up the fall line from the outlet would leave {:.0f}% "
+                   "of the field lower than the main (the field drains to low ground the "
+                   "main does not follow); the main follows the low ground instead "
+                   "({:.0f}% lower).".format(100 * par, 100 * th))
+        self.parallel_to_low_ground = True
+        return low
+
     def _build_collectors(self):
         p = self.p
         cols = []
@@ -563,6 +603,8 @@ class DrainageLayout:
             if not cols:
                 self._warn("A parallel main could not be run from this outlet into the "
                            "field; the main follows the low ground instead.")
+            elif self.fixed_b is None and p.orientation == ORIENT_ACROSS:
+                cols = self._parallel_or_low_ground(cols)
         if not cols:
             cols = self._thalweg_collectors()
         if self.user_mains and getattr(self, "outlet_from_main", False):
@@ -1001,7 +1043,7 @@ class DrainageLayout:
             lid = c[1]
         return False
 
-    def _descend(self, end, reg):
+    def _descend(self, end, reg, skip=None):
         """Path down the smoothed ground from end to a collector, or to a lateral
         that reaches one. Returns (points after end, conn), or None if it meets
         neither within the limit (low ground, the field edge, a lateral that does
@@ -1024,7 +1066,7 @@ class DrainageLayout:
                 return path + [(qx, qy), q], ("collector", cid, v)
             if self.region_at(qx, qy) != reg:
                 return None
-            hit = self.hash.nearest(qx, qy, reg, self.d_test)
+            hit = self.hash.nearest(qx, qy, reg, self.d_test, skip=skip)
             if hit is not None:
                 host, v, q = self._tee_target(hit)
                 if self._reaches(host) and self._clear((qx, qy), q):
@@ -1102,6 +1144,98 @@ class DrainageLayout:
         self.expected = max(1.0, self.inner.sum() * self.g.cell ** 2 / self.S / (4 * self.S))
         self._seed_from_collectors()
         self._infill()
+        self._reverse_uphill()
+
+    @staticmethod
+    def _rise(g, s, grade):
+        """How far the ground rises against the flow, beyond what the tile can
+        take up by getting deeper: the largest g[j] - g[i] + grade * (s[j] - s[i])
+        for i <= j, with flow from index 0 to the end."""
+        v = np.asarray(g, float) + grade * np.asarray(s, float)
+        if len(v) < 2 or not np.isfinite(v).all():
+            return 0.0
+        return float(np.max(v - np.minimum.accumulate(v)))
+
+    def _reverse_uphill(self):
+        """Turn round the laterals laid against the ground.
+
+        A lateral follows the contours to its nearest collector, which can lie
+        uphill (the far side of a submain, or along a valley that rises toward
+        the collector). Where the ground rises toward its outlet end by more than
+        5 cm (the burying keeps the host pipe in its target band, so even a small
+        rise can leave the tile without fall) and falls the other way, it is turned round and its new low end carried downhill to a
+        collector or to a lateral that drains (flagged), if one is in reach.
+        """
+        p = self.p
+        tol = 0.05                            # m: 5 cm of ground against the flow
+        m = p.min_lateral_grade
+        self.n_reversed = 0
+        done = set()
+        for _ in range(3):                    # again for pipes teed into a turned one
+            before = self.n_reversed
+            for lid in range(len(self.lats)):
+                if lid not in done and self._reverse_one(lid, tol, m):
+                    done.add(lid)
+            if self.n_reversed == before:
+                break
+
+    def _reverse_one(self, lid, tol, m):
+        """Turn round lateral lid if it is laid against the ground (see
+        _reverse_uphill). True if it was turned."""
+        L = self.lats[lid]
+        pts = [tuple(map(float, q)) for q in L["pts"]]
+        if len(pts) < 3:
+            return False
+        arr = np.asarray(pts)
+        try:
+            g = self.ground(arr)
+        except LayoutError:
+            return False
+        s = cumulative_length(arr)
+        fwd = self._rise(g, s, m)
+        if fwd <= tol:
+            return False
+        old_conn = L["conn"]
+        core = pts[:-1] if old_conn is not None else pts
+        if len(core) < 2:
+            return False
+        rev = core[::-1]
+        ra = np.asarray(rev)
+        rs = cumulative_length(ra)
+        if self._rise(self.ground(ra), rs, m) >= fwd - tol:
+            return False
+        L["conn"] = None                  # its own upstream pipes do not drain now
+        down = self._descend(rev[-1], L["region"], skip=lid)
+        if down is None:
+            L["conn"] = old_conn
+            return False
+        path, conn = down
+        new = rev + [tuple(map(float, q)) for q in path]
+        na = np.asarray(new)
+        if self._rise(self.ground(na), cumulative_length(na), m) >= fwd - tol:
+            L["conn"] = old_conn
+            return False
+        # pipes teed into it: their vertex numbers turn round with it
+        n_old = len(pts)
+        for C in self.lats:
+            c = C["conn"]
+            if c and c[0] == "lateral" and c[1] == lid:
+                v = c[2]
+                if old_conn is not None:
+                    v2 = 0 if v >= n_old - 1 else (n_old - 2) - v
+                else:
+                    v2 = (n_old - 1) - v
+                C["conn"] = (c[0], c[1], int(v2)) + tuple(c[3:])
+        L["pts"] = np.asarray(new) if isinstance(L["pts"], np.ndarray) else new
+        L["conn"] = conn
+        L["flags"] = [f for f in L["flags"] if not f.startswith(
+            ("connector", "carried downhill", "unconnected"))]
+        L["flags"].append("turned to drain downhill; carried " +
+                          self._fmt(polyline_length([rev[-1]] + list(path)), 0))
+        self.hash.remove_owner(lid)          # its segment numbers have turned round
+        self.hash.add_polyline(new, lid, L["region"])
+        self.n_reversed += 1
+        return True
 
     # ------------------------------------------------------------ bends
     def _limit_bends(self):

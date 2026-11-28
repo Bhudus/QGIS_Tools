@@ -364,8 +364,18 @@ class SegmentHash:
             key = self._key(0.5 * (x1 + x2), 0.5 * (y1 + y2))
             self.d.setdefault(key, []).append((x1, y1, x2, y2, owner, region, k))
 
-    def nearest(self, x, y, region, rmax):
-        """Closest segment within rmax in the same region: (dist, owner, k, t) or None."""
+    def remove_owner(self, owner):
+        """Drop every segment of one owner (before adding its new line)."""
+        for key in list(self.d):
+            lst = [s for s in self.d[key] if s[4] != owner]
+            if lst:
+                self.d[key] = lst
+            else:
+                del self.d[key]
+
+    def nearest(self, x, y, region, rmax, skip=None):
+        """Closest segment within rmax in the same region: (dist, owner, k, t) or None.
+        Segments of the owner `skip` are passed over."""
         kx, ky = self._key(x, y)
         reach = int(math.ceil(rmax / self.b))
         best = None
@@ -377,6 +387,8 @@ class SegmentHash:
                     continue
                 for x1, y1, x2, y2, owner, reg, k in lst:
                     if region is not None and reg != region:
+                        continue
+                    if skip is not None and owner == skip:
                         continue
                     dx = x2 - x1
                     dy = y2 - y1
