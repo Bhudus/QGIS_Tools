@@ -33,6 +33,7 @@ from qgis.core import (
     QgsProcessingParameterFeatureSource,
     QgsProcessingParameterField,
     QgsProcessingParameterNumber,
+    QgsProcessingParameterRasterLayer,
     QgsSingleSymbolRenderer,
     QgsSpatialIndex,
     QgsUnitTypes,
@@ -120,7 +121,7 @@ def _longest_edge_azimuth(geom, tolerance):
 MAX_LATERALS_PER_FIELD = 20000
 
 
-def _make_laterals(area, spacing, azimuth, min_length, centered=False):
+def _make_laterals(area, spacing, azimuth, min_length, centered=False, exclude=None):
     """Parallel laterals clipped to `area`, `spacing` apart, at `azimuth`.
 
     The polygon is rotated so that laterals become vertical lines, the lines
@@ -128,12 +129,21 @@ def _make_laterals(area, spacing, azimuth, min_length, centered=False):
     centered=False: the first lateral sits on the guide line along one side
     and the leftover (< one spacing) falls on the opposite side.
     centered=True: the leftover is split equally between both sides.
+    exclude: optional polygon (no-tile zones). The layout is still positioned
+    on the full `area`, so laterals stay aligned with the guide line, but
+    they are clipped to stay out of `exclude`.
     Returns a list of single-part line geometries.
     """
     center = area.boundingBox().center()
     rotated = QgsGeometry(area)
     rotated.rotate(-azimuth, center)
     bbox = rotated.boundingBox()
+    if exclude is not None and not exclude.isEmpty():
+        clip_area = area.difference(exclude)
+        if clip_area is None or clip_area.isEmpty():
+            return []
+        rotated = QgsGeometry(clip_area)
+        rotated.rotate(-azimuth, center)
 
     eps = spacing * 1e-4  # nudge off the exact edge so GEOS returns a line
     usable = bbox.width() - 2 * eps
@@ -175,7 +185,19 @@ def _end_points(line):
     return (pts[0], pts[-1]) if pts else (None, None)
 
 
-def _connect_lateral(lat, mains, method, max_dist, reach, stub_len, tol):
+def _crosses_zone(segment, blocked, tol):
+    """True if `segment` runs through the no-tile polygon `blocked`.
+
+    Touching the zone edge (a lateral that ends on the zone setback) is fine;
+    only a stretch of line inside the zone counts.
+    """
+    if blocked is None or not segment.intersects(blocked):
+        return False
+    inside = segment.intersection(blocked)
+    return inside is not None and not inside.isEmpty() and inside.length() > tol
+
+
+def _connect_lateral(lat, mains, method, max_dist, reach, stub_len, tol, blocked=None):
     """Connect one lateral to the mains geometry.
 
     Returns a list of (geometry, status, connection_length, [junction points]).
@@ -186,6 +208,8 @@ def _connect_lateral(lat, mains, method, max_dist, reach, stub_len, tol):
       it meets a main (within `max_dist`, 0 = any distance up to `reach`).
     - If that fails and method == 1, a straight connector is added from the
       nearer end to the closest point on a main.
+    Extensions and connectors that would pass through `blocked` (no-tile
+    zones) are not used.
     """
     if lat.intersects(mains):
         out = []
@@ -220,7 +244,10 @@ def _connect_lateral(lat, mains, method, max_dist, reach, stub_len, tol):
         for v in hit.vertices():
             d = math.hypot(v.x() - end.x(), v.y() - end.y())
             if d > tol and (best is None or d < best[0]):
-                best = (d, sign, QgsPointXY(v.x(), v.y()))
+                pt = QgsPointXY(v.x(), v.y())
+                if _crosses_zone(QgsGeometry.fromPolylineXY([end, pt]), blocked, tol):
+                    continue
+                best = (d, sign, pt)
     if best is not None:
         d, sign, hit_pt = best
         pts = [hit_pt, b] if sign < 0 else [a, hit_pt]
@@ -231,15 +258,115 @@ def _connect_lateral(lat, mains, method, max_dist, reach, stub_len, tol):
         best = None
         for end, sign in ((a, -1.0), (b, 1.0)):
             near = mains.nearestPoint(QgsGeometry.fromPointXY(end)).asPoint()
+            pt = QgsPointXY(near.x(), near.y())
+            if _crosses_zone(QgsGeometry.fromPolylineXY([end, pt]), blocked, tol):
+                continue
             d = math.hypot(near.x() - end.x(), near.y() - end.y())
             if best is None or d < best[0]:
-                best = (d, sign, QgsPointXY(near.x(), near.y()))
-        d, sign, near_pt = best
-        if max_dist <= 0 or d <= max_dist:
+                best = (d, sign, pt)
+        if best is not None:
+            d, sign, near_pt = best
+        if best is not None and (max_dist <= 0 or d <= max_dist):
             pts = [near_pt, a, b] if sign < 0 else [a, b, near_pt]
             return [(QgsGeometry.fromPolylineXY(pts), 'connector', d, [near_pt])]
 
     return [(lat, 'none', 0.0, [])]
+
+
+FLOW_NAMES = ['Downhill on the DEM (flag laterals that fall away from their main)',
+              'Toward the main (report surface fall from the DEM)']
+Z_UNIT_NAMES = ['Meters', 'Feet']
+FLAT_FALL_M = 0.02  # end-to-end surface fall below this counts as flat
+
+
+class _DemSampler:
+    """Reads elevations from band 1 of a DEM, in the working CRS."""
+
+    def __init__(self, layer, work_crs, transform_context):
+        # A cloned provider is safe to read from the processing thread.
+        self.provider = layer.dataProvider().clone()
+        self.transform = None
+        if layer.crs() != work_crs:
+            self.transform = QgsCoordinateTransform(work_crs, layer.crs(), transform_context)
+
+    def z(self, pt):
+        try:
+            p = self.transform.transform(pt) if self.transform is not None else pt
+            value, ok = self.provider.sample(QgsPointXY(p.x(), p.y()), 1)
+        except Exception:  # outside the raster, transform failure, etc.
+            return None
+        if not ok or value is None or math.isnan(value):
+            return None
+        return float(value)
+
+
+def _reverse_line(geom):
+    pts = geom.asPolyline()
+    return QgsGeometry.fromPolylineXY(list(reversed(pts))) if pts else geom
+
+
+def _orient_lateral(geom, mains, dem, rule, z_to_m, tol):
+    """Point a lateral in its flow direction (first vertex upstream).
+
+    rule 0: downhill on the DEM; falls back to toward the main where the
+            DEM can't decide (no DEM, no data, or flat).
+    rule 1: toward the main; unconnected laterals point downhill if possible.
+    Returns (geometry, z_start, z_end, flow) where flow is one of
+    'to_main', 'away_from_main', 'uphill_to_main', 'downhill', 'flat',
+    'no_dem', or 'none' (no main and no DEM to decide).
+    """
+    a, b = _end_points(geom)
+    if a is None:
+        return geom, None, None, 'none'
+
+    # Which end, if either, is on a main?
+    main_end = None
+    if mains is not None:
+        da = mains.distance(QgsGeometry.fromPointXY(a))
+        db = mains.distance(QgsGeometry.fromPointXY(b))
+        if min(da, db) <= tol:
+            main_end = 'a' if da <= db else 'b'
+
+    za = dem.z(a) if dem is not None else None
+    zb = dem.z(b) if dem is not None else None
+    have_z = za is not None and zb is not None
+    flat = have_z and abs(za - zb) * z_to_m < FLAT_FALL_M
+
+    def toward_main():
+        return main_end == 'a'  # reverse so the main end comes last
+
+    reverse = False
+    if rule == 0:
+        if have_z and not flat:
+            reverse = za < zb
+            down_end = 'a' if reverse else 'b'
+            if main_end is None:
+                flow = 'downhill'
+            else:
+                flow = 'to_main' if down_end == main_end else 'away_from_main'
+        else:
+            reverse = toward_main()
+            flow = 'flat' if flat else ('no_dem' if main_end is not None else 'none')
+    else:
+        if main_end is not None:
+            reverse = toward_main()
+            if not have_z:
+                flow = 'no_dem'
+            elif flat:
+                flow = 'flat'
+            else:
+                z_up, z_down = (zb, za) if reverse else (za, zb)
+                flow = 'to_main' if z_up > z_down else 'uphill_to_main'
+        elif have_z and not flat:
+            reverse = za < zb
+            flow = 'downhill'
+        else:
+            flow = 'flat' if flat else 'none'
+
+    if reverse:
+        geom = _reverse_line(geom)
+        za, zb = zb, za
+    return geom, za, zb, flow
 
 
 def _utm_crs_for(source, context):
@@ -284,6 +411,18 @@ class _LateralStyler(QgsProcessingLayerPostProcessorInterface):
             'line_color': '30,90,200,255',
             'line_width': '0.4',
         })
+        # Small arrowheads along each lateral show its flow direction.
+        try:
+            from qgis.core import QgsMarkerLineSymbolLayer, QgsMarkerSymbol
+            arrow = QgsMarkerSymbol.createSimple({
+                'name': 'arrowhead', 'color': '30,90,200,255',
+                'outline_color': '30,90,200,255', 'size': '2',
+            })
+            markers = QgsMarkerLineSymbolLayer(True, 20)  # rotate with line, every 20 mm
+            markers.setSubSymbol(arrow)
+            symbol.appendSymbolLayer(markers)
+        except Exception:
+            pass  # plain line on QGIS builds without these classes
         layer.setRenderer(QgsSingleSymbolRenderer(symbol))
         layer.triggerRepaint()
 
@@ -335,6 +474,11 @@ class TileDrainageLayoutAlgorithm(QgsProcessingAlgorithm):
     CONNECT_METHOD = 'CONNECT_METHOD'
     MAX_CONNECT = 'MAX_CONNECT'
     OUTPUT_JUNCTIONS = 'OUTPUT_JUNCTIONS'
+    NO_TILE = 'NO_TILE'
+    NO_TILE_SETBACK = 'NO_TILE_SETBACK'
+    DEM = 'DEM'
+    Z_UNITS = 'Z_UNITS'
+    FLOW_RULE = 'FLOW_RULE'
 
     def tr(self, text):
         return QCoreApplication.translate('TileDrainageLayoutAlgorithm', text)
@@ -407,7 +551,26 @@ class TileDrainageLayoutAlgorithm(QgsProcessingAlgorithm):
             '<i>connection</i> attribute (crossing, extended, connector, none) and '
             '<i>conn_len</i>. The optional <b>Junctions</b> output marks each '
             'connection as a tee, or a cross where laterals meet the main from '
-            'both sides, which helps with counting fittings.</p>')
+            'both sides, which helps with counting fittings.</p>'
+            '<h3>No-tile zones</h3>'
+            '<p>An optional polygon layer of areas to keep tile out of (wetlands, '
+            'wells, buried utilities, building sites). Laterals are clipped at each '
+            'zone plus the <b>setback</b>, and extensions or connectors that would '
+            'pass through a zone are not used. Laterals stay aligned with the guide '
+            'line; zones only remove pieces of them.</p>'
+            '<h3>Flow direction</h3>'
+            '<p>Every lateral is drawn from its upstream end to its downstream end, '
+            'shown by arrows on the layer. With a <b>DEM</b>:</p>'
+            '<ul><li><i>Downhill on the DEM</i>: each lateral points from its higher '
+            'end to its lower end. If its lower end is not on the main it gets '
+            '<i>flow</i> = away_from_main.</li>'
+            '<li><i>Toward the main</i>: connected laterals always end on the main; '
+            'those whose surface rises toward the main get flow = uphill_to_main.</li></ul>'
+            '<p>Laterals with less than 2 cm of end-to-end fall, outside the DEM, or '
+            'with no DEM point toward the main if they reach one (flow = flat or '
+            'no_dem). Elevations are sampled at the two ends only; <i>elev_start</i>, '
+            '<i>elev_end</i>, <i>fall</i> (spacing units) and <i>slope_pct</i> are '
+            'surface values, not tile grade.</p>')
 
     def initAlgorithm(self, config=None):  # noqa: N802
         self.addParameter(QgsProcessingParameterFeatureSource(
@@ -471,6 +634,27 @@ class TileDrainageLayoutAlgorithm(QgsProcessingAlgorithm):
             self.tr('Maximum connection distance (spacing units, 0 = no limit)'),
             QgsProcessingParameterNumber.Double, defaultValue=0.0, minValue=0.0))
 
+        self.addParameter(QgsProcessingParameterFeatureSource(
+            self.NO_TILE, self.tr('No-tile zones (optional polygons, e.g. wetlands, wells, utilities)'),
+            [QgsProcessing.TypeVectorPolygon], optional=True))
+
+        self.addParameter(QgsProcessingParameterNumber(
+            self.NO_TILE_SETBACK,
+            self.tr('Setback from no-tile zones (spacing units)'),
+            QgsProcessingParameterNumber.Double, defaultValue=0.0, minValue=0.0))
+
+        self.addParameter(QgsProcessingParameterRasterLayer(
+            self.DEM, self.tr('Elevation model (DEM, optional; sets downhill direction)'),
+            optional=True))
+
+        self.addParameter(QgsProcessingParameterEnum(
+            self.Z_UNITS, self.tr('DEM elevation units'), options=Z_UNIT_NAMES,
+            defaultValue=0))
+
+        self.addParameter(QgsProcessingParameterEnum(
+            self.FLOW_RULE, self.tr('Lateral direction of flow'), options=FLOW_NAMES,
+            defaultValue=0))
+
         self.addParameter(QgsProcessingParameterFeatureSink(
             self.OUTPUT_LINE, self.tr('Tile guide line'), QgsProcessing.TypeVectorLine))
 
@@ -504,6 +688,11 @@ class TileDrainageLayoutAlgorithm(QgsProcessingAlgorithm):
         mains_source = self.parameterAsSource(parameters, self.MAINS, context)
         connect_method = self.parameterAsEnum(parameters, self.CONNECT_METHOD, context)
         max_connect = self.parameterAsDouble(parameters, self.MAX_CONNECT, context)
+        no_tile_source = self.parameterAsSource(parameters, self.NO_TILE, context)
+        no_tile_setback = self.parameterAsDouble(parameters, self.NO_TILE_SETBACK, context)
+        dem_layer = self.parameterAsRasterLayer(parameters, self.DEM, context)
+        z_to_m = FEET_TO_METERS if self.parameterAsEnum(parameters, self.Z_UNITS, context) == 1 else 1.0
+        flow_rule = self.parameterAsEnum(parameters, self.FLOW_RULE, context)
         if mains_source is not None and not make_laterals:
             feedback.reportError(self.tr(
                 'Mains were supplied but Generate laterals is not ticked; '
@@ -560,7 +749,9 @@ class TileDrainageLayoutAlgorithm(QgsProcessingAlgorithm):
             lat_names = (('lateral_no', 'double'), ('azimuth', 'double'),
                          ('tile_spacing', 'double'), ('length', 'double'),
                          ('units', 'string'), ('connection', 'string'),
-                         ('conn_len', 'double'))
+                         ('conn_len', 'double'), ('flow', 'string'),
+                         ('elev_start', 'double'), ('elev_end', 'double'),
+                         ('fall', 'double'), ('slope_pct', 'double'))
             for name, kind in lat_names:
                 if lat_fields.lookupField(name) == -1:
                     lat_fields.append(_field(name, kind))
@@ -612,6 +803,57 @@ class TileDrainageLayoutAlgorithm(QgsProcessingAlgorithm):
                 junc_sink, junc_id = self.parameterAsSink(
                     parameters, self.OUTPUT_JUNCTIONS, context, junc_fields,
                     QgsWkbTypes.Point, work_crs)
+
+        # ---- No-tile zones: working CRS, setback applied, spatial index ----
+        zone_geoms, zone_index = {}, None
+        if lat_sink is not None and no_tile_source is not None:
+            zone_tr = None
+            if no_tile_source.sourceCrs() != work_crs:
+                zone_tr = QgsCoordinateTransform(
+                    no_tile_source.sourceCrs(), work_crs, context.transformContext())
+            zone_dist = no_tile_setback * unit_to_meters * meters_to_map
+            zone_index = QgsSpatialIndex()
+            for zf in no_tile_source.getFeatures():
+                zg = zf.geometry()
+                if zg is None or zg.isEmpty():
+                    continue
+                zg = QgsGeometry(zg)
+                if zone_tr is not None:
+                    zg.transform(zone_tr)
+                if not zg.isGeosValid():
+                    zg = zg.makeValid()
+                    polys = zg.convertToType(_polygon_type(), True)
+                    if polys is None or polys.isNull() or polys.isEmpty():
+                        continue
+                    zg = polys
+                if zone_dist > 0:
+                    zg = zg.buffer(zone_dist, segments)
+                if zg is None or zg.isEmpty():
+                    continue
+                f2 = QgsFeature(zf.id())
+                f2.setGeometry(zg)
+                zone_index.addFeature(f2)
+                zone_geoms[zf.id()] = zg
+            if zone_geoms:
+                feedback.pushInfo(self.tr('Loaded {} no-tile zone(s).').format(len(zone_geoms)))
+            else:
+                feedback.reportError(self.tr('The no-tile zones layer has no polygons.'))
+                zone_index = None
+
+        # ---- DEM for flow direction ----
+        dem = None
+        if lat_sink is not None and dem_layer is not None:
+            if dem_layer.isValid():
+                dem = _DemSampler(dem_layer, work_crs, context.transformContext())
+                feedback.pushInfo(self.tr('Using DEM {} for lateral flow direction.')
+                                  .format(dem_layer.name()))
+            else:
+                feedback.reportError(self.tr('The DEM could not be read; it is ignored.'))
+        if lat_sink is not None and flow_rule == 0 and dem is None:
+            feedback.pushInfo(self.tr(
+                'No DEM supplied, so "downhill" cannot be determined; laterals connected '
+                'to a main will point toward it instead.'))
+        flow_counts = {}
 
         total = source.featureCount() or 0
         step = 100.0 / total if total else 0
@@ -700,12 +942,29 @@ class TileDrainageLayoutAlgorithm(QgsProcessingAlgorithm):
                 azimuth %= 180.0
 
                 min_len_map = min_length * unit_to_meters * meters_to_map
-                raw = _make_laterals(inset, spacing_map, azimuth, min_len_map, centered)
+                max_map = max_connect * unit_to_meters * meters_to_map
+                search_box = geom.boundingBox()
+                search_box.grow(max(spacing_map, max_map))
+
+                # No-tile zones in and around this field
+                zones_here = None
+                if zone_index is not None:
+                    z_ids = [i for i in zone_index.intersects(search_box)
+                             if zone_geoms[i].boundingBox().intersects(search_box)]
+                    if z_ids:
+                        zones_here = QgsGeometry.unaryUnion([zone_geoms[i] for i in z_ids])
+
+                raw = _make_laterals(inset, spacing_map, azimuth, min_len_map, centered,
+                                     exclude=zones_here)
+                if not raw and zones_here is not None and inset.difference(zones_here).isEmpty():
+                    feedback.reportError(self.tr(
+                        'Feature {}: the whole field is inside no-tile zones.').format(feat.id()))
 
                 # ---- Connect to mains near this field ----
                 laterals = [(g, '', 0.0) for g in raw]
+                mains_here = None
+                tol = max(spacing_map * 1e-5, 1e-6)
                 if mains_index is not None and raw:
-                    max_map = max_connect * unit_to_meters * meters_to_map
                     search = geom.buffer(max(spacing_map, max_map), segments)
                     near_ids = [i for i in mains_index.intersects(search.boundingBox())
                                 if mains_geoms[i].intersects(search)]
@@ -713,13 +972,12 @@ class TileDrainageLayoutAlgorithm(QgsProcessingAlgorithm):
                         mains_here = QgsGeometry.unaryUnion([mains_geoms[i] for i in near_ids])
                         bb = geom.boundingBox()
                         reach = 2.0 * math.hypot(bb.width(), bb.height()) + max_map
-                        tol = max(spacing_map * 1e-5, 1e-6)
                         junctions = {}
                         laterals = []
                         for g in raw:
                             for piece, status, clen, jpts in _connect_lateral(
                                     g, mains_here, connect_method, max_map, reach,
-                                    max(distance, min_len_map), tol):
+                                    max(distance, min_len_map), tol, blocked=zones_here):
                                 if piece.length() <= min_len_map and status == 'none':
                                     continue
                                 laterals.append((piece, status, clen))
@@ -746,7 +1004,19 @@ class TileDrainageLayoutAlgorithm(QgsProcessingAlgorithm):
 
                 base_attrs = list(feat.attributes())
                 for n, (lat_geom, status, clen) in enumerate(laterals, start=1):
+                    lat_geom, z0, z1, flow = _orient_lateral(
+                        lat_geom, mains_here, dem, flow_rule, z_to_m, tol * 10)
+                    flow_counts[flow] = flow_counts.get(flow, 0) + 1
                     lat_attrs = base_attrs + [None] * (lat_fields.count() - len(base_attrs))
+                    lat_attrs[lat_idx['flow']] = flow
+                    if z0 is not None and z1 is not None:
+                        fall_m = (z0 - z1) * z_to_m
+                        lat_attrs[lat_idx['elev_start']] = round(z0, 3)
+                        lat_attrs[lat_idx['elev_end']] = round(z1, 3)
+                        lat_attrs[lat_idx['fall']] = round(fall_m / unit_to_meters, 3)
+                        len_m = lat_geom.length() / meters_to_map
+                        if len_m > 0:
+                            lat_attrs[lat_idx['slope_pct']] = round(100.0 * fall_m / len_m, 3)
                     lat_attrs[lat_idx['lateral_no']] = n
                     lat_attrs[lat_idx['azimuth']] = round(azimuth, 3)
                     lat_attrs[lat_idx['tile_spacing']] = spacing
@@ -778,6 +1048,17 @@ class TileDrainageLayoutAlgorithm(QgsProcessingAlgorithm):
                 feedback.reportError(self.tr(
                     '{} lateral piece(s) are not connected; filter connection = \'none\' '
                     'to review them.').format(connect_counts['none']))
+
+        if flow_counts:
+            feedback.pushInfo(self.tr('Flow direction: {}.').format(
+                ', '.join('{} {}'.format(n, k) for k, n in sorted(flow_counts.items()))))
+            bad = flow_counts.get('away_from_main', 0) + flow_counts.get('uphill_to_main', 0)
+            if bad:
+                feedback.reportError(self.tr(
+                    '{} lateral(s) slope away from their main on the surface; filter '
+                    'flow = \'away_from_main\' or \'uphill_to_main\' to review them '
+                    '(they need a deeper cut at the main end or a different main).')
+                    .format(bad))
 
         # Style the outputs when they are loaded into the project
         if context.willLoadLayerOnCompletion(line_id):

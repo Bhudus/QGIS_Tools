@@ -47,11 +47,34 @@ Tick **Generate laterals within the buffer**.
     closest point on the main.
 - **Maximum connection distance** (spacing units, 0 = no limit).
 
+### No-tile zones
+- **No-tile zones** (optional polygon layer, any CRS): wetlands, wells,
+  buried utilities, building sites, anywhere tile must not go.
+- **Setback from no-tile zones** (spacing units): extra clearance around each zone.
+- Laterals are clipped at the zone + setback but stay aligned with the guide
+  line. Extensions and connectors that would pass through a zone are not
+  used; those laterals end up `connection = 'none'` for review.
+
+### Flow direction
+Every lateral is drawn from upstream to downstream; the Laterals layer shows
+arrows along each line.
+- **Elevation model (DEM)** (optional raster, any CRS) and **DEM elevation units**.
+- **Lateral direction of flow**:
+  - *Downhill on the DEM* (default): each lateral points from its higher end
+    to its lower end. Connected laterals whose low end isn't on the main get
+    `flow = 'away_from_main'`.
+  - *Toward the main*: connected laterals always end on the main; those whose
+    surface rises toward it get `flow = 'uphill_to_main'`.
+- With no DEM, outside the DEM, or with under 2 cm of fall, laterals point
+  toward the main if they reach one (`flow` = `no_dem` / `flat`).
+- Elevations are sampled at the two ends only, and are ground-surface values,
+  not tile grade.
+
 ## Outputs
 | Layer | Geometry | Notes |
 |---|---|---|
 | Tile guide line | MultiLineString | dashed red; snap to it while digitizing |
-| Laterals | LineString | solid blue; `lateral_no`, `azimuth`, `tile_spacing`, `length`, `units`, `connection`, `conn_len` |
+| Laterals | LineString | blue with flow arrows; `lateral_no`, `azimuth`, `tile_spacing`, `length`, `units`, `connection`, `conn_len`, `flow`, `elev_start`, `elev_end`, `fall`, `slope_pct` |
 | Junctions | Point | `junction` = tee / cross, `laterals` = count; only when mains are supplied |
 | Inset area | MultiPolygon | optional |
 
