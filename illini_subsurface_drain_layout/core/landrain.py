@@ -339,6 +339,8 @@ def build(net, origin=(0.0, 0.0), local_origin=(0.0, 0.0), rotation_deg=0.0, sca
             if a["NOMINAL"] is None and part_designed[root_of[L["_us"]]]:
                 a["NOMINAL"] = r["NOMINAL"]
                 a["BURY_CHECK"] += "; size worked out (none in the file)"
+            if r.get("no_fall"):
+                a["BURY_CHECK"] += "; " + K.no_fall_flag(a["SIZE_SLOPE"])
         a["drained_area"] = round(f * spacing / 43560.0, 3) if spacing else None
     return {"lines": result, "outlet": out, "notes": notes, "pipes": len(pipes),
             "counts": counts}

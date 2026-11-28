@@ -30,8 +30,8 @@ def _get(attrs, name):
     if name in attrs:
         v = attrs[name]
     else:
-        low = name.lower()
-        v = next((val for k, val in attrs.items() if str(k).lower() == low), None)
+        k = field_name(attrs, name)
+        v = attrs[k] if k is not None else None
     if v is None:
         return None
     try:
@@ -50,9 +50,14 @@ def _num(attrs, name):
 
 
 def field_name(attrs, name):
-    """The layer's own spelling of a field name, or None."""
+    """The layer's own spelling of a field name, or None. A shapefile cuts names
+    to 10 characters (FLOW_LENGT, ACTUAL_SIZ, CUM_SEG_FL), so that is accepted
+    too when the full name is not there."""
     low = name.lower()
-    return next((k for k in attrs if str(k).lower() == low), None)
+    k = next((k for k in attrs if str(k).lower() == low), None)
+    if k is None and len(low) > 10:
+        k = next((k for k in attrs if str(k).lower() == low[:10]), None)
+    return k
 
 
 def check_records(records):
@@ -201,8 +206,11 @@ def resize(records, mode, single, by_order=None, overrides=None, material=None,
         if k_flag is not None:
             parts = [p.strip() for p in str(a.get(k_flag) or "").split(";")
                      if p.strip() and p.strip() != MAX_SIZE_FLAG
-                     and not p.strip().startswith(K.HELD_FLAG.split("{}")[0])]
-            if r["ACTUAL_SIZE"] >= K.AVAILABLE_NOMINAL_SIZES[-1]:
+                     and not p.strip().startswith(K.HELD_FLAG.split("{}")[0])
+                     and not p.strip().startswith(K.NO_FALL_FLAG.split("{}")[0])]
+            if r.get("no_fall"):
+                parts.append(K.no_fall_flag(slope))
+            elif r["ACTUAL_SIZE"] >= K.AVAILABLE_NOMINAL_SIZES[-1]:
                 parts.append(MAX_SIZE_FLAG)
             flag = "; ".join(parts)
         if old_nom is not None:
@@ -215,7 +223,7 @@ def resize(records, mode, single, by_order=None, overrides=None, material=None,
                      "key": pipe_key(a, rec.get("fid")),
                      "order": int(_num(a, "TILE_ORDER")), "length": L, "old": old, "new": new,
                      "changed": old_nom is None or r["NOMINAL"] != int(old_nom), "flag": flag,
-                     "material": mat})
+                     "material": mat, "no_fall": bool(r.get("no_fall"))})
         row_recs.append(rec)
     # no pipe smaller than a pipe draining into it
     fr = [_get(rec["attrs"], "from_node") for rec in row_recs]
@@ -242,6 +250,7 @@ def resize(records, mode, single, by_order=None, overrides=None, material=None,
                 row["flag"] = "; ".join(p for p in (row["flag"], K.HELD_FLAG.format(h)) if p)
         after = {k: v for k, v in after.items() if v > 1e-9}
     summary = {"before": dict(sorted(before.items())), "after": dict(sorted(after.items())),
+               "no_fall": sum(1 for r in rows if r["no_fall"]),
                "larger": larger, "smaller": smaller, "spacing": sp, "lines": len(rows)}
     return rows, summary
 

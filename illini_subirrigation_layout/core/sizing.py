@@ -122,16 +122,40 @@ def get_nominal_size(psize):
     return AVAILABLE_NOMINAL_SIZES[-1]
 
 
+NO_FALL_SLOPE = 0.001          # m/m: a pipe with no fall is sized as if laid at 0.1%
+NO_FALL_FLAG = "no fall (sizing slope {}): sized at 0.1%; fix the grade"
+
+
 def size_segment(flow_length_ft, slope, spacing_ft, material, dcoeff):
     """Routine K for one segment with drainage coefficient dcoeff (inch/day).
-    Returns a dict of the Routine K fields."""
+    Returns a dict of the Routine K fields.
+
+    A segment with no fall (slope zero, negative or missing) cannot carry its
+    flow at any size; Routine K gives it an infinite size and the largest
+    nominal size. That reads as a flow problem and, carried down the network,
+    makes every pipe below it the largest size, when the fault is the grade.
+    Such a segment is sized as if laid at NO_FALL_SLOPE instead, and returned
+    with "no_fall": True so the caller can flag the grade.
+    """
     drain_space = int(math.floor(spacing_ft + 0.5))        # nearest whole foot
     flow = get_flow(flow_length_ft, drain_space, dcoeff)
     area = get_area(flow_length_ft, drain_space)
-    psize = get_pipe_size(flow, slope, material) if slope > 0 else float("inf")
+    try:
+        no_fall = not (float(slope) > 0)                    # also NaN and None
+    except (TypeError, ValueError):
+        no_fall = True
+    psize = get_pipe_size(flow, NO_FALL_SLOPE if no_fall else slope, material)
     return {"D_COEFF": dcoeff, "D_AREA": area, "CUM_SEG_FLOW": flow,
             "ACTUAL_SIZE": psize, "NOMINAL": get_nominal_size(psize),
-            "drain_space": drain_space}
+            "drain_space": drain_space, "no_fall": no_fall}
+
+
+def no_fall_flag(slope):
+    try:
+        txt = "{:.2f}%".format(100.0 * float(slope))
+    except (TypeError, ValueError):
+        txt = "none"
+    return NO_FALL_FLAG.format(txt)
 
 
 HELD_FLAG = "sized up to {} in to match the pipe above"

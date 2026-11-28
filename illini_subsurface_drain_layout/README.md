@@ -332,6 +332,10 @@ Where to look for problems:
   collector or to a lateral that reaches one. Check its route.
 - `sized up to N in to match the pipe above` — its own flow and slope need a
   smaller pipe, but a pipe never gets smaller downstream.
+- `no fall (sizing slope …): sized at 0.1%; fix the grade` — the pipe's sizing
+  slope is zero or negative (for example after an edit in Tile Profile), so no
+  size can carry its flow. It is sized as if laid at 0.1% rather than given the
+  largest size, which would also have been carried to every pipe below it.
 - `needs more than 42 in pipe` — the flow is beyond the largest nominal size;
   NOMINAL shows 42, as in Routine K.
 

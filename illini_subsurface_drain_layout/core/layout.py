@@ -2362,7 +2362,10 @@ class DrainageLayout:
                       "ACTUAL_SIZE": round(r["ACTUAL_SIZE"], 3), "NOMINAL": r["NOMINAL"],
                       "PIPE_TYPE": K.MATERIALS[p.pipe_material],
                       "_exact": dict(r, flow_len_ft=flow_len_ft, slope=slope)})
-            if r["ACTUAL_SIZE"] >= K.AVAILABLE_NOMINAL_SIZES[-1]:
+            if r.get("no_fall"):
+                f = a["flag"]
+                a["flag"] = (f + "; " if f else "") + K.no_fall_flag(slope)
+            elif r["ACTUAL_SIZE"] >= K.AVAILABLE_NOMINAL_SIZES[-1]:
                 f = a["flag"]
                 a["flag"] = (f + "; " if f else "") + "needs more than {} in pipe".format(
                     K.AVAILABLE_NOMINAL_SIZES[-1])

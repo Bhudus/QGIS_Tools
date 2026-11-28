@@ -405,6 +405,8 @@ class TileSizeDock(QDockWidget):
                   and r["new"]["ACTUAL_SIZE"] >= K.AVAILABLE_NOMINAL_SIZES[-1])
         if big:
             txt += "; {} need more than {} in".format(big, K.AVAILABLE_NOMINAL_SIZES[-1])
+        if s.get("no_fall"):
+            txt += "; {} have no fall (sized at 0.1%; fix the grade)".format(s["no_fall"])
         self.status.setText(txt + ".")
         self.apply_btn.setEnabled(any(row_differs(r) for r in self.rows))
         self._fill_sizes()
