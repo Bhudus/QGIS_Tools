@@ -1,0 +1,21 @@
+[general]
+name=Tile Machine Export
+qgisMinimumVersion=3.34
+description=Exports a buried tile drainage network as installation runs for tile plow and trencher grade control, GNSS staking and CAD: 3D shapefiles (WGS 84), KMZ, station CSV, PNEZD points, DXF 3D polylines and a printable run sheet.
+about=Takes a buried network (from Illini Subsurface Drain Layout, Illini Drainage System Design, Tile Profile or any line layer with tile elevations) and splits it into installation runs: the main from the outlet up, each submain and lateral from its junction up. For every run it writes the 3D line with control elevations, stations at a set interval and at every grade break and junction (ground, tile invert, control elevation, depth, grade), the grade sections, and the depth and grade settings to key into the display, with checks for reverse or flat grade, shallow cover and excess depth. Elevations can be shifted to the machine's datum from a benchmark reading or an offset, and lowered to the control point of the plow boot. Writes 3D shapefiles of runs and stations (WGS 84 by default, as ag displays need), KMZ, a station CSV, a PNEZD point file for survey data collectors, a DXF of 3D polylines for CAD and construction machine control, and a printable HTML run sheet. The native installable formats of Ag Leader Intellislope and Trimble WM-Drain are not published; load these files as reference lines and use the run sheet for the run settings. Uses only QGIS and numpy.
+version=0.1.0
+author=Richard Cooke and Anamelechi Falasy
+email=raccooke@gmail.com
+
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+
+changelog=0.1.0 - First release: installation runs, stations and checks; shapefile, KMZ, CSV, PNEZD, DXF and run-sheet exports; datum offset from a benchmark; settings kept while the project is open.
+tags=drainage,tile,machine control,grade control,tile plow,GNSS,RTK,export,shapefile,kml,dxf,staking,intellislope,wm-drain
+category=Vector
+experimental=True
+deprecated=False
+hasProcessingProvider=yes
+icon=icon.png
+license=GPL-3.0-or-later
