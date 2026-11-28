@@ -66,5 +66,5 @@ Can be installed alongside Illini Drainage Tools.
 The plugin is also listed under **Raster → Tile Drainage**, a menu shared by the drainage tools in this repository, as well as under **Plugins → Illini Drainage System Design**.
 
 ## Credits
-Based on [Illini Drainage Tools](https://github.com/FVW-Services/Illini-Drainage-Tools) by Anamelechi Falasy and Richard Cooke (GPL v2 or later).
+Based on [Illini Drainage Tools](https://github.com/FVW-Services/Illini-Drainage-Tools) by Anamelechi Falasy and Richard Cooke, Copyright (C) 2022 University of Illinois, Urbana-Champaign (GPL v3 or later; see LICENSE_ILLINI_DRAINAGE_TOOLS.txt).
 Includes the per-segment drainage coefficient fix for Network Pipe Sizing.

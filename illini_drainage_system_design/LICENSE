@@ -1,7 +1,16 @@
-Illini Drainage Tools
-Qgis plugin : This Plugin Performs Specific Drainage Related Tasks and Analysis on a Site using a LiDAR DEM data.
+Illini Drainage System Design
+QGIS plugin: designs a complete subsurface tile drainage system from drawn
+mains and submains (Illini Drainage Tools routines E-K).
+Copyright (C) 2026 Anamelechi Falasy and Richard Cooke
 
-Copyright (C) 2022 University of Illinois, Urbana-Champaign USA
+Based on the Illini Drainage Tools, Copyright (C) 2022 University of
+Illinois, Urbana-Champaign USA (Anamelechi Falasy and Richard Cooke), licensed
+under the GNU General Public License v3 or later; see LICENSE_ILLINI_DRAINAGE_TOOLS.txt.
+The algorithm files (benefits_algorithm.py, bury_algorithm.py,
+flow_lengths_algorithm.py, geometrically_fixed_algorithm.py,
+network_elevation_algorithm.py, network_flow_ordering_algorithm.py,
+network_generator_algorithm.py) are modified versions of the Illini Drainage
+Tools files of the same names.
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -14,4 +23,5 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
+along with this program (the file COPYING).  If not, see
+<https://www.gnu.org/licenses/>.
