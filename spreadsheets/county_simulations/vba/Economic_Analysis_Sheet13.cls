@@ -42,71 +42,88 @@ MsgBox (a$)
 End Sub
 
 Private Sub CheckBox1_Click()
-If CheckBox1.Value = False Then
-    Worksheets("Economic Analysis").Range("CDFlag") = 0
-    Worksheets("Economic Analysis").Columns("N:N").EntireColumn.Hidden = False
-    Worksheets("Economic Analysis").Columns("O:O").EntireColumn.Hidden = True
- Else
-    Worksheets("Economic Analysis").Range("CDFlag") = 1
-    Worksheets("Economic Analysis").Columns("N:N").EntireColumn.Hidden = True
-    Worksheets("Economic Analysis").Columns("O:O").EntireColumn.Hidden = False
- End If
-End Sub
-
-Private Sub CommandButton1_Click()
-Dim FullRange As Range
-'Worksheets("Economic Analysis").Shapes("Arrow").Visible = True
-Worksheets("Economic Analysis").Columns("T:AC").EntireColumn.Hidden = False
-Range("DataRange").Copy
-Range("T2").PasteSpecial xlPasteValues
-Range("T2").PasteSpecial xlPasteFormats
-
-Range("DataRangeSort").Sort key1:=Range("ab3"), Order1:=xlDescending, Header:=xlNo
-Set FullRange = Range("DataRangeSort")
-
-ist = 1
-
-While FullRange(ist, 1) = 0
- ist = ist + 1
-Wend
-
-j2 = WorksheetFunction.Min(10, Worksheets("Economic Analysis").Range("NPTS"))
-
-For ir = 1 To j2: For ic = 1 To 4
-    Worksheets("Report").Cells(20 + ir, 15 + ic) = FullRange(ist - 1 + ir, ic)
-    Next ic
-    Worksheets("Report").Cells(20 + ir, 20) = FullRange(ist - 1 + ir, 9)
-    Worksheets("Report").Cells(20 + ir, 21) = FullRange(ist - 1 + ir, 10)
-Next ir
-
-Range("DataRangeSort").Sort key1:=Range("ab4"), Order1:=xlAscending, Header:=xlNo
-    Worksheets("Economic Analysis").Columns("X:X").EntireColumn.Hidden = False
-
-
-
-If CheckBox1.Value = False Then
-    Worksheets("Economic Analysis").Columns("Z:Z").EntireColumn.Hidden = False
-    Worksheets("Economic Analysis").Columns("AA:AA").EntireColumn.Hidden = True
-    Worksheets("Economic Analysis").Columns("Y:Y").EntireColumn.Hidden = True
- Else
-    Worksheets("Economic Analysis").Columns("Z:Z").EntireColumn.Hidden = True
-    Worksheets("Economic Analysis").Columns("AA:AA").EntireColumn.Hidden = False
-    Worksheets("Economic Analysis").Columns("Y:Y").EntireColumn.Hidden = False
- End If
-
+' ticked: the analysis uses the managed drainage (DWM or subirrigation) results
+If CheckBox1.Value = True Then
+    Range("CDFlag").Value = 1
+Else
+    Range("CDFlag").Value = 0
+End If
+BuildNPVChart
 End Sub
 
 Private Sub cmdSort_Click()
-
+' shows or hides the alternatives listed from best to worst net present value
+Dim showIt As Boolean
+showIt = Me.Columns("V").Hidden
+Me.Columns("V:AE").Hidden = Not showIt
+If showIt Then Application.Goto Me.Range("V1"), True
 End Sub
 
 Private Sub CommandButton2_Click()
-
-
-'Worksheets("Economic Analysis").Shapes("Arrow").Visible = False
-Worksheets("Economic Analysis").Columns("T:AC").EntireColumn.Hidden = True
+Me.Columns("V:AE").Hidden = True
 Worksheets("Economic Analysis").Visible = False
 Worksheets("Main").Activate
+End Sub
+
+Private Sub Worksheet_Activate()
+On Error Resume Next
+cmdSort.Caption = "Ranked list"
+CommandButton2.Caption = "Back to Main"
+If WMCode() = 3 Then CheckBox1.Caption = "Subirrigation" Else CheckBox1.Caption = "DWM"
+On Error GoTo 0
+BuildNPVChart
+End Sub
+
+' Chart of net present value against drain spacing, one line per drain depth
+' (from the table in columns H to T). Rebuilt each time the sheet is shown.
+Public Sub BuildNPVChart()
+Dim co As ChartObject, cht As Chart, s As Series
+Dim r As Long, r0 As Long, d As Variant, nSer As Integer
+On Error Resume Next
+Set co = Me.ChartObjects("NPVChart")
+On Error GoTo Failed
+If co Is Nothing Then
+    Set co = Me.ChartObjects.Add(Me.Range("B38").Left, Me.Range("B38").Top, Me.Range("B38:G38").Width, 270)
+    co.Name = "NPVChart"
+End If
+Set cht = co.Chart
+cht.ChartType = xlXYScatterLines
+Do While cht.SeriesCollection.Count > 0
+    cht.SeriesCollection(1).Delete
+Loop
+r = 4
+Do While r <= 102
+    If VarType(Me.Cells(r, "O").Value) = vbDouble Then
+        d = Me.Cells(r, "H").Value
+        r0 = r
+        Do While r < 102
+            If CStr(Me.Cells(r + 1, "H").Value) <> CStr(d) Or VarType(Me.Cells(r + 1, "O").Value) <> vbDouble Then Exit Do
+            r = r + 1
+        Loop
+        Set s = cht.SeriesCollection.NewSeries
+        s.Name = Format(d, "0.0") & " ft deep"
+        s.XValues = Me.Range(Me.Cells(r0, "I"), Me.Cells(r, "I"))
+        s.Values = Me.Range(Me.Cells(r0, "O"), Me.Cells(r, "O"))
+        nSer = nSer + 1
+    End If
+    r = r + 1
+Loop
+co.Visible = (nSer > 0)
+If nSer = 0 Then Exit Sub
+cht.HasTitle = True
+cht.ChartTitle.Text = "Net present value ($/acre)"
+cht.HasLegend = True
+cht.Legend.Position = xlLegendPositionBottom
+With cht.Axes(xlCategory, xlPrimary)
+    .HasTitle = True
+    .AxisTitle.Text = "Drain spacing (ft)"
+End With
+With cht.Axes(xlValue, xlPrimary)
+    .HasTitle = True
+    .AxisTitle.Text = "NPV ($/acre)"
+End With
+Exit Sub
+Failed:
 End Sub
 
 Private Sub CornPrice_Change()
@@ -114,10 +131,10 @@ Private Sub CornPrice_Change()
 End Sub
 
 Private Sub CornPriceQ_Click()
-a1$ = " Total costs per bushel of corn range from $4.84 in central Illinois to $6.79 in southern Illinois."
-a2$ = " In 2017, the price per unit of corn was $3.35/bu."
-a$ = a1$ & a2$
-MsgBox (a$)
+a$ = "In 2025, the total cost of growing corn in Illinois was about $4.98/bu in northern Illinois, " & _
+     "$5.00 to $5.03/bu in central Illinois and $6.50/bu in southern Illinois (farmdoc). " & _
+     "Illinois farm records valued the 2025 corn crop at $4.20/bu at the end of 2025."
+MsgBox a$, vbInformation
 End Sub
 
 Private Sub CritDepQ_Click()
@@ -147,13 +164,14 @@ End Sub
 
 
 Private Sub ExtraCostQ_Click()
-a$ = "This may include extra costs such as operating cost for machinery, hauling and maintenance of tile drains or addressing environmental impacts of agricultural drainage. "
+a$ = "One-time costs per acre added to the cost of the drainage system, such as surveying, outlet work or hauling. " & _
+     "Costs or savings that come every year go in 'Annual added costs' and 'Annual savings' below."
 MsgBox (a$)
 End Sub
 
 Private Sub InterestQuery_Click()
-a$ = "Many tools have been developed to assist in the determination of the practicability of drainage. This Guide, for example, includes an economic calculator that can be used to determine the profitability of a drainage system. "
-'It provides many measures of profitability, but they are all consistent with each other, and are but a reflection of user preference."
+a$ = "The interest (discount) rate used to discount the yearly after-tax cash flows for the net present value, " & _
+     "the discounted payback and the break-even income."
 MsgBox (a$)
 End Sub
 
@@ -162,10 +180,10 @@ Private Sub InterestRate_Change()
 End Sub
 
 Private Sub LatCostQ_Click()
-a1$ = "As a general guideline, the cost of tile drainage is typically about $1.00 per foot of tile. "
-a2$ = "Spacing between lateral drains is a major factor affecting the total cost of the drainage system. "
-a$ = a1$ & a2$
-MsgBox (a$)
+a$ = "Installed 4-inch lateral tubing costs about $1.10 to $1.30 per foot (NC State Extension, revised 2025: " & _
+     "$1.07/ft without a fabric filter, $1.28/ft with one). Costs vary with location, contractor and year, " & _
+     "so use a local quote if you have one. The spacing between laterals is a major factor in the total cost."
+MsgBox a$, vbInformation
 End Sub
 
 Private Sub LateralCost_Change()
@@ -188,10 +206,11 @@ MsgBox (a$)
 End Sub
 
 Private Sub MaxCornQ_Click()
-a1$ = "According to USDA, the corn yield in Illinois was 197 bu/ac in 2016, and 201 bu/ac in 2017. "
-a2$ = "Illinois has an average corn yield of 200 bu/ac as stated by the U.S. Dept. of Agriculture's National Agricultural Statistics Services"
-a$ = a1$ & a2$
-MsgBox (a$)
+a$ = "The Illinois average corn yield was a record 214 bu/acre in 2025 (USDA NASS). " & _
+     "On Illinois farms in the Farm Business Farm Management records, 2025 corn yields averaged " & _
+     "239 bu/acre in northern Illinois, 242 and 234 bu/acre in central Illinois (high- and low-rated soils) " & _
+     "and 172 bu/acre in southern Illinois."
+MsgBox a$, vbInformation
 End Sub
 
 Private Sub MaxCornYield_Change()
@@ -199,10 +218,11 @@ Private Sub MaxCornYield_Change()
 End Sub
 
 Private Sub MaxSoyQ_Click()
-a1$ = "According to USDA, the soybean yield in Illinois was 59 bu/ac in 2016, and 58 bu/ac in 2017. "
-a2$ = "Illinois has an average soybean yield of 50 bu/ac as stated by the U.S. Dept. of Agriculture's National Agricultural Statistics Services."
-a$ = a1$ & a2$
-MsgBox (a$)
+a$ = "The Illinois average soybean yield was a record 62.5 bu/acre in 2025 (USDA NASS). " & _
+     "On Illinois farms in the Farm Business Farm Management records, 2025 soybean yields averaged " & _
+     "71 bu/acre in northern Illinois, 75 and 71 bu/acre in central Illinois (high- and low-rated soils) " & _
+     "and 51 bu/acre in southern Illinois."
+MsgBox a$, vbInformation
 End Sub
 
 Private Sub MaxSoyYield_Change()
@@ -215,10 +235,10 @@ Private Sub SoyPrice_Change()
 End Sub
 
 Private Sub SoyPriceQ_Click()
-a1$ = " Total costs per bushel of soybean range from $11.05 in central Illinois to $12.31 in southern Illinois."
-a2$ = " In 2017, the price per unit of soybean was $9.6/bu."
-a$ = a1$ & a2$
-MsgBox (a$)
+a$ = "In 2025, the total cost of growing soybeans in Illinois was about $12.31/bu in northern Illinois, " & _
+     "$12.07 to $12.13/bu in central Illinois and $16.09/bu in southern Illinois (farmdoc). " & _
+     "Illinois farm records valued the 2025 soybean crop at $10.20/bu at the end of 2025."
+MsgBox a$, vbInformation
 End Sub
 
 Private Sub TaxRate_Change()

@@ -8,6 +8,7 @@ Public Const NEX_HIST_END As Integer = 2014       ' last year of the NEX-GDDP-CM
 Public Const TIGER_COUNTIES As String = "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/State_County/MapServer"
 Public Const TIGER_COUNTIES_2020 As String = "https://tigerweb.geo.census.gov/arcgis/rest/services/Census2020/State_County/MapServer/9"
 Private countyCache As Object          ' state FIPS -> Dictionary(normalized county name -> "lat|lon")
+Public gUndrainedRun As Boolean        ' True while the undrained baseline is written (drainage coefficient 0.01 cm/day)
 Public gLocating As Boolean            ' True while Locate from Map sets the state/county/soil
 Private gUseCurl As Boolean             ' True once curl.exe worked where Windows' HTTP components failed
 Private Const HTTP_UA As String = "DRAINMOD-County-Simulations-Excel/2.0"
@@ -107,6 +108,95 @@ End Function
 ' "Re-download online data" is set to Yes on the New Flow File sheet.
 '==========================================================================
 
+
+'------------------------------------------------ DRAINMOD folder ----
+' True if the DRAINMOD folder (New Flow File!CurrentPath) holds the inputs and
+' outputs folders. Otherwise, or always with forceAsk, the user picks it (the
+' dialog opens at the current folder). Returns False if cancelled without a
+' usable folder.
+Public Function EnsureDrainmodFolder(Optional ByVal forceAsk As Boolean = False) As Boolean
+    Dim p As String, pick As String, msg As String
+    p = Trim$(CStr(Sheets("New Flow File").Range("CurrentPath").Value))
+    If IsDrainmodFolder(p) And Not forceAsk Then
+        EnsureDrainmodFolder = True
+        Exit Function
+    End If
+    msg = "Select the DRAINMOD folder (it holds the crops, inputs and outputs folders)."
+    If p <> "" And Not IsDrainmodFolder(p) Then msg = msg & vbLf & vbLf & "The folder now set, " & p & ", does not have them."
+    MsgBox msg & vbLf & vbLf & "You will then be asked for the DRAINMOD program, DMhydro.exe, if it has not been chosen.", vbInformation, "DRAINMOD folder"
+    Do
+        pick = PickFolder("Select the DRAINMOD folder (contains the crops, inputs and outputs folders)", p)
+        If pick = "" Then
+            If IsDrainmodFolder(p) Then EnsureDrainmodFolder = True      ' cancelled: keep the valid folder
+            Exit Function
+        End If
+        If IsDrainmodFolder(pick) Then Exit Do
+        MsgBox "The inputs and outputs folders were not found in" & vbLf & pick & vbLf & vbLf & _
+               "Select the DRAINMOD folder (it holds the crops, inputs and outputs folders).", vbExclamation, "DRAINMOD folder"
+    Loop
+    If Right$(pick, 1) = "\" Then pick = Left$(pick, Len(pick) - 1)
+    Sheets("New Flow File").Range("CurrentPath").Value = pick
+    Sheets("Main").Range("StartFlag").Value = 1
+    EnsureDrainmodFolder = True
+End Function
+
+Private Function IsDrainmodFolder(ByVal p As String) As Boolean
+    If p = "" Then Exit Function
+    If Right$(p, 1) = "\" Then p = Left$(p, Len(p) - 1)
+    On Error Resume Next
+    IsDrainmodFolder = (Dir$(p & "\inputs", vbDirectory) <> "") And (Dir$(p & "\outputs", vbDirectory) <> "")
+End Function
+
+Public Function PickFolder(ByVal title As String, ByVal startAt As String) As String
+    With Application.FileDialog(4)                ' msoFileDialogFolderPicker
+        .Title = title
+        .AllowMultiSelect = False
+        If startAt <> "" Then
+            If Right$(startAt, 1) <> "\" Then startAt = startAt & "\"
+            .InitialFileName = startAt
+        End If
+        If .Show = -1 Then PickFolder = .SelectedItems(1)
+    End With
+End Function
+
+' Folder of the Illinois soil database: <DRAINMOD folder>\Illinois\Soils\ if it
+' has soil files, else the folder chosen before (remembered for this Windows
+' user), else the user is asked for it. Returns "" if cancelled.
+Public Function IllinoisSoilFolder() As String
+    Dim p As String, saved As String
+    p = Trim$(CStr(Sheets("New Flow File").Range("CurrentPath").Value))
+    If Right$(p, 1) <> "\" Then p = p & "\"
+    p = p & "Illinois\Soils\"
+    If FolderHasSoils(p) Then
+        IllinoisSoilFolder = p
+        Exit Function
+    End If
+    saved = GetSetting(DM_APP, "Paths", "IllinoisSoils", "")
+    If FolderHasSoils(saved) Then
+        IllinoisSoilFolder = saved
+        Exit Function
+    End If
+    MsgBox "The Illinois soil database was not found in the DRAINMOD folder (" & p & ")." & vbLf & vbLf & _
+           "Select the folder that holds the Illinois soil files (.dsi, .sin, .mis and .wdv).", vbInformation, "Illinois soil database"
+    Do
+        p = PickFolder("Select the Illinois soil database folder (.dsi, .sin, .mis and .wdv files)", saved)
+        If p = "" Then Exit Function
+        If Right$(p, 1) <> "\" Then p = p & "\"
+        If FolderHasSoils(p) Then Exit Do
+        If MsgBox("No soil files (.dsi) were found in" & vbLf & p & vbLf & vbLf & "Choose another folder?", _
+                  vbYesNo + vbExclamation, "Illinois soil database") = vbNo Then Exit Function
+        saved = p
+    Loop
+    SaveSetting DM_APP, "Paths", "IllinoisSoils", p
+    IllinoisSoilFolder = p
+End Function
+
+Private Function FolderHasSoils(ByVal p As String) As Boolean
+    If p = "" Then Exit Function
+    If Right$(p, 1) <> "\" Then p = p & "\"
+    On Error Resume Next
+    FolderHasSoils = (Dir$(p & "*.dsi") <> "")
+End Function
 
 '------------------------------------------------------ DRAINMOD program ----
 ' Location of the DRAINMOD hydrology program (DMhydro.exe). The user picks the
@@ -1323,6 +1413,19 @@ End Function
 
 ' Labels the Main sheet time-period buttons (observed years come from the
 ' New Flow File sheet; simulated baseline is the NEX-GDDP historical run)
+' Excel leaves the buttons on Main unresponsive for a while after the start-up
+' window closes, until the sheet is shown again. Switching to another sheet
+' and back makes them work at once. Run by Workbook_Open (Application.OnTime)
+' after the start-up window has closed.
+Public Sub WakeMainSheet()
+    On Error Resume Next
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Worksheets("Model Description").Activate
+    Worksheets("Main").Activate
+    Worksheets("Main").Range("A1").Select
+End Sub
+
 Public Sub SetTimePeriodCaptions()
     Dim y0 As Variant, y1 As Variant
     On Error Resume Next

@@ -11,7 +11,6 @@ Private Sub CommandButton1_Click()
  Dim answer As Integer
 Worksheets("Main").Range("dBaseFlag") = 1
 FrmIntroduction.Hide
-Worksheets("New Flow File").InputState ("Illinois")
 Worksheets("Main").Activate
 Worksheets("Main").Range("StartFlag") = 0
 10     NewPath = GetFolder(PltFile)
@@ -29,6 +28,24 @@ End If
     Worksheets("New Flow File").Range("CurrentPath") = NewPath
     Worksheets("Main").Range("StartFlag") = 1
     DMHydroPath True
+    ' fill the county and soil lists quickly: no screen redraws, recalculation
+    ' or soil look-up until they are filled (the soil is read when the New Flow
+    ' File sheet is opened or the simulation runs)
+    Application.StatusBar = "Loading counties and soils..."
+    Application.Cursor = xlWait
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    gLocating = True
+    On Error Resume Next
+    Worksheets("New Flow File").InputState ("Illinois")
+    Worksheets("Main").SelectObservedPeriod
+    On Error GoTo 0
+    gLocating = False
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+    Application.Cursor = xlDefault
+    Application.StatusBar = False
+    Worksheets("Main").Activate
 End Sub
 
 

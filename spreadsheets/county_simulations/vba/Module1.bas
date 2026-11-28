@@ -49,6 +49,28 @@ For N = 1 To Ndepths
 Next N
 
 End With
+FinishMainChart cht
+End Sub
+
+' Main chart: value axis up to 100 for relative yields (%), automatic for the
+' others; then makes Excel redraw the chart at once (a chart changed from a
+' sheet's option button is otherwise often not redrawn until the sheet is
+' repainted, so the previous graph stays on screen).
+Public Sub FinishMainChart(cht As Chart)
+    Dim t As String
+    On Error Resume Next
+    t = LCase$(cht.ChartTitle.Text)
+    With cht.Axes(xlValue, xlPrimary)
+        If InStr(t, "relative") > 0 And InStr(t, "%") > 0 Then
+            .MaximumScale = 100
+        Else
+            .MaximumScaleIsAuto = True
+        End If
+    End With
+    Application.ScreenUpdating = True
+    cht.Refresh
+    DoEvents
+    If ActiveSheet.Name = "Main" Then ActiveWindow.ScrollRow = ActiveWindow.ScrollRow
 End Sub
 
 Public Sub plotgraphR(YRange, CrtName)
@@ -311,7 +333,7 @@ Print #flNum, strWeather3
 Print #flNum, strPET
 Print #flNum, "*** Drainage System Design ***"; Tab(77); ""
 If intWTMflag = 1 Then
-    Print #flNum, " 2"
+    Print #flNum, " " & WMCode()      ' 2 = controlled drainage, 3 = subirrigation
 Else
     Print #flNum, " 1"
 End If
@@ -712,7 +734,7 @@ strDrainDepth$ = FormatNumber(DrainDepth, 2)
 strEffectiveDepth$ = FormatNumber(EffectiveDepth, 2)
 strDrainSpacing$ = Format(DrainSpace, "  ####.00")
 strSm$ = FormatNumber(1, 2)
-strDC$ = FormatNumber(5.3, 2)
+If gUndrainedRun Then strDC$ = Format(0.01, "0.00") Else strDC$ = FormatNumber(5.3, 2)   ' 0.01 cm/day: undrained baseline
 strSl$ = FormatNumber(1, 2)
 strKirkhamG$ = FormatNumber(V, 2)
 strW$ = FormatNumber(100, 2)
@@ -859,7 +881,8 @@ StrSoil = Sheets("New Flow File").Range("SoilFileName")
 StateName = Sheets("New Flow File").Range("StateName")
 
 If StateName = "Other" Then StateName = "Illinois"
-strSoilRep = CurPath + "\" + StateName + "\" & "\soils\" & StrSoil & ".dsi"
+strSoilRep = Sheets("DMData").Range("SinPath")                 ' set by SetIllinoisDbSoil
+strSoilRep = Left$(strSoilRep, Len(strSoilRep) - 4) & ".dsi"
 
 Open strSoilRep For Input As #4
 

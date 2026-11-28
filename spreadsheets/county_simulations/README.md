@@ -1,13 +1,13 @@
 # County Simulations
 
-**Workbook:** `County_Simulations.xlsm` · Version 2.1 ·
+**Workbook:** `County_Simulations.xlsm` · Version 2.2 ·
 [download zip](https://github.com/Bhudus/QGIS_Tools/raw/main/spreadsheets/county_simulations/county_simulations.zip)
 
 Runs DRAINMOD for a county and soil over a range of drain depths and spacings, for
 observed weather or for projected (future) climate, and charts corn and soybean relative
 yield and the water balance against drain spacing. Use it to find the depth and spacing
 that maximize yield under current and projected climate stress, with or without
-drainage water management.
+drainage water management or subirrigation, and the one that pays best after tax.
 
 The site, weather and soil come online: the site is the county centroid (editable), the
 observed weather comes from [Daymet](https://daymet.ornl.gov/), the simulated weather
@@ -29,9 +29,12 @@ weather files you already have.
 ## Use
 
 1. Open the workbook (see *Opening a downloaded workbook* in the
-   [spreadsheets README](../README.md)). It asks for the DRAINMOD folder, then for
-   `dmhydro.exe`; the dialog opens at your last choice, which is remembered.
-2. On **Main**, pick the state, county and soil, and the **time period**:
+   [spreadsheets README](../README.md)). It opens on **Main** and asks for the DRAINMOD
+   folder, then for `dmhydro.exe`; the dialog opens at your last choice, which is
+   remembered. If "Soil from dropdown" is used and the Illinois soil files are not in the
+   DRAINMOD folder, it asks where they are.
+2. On **Main**, pick the state, county and soil, and the **time period** (the observed
+   period is selected when the workbook opens):
    * observed weather (Daymet, the years set on New Flow File),
    * a simulated baseline, 1996–2025 (the climate model's historical run to 2014, then the
      chosen emissions scenario),
@@ -41,6 +44,8 @@ weather files you already have.
    check the site and choose:
    * the **climate model** (default GFDL-ESM4) and **emissions scenario** (default SSP2-4.5),
    * the **soil source** (Illinois soil from the dropdown, or SSURGO at the site),
+   * for managed drainage, the **Managed drainage** type: controlled drainage (DWM) or
+     subirrigation, which pumps water in to hold the drains at the raised-outlet depth,
    * **Weather files**: *Download*, or *My own files* to use DRAINMOD `.RAI` and `.TEM`
      files you already have (you pick them when you run; the paths are kept in the two
      rows below).
@@ -53,7 +58,33 @@ weather files you already have.
 5. Back on **Main**, the option buttons switch the charts of corn and soybean relative
    yield (overall, excess water, drought, SDI excess, drought stress) and of drained
    volume, runoff, infiltration, evapotranspiration, SEW, dry days and work days against
-   drain spacing. **View Report** and **Economic Analysis** open those sheets.
+   drain spacing (relative yields up to 100%). **View Report** and **Economic Analysis**
+   open those sheets.
+
+### Economic analysis
+
+The **Economic Analysis** sheet uses the method of the
+[Economic Analysis](../economic_analysis/) workbook for every drain depth and spacing
+simulated: cost per acre, yield gain, net income gain, after-tax net present value,
+undiscounted and discounted payback, internal rate of return and break-even income,
+ranked by net present value (best row highlighted, with a chart of net present value
+against spacing for each depth). **Ranked list** shows the alternatives from best to
+worst, and the top ten go to the **Report** sheet.
+
+* **Yield gain** = (simulated yield − undrained yield) × maximum yield, for corn and
+  soybean (averaged as a rotation, or corn alone for continuous corn). The undrained
+  yield comes from one more DRAINMOD run that **Generate Daily Drain Flows** makes after
+  the others: the widest spacing and shallowest depth with a drainage coefficient of
+  0.01 cm/day, so the drains remove almost no water.
+* **Cost** = tile per acre × (lateral cost + mains and fittings, + depth premium below
+  the critical depth) + additional one-time costs.
+* Inputs: interest rate, marginal tax rate, life of the system, maximum yields and prices,
+  depth specifications and costs, and below them the depreciation schedule, annual
+  added costs and savings, and the one-time and yearly cost of managed drainage (used
+  when the DWM / Subirrigation box is ticked).
+* Depreciation is straight-line with a half-year convention; the IRR is 0 when the
+  simple payback is longer than the life of the system, as in the Economic Analysis
+  workbook.
 
 ### Weather downloads
 
@@ -79,6 +110,16 @@ Excel are blocked (for example by a VPN or firewall), downloads are retried with
 * `FrmIntroduction.frm`: the start-up window (DRAINMOD folder).
 
 ## Versions
+
+* **2.2** – Subirrigation as a managed drainage option, next to controlled drainage (DWM).
+  Economic analysis with the method of the Economic Analysis workbook (after-tax net
+  present value, payback, internal rate of return and break-even income for every depth
+  and spacing), with an undrained DRAINMOD run as the yield baseline, a net present
+  value chart and the help messages updated to 2025 yields, costs and prices. Opens on
+  **Main** with the observed period selected and asks for the DRAINMOD folder (and the
+  Illinois soil folder if needed); no start-up delay before the Main buttons respond;
+  link to another workbook removed. Main chart: yield axis up to 100%, charts redraw at
+  once when an option is picked.
 
 * **2.1** – County centroid lookup works with the reorganized US Census TIGERweb service:
   it tries the current counties layer, then the stable Census 2020 counties layer, and

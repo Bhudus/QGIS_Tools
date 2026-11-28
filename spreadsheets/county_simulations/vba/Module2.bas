@@ -1148,14 +1148,16 @@ Public Function SetIllinoisDbSoil() As Double
     Dim folder As String, soil As String, f As Integer, impDepth As Variant, nLay As Variant, ext As Variant
     Dim dmd As Worksheet
     Set dmd = Sheets("DMData")
-    folder = Sheets("New Flow File").Range("CurrentPath")
-    If Right$(folder, 1) <> "\" Then folder = folder & "\"
-    folder = folder & "Illinois\Soils\"
+    If Not EnsureDrainmodFolder() Then Err.Raise vbObjectError + 579, "Soil", "No DRAINMOD folder was chosen."
+    folder = IllinoisSoilFolder()
+    If folder = "" Then Err.Raise vbObjectError + 579, "Soil", "No Illinois soil database folder was chosen. " & _
+        "Choose it, or set 'Soil source' on the New Flow File sheet to SSURGO at site."
     soil = Trim$(CStr(Sheets("New Flow File").Range("SoilFileName").Value))
     If soil = "" Then Err.Raise vbObjectError + 580, "Soil", "Pick a soil in the soil dropdown on the New Flow File sheet."
     For Each ext In Array(".dsi", ".sin", ".mis", ".wdv")
         If Not FileHasData(folder & soil & ext) Then
-            Err.Raise vbObjectError + 581, "Soil", "Illinois soil database file not found: " & folder & soil & ext
+            Err.Raise vbObjectError + 581, "Soil", "Illinois soil database file not found: " & folder & soil & ext & _
+                vbLf & "Pick another soil, or set 'Soil source' on the New Flow File sheet to SSURGO at site."
         End If
     Next ext
     f = FreeFile

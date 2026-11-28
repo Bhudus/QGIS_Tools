@@ -110,18 +110,47 @@ If intCropflag = 3 Then Crop = CurPath & "\crops\corn.cin"
    
 End Sub
 
+' Managed drainage run type chosen on New Flow File (WMType):
+' DRAINMOD code 2 = controlled drainage (DWM), 3 = subirrigation. Both use the
+' weir schedule in the crop files; with subirrigation DRAINMOD pumps water in
+' to hold the drains at the weir level.
+Public Function WMCode() As Integer
+    Dim v As String
+    On Error Resume Next
+    v = LCase$(Trim$(CStr(Sheets("New Flow File").Range("WMType").Value)))
+    On Error GoTo 0
+    If Left$(v, 6) = "subirr" Then WMCode = 3 Else WMCode = 2
+End Function
+
+Public Function WMLabel() As String
+    If WMCode() = 3 Then WMLabel = "Subirrigation" Else WMLabel = "Drainage Water Management"
+End Function
+
+' Puts the chosen managed drainage type into the labels that name it.
+Public Sub UpdateWMLabels()
+    On Error Resume Next
+    Sheets("Main").Shapes("TextBox 2").TextFrame2.TextRange.Text = "*" & WMLabel()
+    If WMCode() = 3 Then
+        Sheets("Economic Analysis").CheckBox1.Caption = "Subirrigation"
+    Else
+        Sheets("Economic Analysis").CheckBox1.Caption = "DWM"
+    End If
+End Sub
+
 Sub RunDWM()
   Dim RetVal As Long, InFile As String, plotp(30) As Single
   Dim wsh As Object
 Set wsh = VBA.CreateObject("WScript.Shell")
   'On Error Resume Next
  Dim dmExe As String
+ If Not EnsureDrainmodFolder() Then Exit Sub
  dmExe = DMHydroPath()
  If dmExe = "" Then
     MsgBox "DRAINMOD cannot run until you select the DRAINMOD hydrology program (DMhydro.exe).", vbExclamation, "DRAINMOD"
     Exit Sub
  End If
  
+ UpdateWMLabels
  WTmanagement
  Weather
  Soilss
@@ -269,7 +298,63 @@ For N = 1 To Ndepths
 
 Next N
 
+FinishMainChart cht
+End Sub
 
+' Simulates the field without subsurface drainage, as the baseline for the
+' yield gains in the economic analysis: the widest spacing and shallowest depth
+' simulated, with a drainage coefficient of 0.01 cm/day so the drains remove
+' almost no water (surface drainage is unchanged). The overall relative
+' yields (%) go to DMOutput!AH4 (corn) and AI4 (soybean).
+Public Sub RunUndrained(ByVal dmExe As String)
+    Dim wsh As Object, CurPath As String, strProjFile As String, f As Integer
+    Dim textline As String, nAvg As Integer, yCorn As Double, ySoy As Double
+    Dim yrFile As String, yldFile As String
+    On Error GoTo Failed
+    Application.StatusBar = "Simulating the undrained field (baseline for the economic analysis)..."
+    Set wsh = VBA.CreateObject("WScript.Shell")
+    Sheets("New Flow File").Range("intWTMFlag") = 0
+    Sheets("DMData").Range("DrainDepth") = CInt(Sheets("New Flow File").Range("DrainDepth1") * 30.48)
+    Sheets("DMData").Range("DrainSpace") = CInt(Sheets("New Flow File").Range("DrainSpace2") * 30.48)
+    gUndrainedRun = True
+    PROJC
+    GENC
+    gUndrainedRun = False
+    CurPath = Sheets("New Flow File").Range("CurrentPath")
+    strProjFile = Worksheets("DMData").Range("strProjFile")
+    wsh.Run """" & dmExe & """  " & strProjFile, 0, True
+    yrFile = CurPath & "\outputs\run0.yr"
+    yldFile = CurPath & "\outputs\run0.yld"
+    f = FreeFile
+    Open yldFile For Input As #f
+    Do Until EOF(f)
+        Line Input #f, textline
+        If InStr(textline, "AVG") > 0 Then
+            nAvg = nAvg + 1
+            If nAvg = 1 Then
+                yCorn = Val(Mid(textline, 79, 6))
+            ElseIf nAvg = 2 Then
+                ySoy = Val(Mid(textline, 79, 6))
+            End If
+        End If
+    Loop
+    Close #f
+    f = 0
+    With Worksheets("DMOutput")
+        .Range("AH4:AI4").ClearContents
+        If nAvg >= 1 Then .Range("AH4").Value = yCorn
+        If nAvg >= 2 Then .Range("AI4").Value = ySoy
+    End With
+    On Error Resume Next
+    Kill yrFile
+    Kill yldFile
+    Application.StatusBar = False
+    Exit Sub
+Failed:
+    gUndrainedRun = False
+    Application.StatusBar = False
+    If f > 0 Then Close #f
+    MsgBox "The undrained field could not be simulated, so the Economic Analysis sheet has no yield gains:" & vbLf & Err.Description, vbExclamation, "DRAINMOD"
 End Sub
 
 Public Sub ReportGraphs()

@@ -33,16 +33,28 @@ Attribute VB_Control = "Opt_Soy_Drought, 49, 29, MSForms, OptionButton"
 Attribute VB_Control = "Opt_Soy_Excess, 50, 30, MSForms, OptionButton"
 Attribute VB_Control = "CommandButton5, 54, 31, MSForms, CommandButton"
 
+Private mQuiet As Boolean      ' True while the workbook selects the default time period
+
+' Selects the observed period (OptionButton4) without its message; called at start-up.
+Public Sub SelectObservedPeriod()
+    mQuiet = True
+    On Error Resume Next
+    OptionButton4.Value = True
+    OptionButton4_Click
+    On Error GoTo 0
+    mQuiet = False
+End Sub
+
 Private Sub CommandButton1_Click()
  
  Dim PltFile As String, NewPath As String
  
  If Worksheets("Main").Range("StartFlag") = 0 Then
-    MsgBox ("Select the DRAINMOD folder (it must contain the crops, inputs and outputs folders). You will then be asked for the DRAINMOD program, DMhydro.exe.")
-    NewPath = GetFolder(PltFile)
-    Worksheets("New Flow File").Range("CurrentPath") = NewPath
-    Worksheets("Main").Range("StartFlag") = 1
+    ' the start-up window was skipped: confirm the DRAINMOD folder and program
+    If Not EnsureDrainmodFolder(True) Then Exit Sub
     DMHydroPath True
+ ElseIf Not EnsureDrainmodFolder() Then
+    Exit Sub
   End If
  
  Worksheets("New Flow File").Visible = True
@@ -55,11 +67,11 @@ Private Sub CommandButton2_Click()
 Dim PltFile As String, NewPath As String
 
  If Worksheets("Main").Range("StartFlag") = 0 Then
-    MsgBox ("Select the DRAINMOD folder (it must contain the crops, inputs and outputs folders). You will then be asked for the DRAINMOD program, DMhydro.exe.")
-    NewPath = GetFolder(PltFile)
-    Worksheets("New Flow File").Range("CurrentPath") = NewPath
-    Worksheets("Main").Range("StartFlag") = 1
+    ' the start-up window was skipped: confirm the DRAINMOD folder and program
+    If Not EnsureDrainmodFolder(True) Then Exit Sub
     DMHydroPath True
+ ElseIf Not EnsureDrainmodFolder() Then
+    Exit Sub
  End If
   
 'NewPath = GetFolder(PltFile)
@@ -88,15 +100,16 @@ End Sub
 
 Private Sub CommandButton4_Click()
 Worksheets("Economic Analysis").Visible = True
-Worksheets("Economic Analysis").Activate
 If Worksheets("New Flow File").Range("DWMFlag") = 1 Then
   Worksheets("Economic Analysis").CheckBox1.Visible = True
 Else
+  ' no managed drainage results: analyse conventional drainage
+  Worksheets("Economic Analysis").CheckBox1.Value = False
+  Worksheets("Economic Analysis").Range("CDFlag").Value = 0
   Worksheets("Economic Analysis").CheckBox1.Visible = False
 End If
-
+Worksheets("Economic Analysis").Activate
 Worksheets("Economic Analysis").Range("a1").Select
-Worksheets("Economic Analysis").Range("r1").Select
 End Sub
 
 
@@ -332,7 +345,7 @@ y0 = Sheets("New Flow File").Range("ObsYear1").Value
 y1 = Sheets("New Flow File").Range("ObsYear2").Value
 If Not IsNumeric(y0) Or IsEmpty(y0) Then y0 = 1996
 If Not IsNumeric(y1) Or IsEmpty(y1) Then y1 = 2025
-MsgBox ("Select 'Run New Simulation', to run the model for observed climate data (Daymet) for the period " & y0 & "-" & y1)
+If Not mQuiet Then MsgBox ("Select 'Run New Simulation', to run the model for observed climate data (Daymet) for the period " & y0 & "-" & y1)
 
  Worksheets("DMData").Range("FirstYear") = y0
  Worksheets("DMdata").Range("LastYear") = y1

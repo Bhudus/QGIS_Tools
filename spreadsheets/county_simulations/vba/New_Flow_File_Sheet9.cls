@@ -55,6 +55,7 @@ Else
   Worksheets("New Flow File").Range("IntWTMFlag") = 1
   Worksheets("New Flow File").Range("DWMFlag") = 1
   Sheets("Main").Shapes("TextBox 2").Visible = True
+  UpdateWMLabels
 
 End If
 End Sub
@@ -161,6 +162,7 @@ If Not Intersect(Target, watch) Is Nothing Then
 End If
 On Error Resume Next
 If Not Intersect(Target, Union(Range("ObsYear1"), Range("ObsYear2"))) Is Nothing Then SetTimePeriodCaptions
+If Not Intersect(Target, Range("WMType")) Is Nothing Then UpdateWMLabels
 On Error GoTo 0
 End Sub
 
@@ -248,6 +250,7 @@ Public Sub DrainMod_Run()
 Set wsh = VBA.CreateObject("WScript.Shell")
   'On Error Resume Next
  Dim dmExe As String
+ If Not EnsureDrainmodFolder() Then Exit Sub
  dmExe = DMHydroPath()
  If dmExe = "" Then
     MsgBox "DRAINMOD cannot run until you select the DRAINMOD hydrology program (DMhydro.exe).", vbExclamation, "DRAINMOD"
@@ -268,6 +271,7 @@ DepthStart = Sheets("New Flow File").Range("DrainDepth1")
 DepthEnd = Sheets("New Flow File").Range("DrainDepth2")
 DepthInterval = Sheets("New Flow File").Range("DrainDepthInt")
 Worksheets("DMOutput").Range("c4:af200").ClearContents
+Worksheets("DMOutput").Range("AH4:AI4").ClearContents   ' undrained baseline
  NumSpace = (SpacingEnd - SpacingStart) / SpacingInterval + 1
  NumDepths = (DepthEnd - DepthStart) / DepthInterval + 1
  NumRuns = NumSpace * NumDepths
@@ -358,6 +362,7 @@ Next Spacing, Depth
 
  Worksheets("DMOutput").Range("Ndepths") = Ndepths
  Worksheets("DMOutput").Range("NSpacings") = NSpacings
+ RunUndrained dmExe          ' baseline yields for the economic analysis
 
 
 
