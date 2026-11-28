@@ -177,6 +177,7 @@ def resize(records, mode, single, by_order=None, overrides=None, material=None,
     if not sp:
         raise SizeError("The drain spacing is not known: enter it.")
     rows = []
+    row_recs = []
     before, after = {}, {}
     larger = smaller = 0
     for rec in records:
@@ -199,7 +200,8 @@ def resize(records, mode, single, by_order=None, overrides=None, material=None,
         k_flag = field_name(a, "flag")
         if k_flag is not None:
             parts = [p.strip() for p in str(a.get(k_flag) or "").split(";")
-                     if p.strip() and p.strip() != MAX_SIZE_FLAG]
+                     if p.strip() and p.strip() != MAX_SIZE_FLAG
+                     and not p.strip().startswith(K.HELD_FLAG.split("{}")[0])]
             if r["ACTUAL_SIZE"] >= K.AVAILABLE_NOMINAL_SIZES[-1]:
                 parts.append(MAX_SIZE_FLAG)
             flag = "; ".join(parts)
@@ -214,6 +216,31 @@ def resize(records, mode, single, by_order=None, overrides=None, material=None,
                      "order": int(_num(a, "TILE_ORDER")), "length": L, "old": old, "new": new,
                      "changed": old_nom is None or r["NOMINAL"] != int(old_nom), "flag": flag,
                      "material": mat})
+        row_recs.append(rec)
+    # no pipe smaller than a pipe draining into it
+    fr = [_get(rec["attrs"], "from_node") for rec in row_recs]
+    to = [_get(rec["attrs"], "to_node") for rec in row_recs]
+    if rows and all(v is not None for v in fr + to):
+        by_to = {}
+        for i, t in enumerate(to):
+            by_to.setdefault(t, []).append(i)
+        held = K.hold_sizes([by_to.get(f, []) for f in fr], [r["new"]["NOMINAL"] for r in rows])
+        for i, (row, h) in enumerate(zip(rows, held)):
+            if h is None or h <= row["new"]["NOMINAL"]:
+                continue
+            L = _num(row_recs[i]["attrs"], "length") or 0.0
+            old_n = row["new"]["NOMINAL"]
+            after[old_n] -= L
+            after[h] = after.get(h, 0.0) + L
+            row["new"]["NOMINAL"] = h
+            o = _num(row_recs[i]["attrs"], "NOMINAL")
+            if o is not None:
+                larger += (h > o) - (old_n > o)
+                smaller -= (old_n < o) - (h < o)
+            row["changed"] = o is None or h != int(o)
+            if row["flag"] is not None:
+                row["flag"] = "; ".join(p for p in (row["flag"], K.HELD_FLAG.format(h)) if p)
+        after = {k: v for k, v in after.items() if v > 1e-9}
     summary = {"before": dict(sorted(before.items())), "after": dict(sorted(after.items())),
                "larger": larger, "smaller": smaller, "spacing": sp, "lines": len(rows)}
     return rows, summary

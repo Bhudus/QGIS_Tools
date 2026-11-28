@@ -132,3 +132,40 @@ def size_segment(flow_length_ft, slope, spacing_ft, material, dcoeff):
     return {"D_COEFF": dcoeff, "D_AREA": area, "CUM_SEG_FLOW": flow,
             "ACTUAL_SIZE": psize, "NOMINAL": get_nominal_size(psize),
             "drain_space": drain_space}
+
+
+HELD_FLAG = "sized up to {} in to match the pipe above"
+
+
+def hold_sizes(sources, nominals):
+    """No pipe smaller than a pipe draining into it.
+
+    sources[i]: the lines that flow into line i; nominals[i]: its nominal size
+    (None if not sized). Each line's size is raised to the largest size above it,
+    so a pipe never gets smaller downstream (a short steep stretch near the
+    outlet would otherwise size smaller than the flatter pipe above it).
+    Returns the new sizes, as a list.
+    """
+    n = len(nominals)
+    held = [None] * n
+    state = [0] * n                     # 0 new, 1 on the stack, 2 done
+    for i0 in range(n):
+        if state[i0]:
+            continue
+        stack = [(i0, False)]
+        while stack:
+            i, done = stack.pop()
+            if done:
+                vals = [nominals[i]] + [held[j] for j in sources[i] if state[j] == 2]
+                vals = [v for v in vals if v is not None]
+                held[i] = max(vals) if vals else None
+                state[i] = 2
+                continue
+            if state[i]:
+                continue                # a loop: leave it as it is
+            state[i] = 1
+            stack.append((i, True))
+            for j in sources[i]:
+                if state[j] == 0:
+                    stack.append((j, False))
+    return [h if h is not None else v for h, v in zip(held, nominals)]

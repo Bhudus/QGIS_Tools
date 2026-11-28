@@ -268,6 +268,7 @@ class DesignNetwork(DrainageLayout):
                       "_exact": dict(r, flow_len_ft=ex["flow_len_ft"], slope=ex["slope"])})
             totals[r["NOMINAL"]] = totals.get(r["NOMINAL"], 0.0) + a["length_m"]
         self.size_totals = dict(sorted(totals.items()))
+        self._hold_sizes(net)
 
 
 def run_design(dem, valid, grid, segments, outlet_xy, params, progress=None, cancel=None,

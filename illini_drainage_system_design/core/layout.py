@@ -988,6 +988,53 @@ class DrainageLayout:
         v = k if t < 0.5 else k + 1
         return host, v, hp[v]
 
+    def _reaches(self, lid):
+        """True if lateral lid drains, through any tees, to a collector."""
+        seen = set()
+        while lid not in seen:
+            seen.add(lid)
+            c = self.lats[lid]["conn"]
+            if c is None:
+                return False
+            if c[0] == "collector":
+                return True
+            lid = c[1]
+        return False
+
+    def _descend(self, end, reg):
+        """Path down the smoothed ground from end to a collector, or to a lateral
+        that reaches one. Returns (points after end, conn), or None if it meets
+        neither within the limit (low ground, the field edge, a lateral that does
+        not drain) -- that low ground needs its own collector."""
+        h = self.h
+        max_len = max(3.0 * self.max_conn, 4.0 * self.S)
+        x, y = end
+        path = []
+        L = 0.0
+        while L < max_len:
+            u = self._vec(self.fx, self.fy, x, y)
+            if u is None:
+                return None                      # flat: a low spot
+            qx, qy = x + h * u[0], y + h * u[1]
+            if not self.inside(qx, qy):
+                return None
+            dc = self.dcoll(qx, qy)
+            if dc < h or (self.region_at(qx, qy) != reg and dc < 2 * self.g.cell):
+                dist, q, cid, v = self.snap_collector(qx, qy)
+                return path + [(qx, qy), q], ("collector", cid, v)
+            if self.region_at(qx, qy) != reg:
+                return None
+            hit = self.hash.nearest(qx, qy, reg, self.d_test)
+            if hit is not None:
+                host, v, q = self._tee_target(hit)
+                if self._reaches(host) and self._clear((qx, qy), q):
+                    return path + [(qx, qy), q], ("lateral", host, v)
+                return None
+            path.append((qx, qy))
+            x, y = qx, qy
+            L += h
+        return None
+
     def _infill_from(self, c, reg, bearing=None, guide=None):
         up, _, _ = self._trace(c, -1.0, reg, bearing, guide)
         dn, status, hit = self._trace(c, 1.0, reg, bearing, guide)
@@ -1001,7 +1048,7 @@ class DrainageLayout:
             conn = ("collector", cid, v)
         elif status == "lateral":
             host, v, q = self._tee_target(hit)
-            if self._clear(end, q):
+            if self._reaches(host) and self._clear(end, q):
                 line.append(q)
                 conn = ("lateral", host, v)
         if conn is None:
@@ -1015,11 +1062,20 @@ class DrainageLayout:
                 hit = self.hash.nearest(end[0], end[1], reg, self.max_conn)
                 if hit is not None:
                     host, v, q = self._tee_target(hit)
-                    if self._clear(end, q):
+                    if self._reaches(host) and self._clear(end, q):
                         line.append(q)
                         conn = ("lateral", host, v)
                         if hit[0] > self.d_test * 1.05:
                             flags.append("connector " + self._fmt(hit[0], 0))
+            if conn is None:
+                # the trace stopped short (the contour direction turned on flat or
+                # rough ground) with nothing near: carry it on downhill to a
+                # collector or to a lateral that reaches one
+                down = self._descend(end, reg)
+                if down is not None:
+                    path, conn = down
+                    line.extend(path)
+                    flags.append("carried downhill " + self._fmt(polyline_length([end] + path), 0))
             if conn is None:
                 flags.append("unconnected: needs its own collector")
         if polyline_length(line) < self.lmin:
@@ -1901,8 +1957,12 @@ class DrainageLayout:
             self._warn("Part of the main runs beyond the DEM; ground there is carried "
                        "along from the nearest DEM data, so check its depths.")
         if n_unconn:
-            self._warn("{} lateral(s) have no collector downstream; the low ground they "
-                       "drain to needs its own submain or outlet.".format(n_unconn))
+            n_via = sum(1 for i in range(len(self.lats))
+                        if self.lats[i]["conn"] is not None and not self._reaches(i))
+            self._warn("{} lateral(s) have no collector downstream{}; the low ground they "
+                       "drain to needs its own submain or outlet.".format(
+                           n_unconn, " ({} more drain into them)".format(n_via) if n_via
+                           else ""))
         if n_deep:
             self._warn("{} lateral(s) exceed the maximum depth; consider a contour-"
                        "following layout, a lower outlet or a submain.".format(n_deep))
@@ -2140,6 +2200,25 @@ class DrainageLayout:
                 a["flag"] = (f + "; " if f else "") + "needs more than {} in pipe".format(
                     K.AVAILABLE_NOMINAL_SIZES[-1])
             totals[r["NOMINAL"]] = totals.get(r["NOMINAL"], 0.0) + a["length_m"]
+        self.size_totals = dict(sorted(totals.items()))
+        self._hold_sizes(net)
+
+    def _hold_sizes(self, net):
+        """No pipe smaller than a pipe draining into it (see sizing.hold_sizes)."""
+        by_to = {}
+        for i, L in enumerate(net):
+            by_to.setdefault(L["attrs"]["to_node"], []).append(i)
+        sources = [by_to.get(L["attrs"]["from_node"], []) for L in net]
+        held = K.hold_sizes(sources, [L["attrs"].get("NOMINAL") for L in net])
+        totals = {}
+        for L, h in zip(net, held):
+            a = L["attrs"]
+            if h is not None and a.get("NOMINAL") is not None and h > a["NOMINAL"]:
+                a["NOMINAL"] = h
+                f = a.get("flag") or ""
+                a["flag"] = (f + "; " if f else "") + K.HELD_FLAG.format(h)
+            if a.get("NOMINAL") is not None:
+                totals[a["NOMINAL"]] = totals.get(a["NOMINAL"], 0.0) + a["length_m"]
         self.size_totals = dict(sorted(totals.items()))
 
 

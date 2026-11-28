@@ -55,6 +55,10 @@ in the project by itself; choose another under **Network**.
    update at once. Click a row to show that section in red on the map.
    **Clear settings** forgets the section types and pipe coefficients set
    here.
+   No pipe is left smaller than a pipe draining into it (when the layer has
+   from_node and to_node): a steep link that would size smaller than the pipe
+   above it takes that pipe's size, with the note "sized up to N in to match
+   the pipe above" in `flag`.
 4. The table on the left shows the length of pipe of each nominal size now
    and after, and the line under it how many lines change size (larger or
    smaller) or coefficient, and any that need more than 42 in.

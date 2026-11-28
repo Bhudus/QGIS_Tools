@@ -258,8 +258,10 @@ grade breaks (default 50 ft); and, for sizing, whether to size with InSlope
    Strahler ordering for three inflows of different orders and for three equal
    inflows plus a higher fourth. Otherwise the original Routine K code and this
    plugin give the same coefficients, flows, areas and pipe sizes. Each line is
-   sized on its own, so a steep reach can take a smaller pipe than a flatter
-   one upstream of it.
+   sized on its own, then no pipe is left smaller than a pipe draining into it:
+   a steep reach that would size smaller than the flatter pipe above it takes
+   that pipe's size, and is flagged `sized up to N in to match the pipe above`
+   (ACTUAL_SIZE still shows what its own flow and slope need).
 
 ## Output
 
@@ -315,6 +317,11 @@ Where to look for problems:
   to has no collector. Add an outlet or submain there, or lower the submain
   threshold.
 - `does not reach the outlet` — drains into an unconnected lateral.
+- `carried downhill …` — the lateral's trace stopped short on flat or rough
+  ground with no collector near, so it is carried on down the ground to a
+  collector or to a lateral that reaches one. Check its route.
+- `sized up to N in to match the pipe above` — its own flow and slope need a
+  smaller pipe, but a pipe never gets smaller downstream.
 - `needs more than 42 in pipe` — the flow is beyond the largest nominal size;
   NOMINAL shows 42, as in Routine K.
 
