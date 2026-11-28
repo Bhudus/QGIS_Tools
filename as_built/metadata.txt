@@ -1,0 +1,22 @@
+[general]
+name=As-Built Check
+qgisMinimumVersion=3.22
+supportsQt6=True
+description=Compares the tile as logged during installation (RTK) with the design network: off-grade tile, bellies, flat or reversed grade, depth and unlogged stretches; and writes the as-built network for the other drainage tools. Or checks the as-built on its own, with no design, for bellies, reverse grade, depth and gaps.
+about=Reads an installation log (RTK points, or logged runs as lines) with the tile elevation, or a reference such as the GPS antenna less an offset, and the design Drainage Network from the Illini layout and design tools. Each logged point is matched to its design line and compared at the same station: deviation from the design tile, water held in bellies (sags), grade over a moving window (judged against the log's own scatter), depth below the ground (from a DEM or the design ground), and stretches with no logged point. Every check is also made on the design tile, so faults of the installation are told from issues already in the design. Writes the as-built points, a per-line check and the as-built network: the design network with the logged tile elevation at its vertices (optionally the logged positions), its invert, grade and depth fields updated, and the capacity at the as-built grade.
+version=0.1.0
+author=Richard Cooke and Anamelechi Falasy
+email=raccooke@gmail.com
+
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+
+changelog=0.1.0 - First version: as-built check of an installation log against the design network, with an as-built network output; or of the as-built on its own (logged points by run, logged runs or a network), with no design.
+
+tags=drainage,tile,subsurface drainage,as-built,rtk,installation,grade,quality control
+category=Vector
+icon=icon.png
+experimental=False
+deprecated=False
+server=False
