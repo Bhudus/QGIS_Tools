@@ -1,0 +1,51 @@
+import os
+
+from qgis.core import QgsApplication
+from qgis.PyQt.QtGui import QIcon
+
+try:
+    from qgis.PyQt.QtGui import QAction  # Qt6
+except ImportError:
+    from qgis.PyQt.QtWidgets import QAction  # Qt5
+
+from .provider import InletPlacementProvider
+
+TILE_DRAINAGE_MENU = "&Tile Drainage"  # submenu shared by the QGIS_Tools drainage plugins
+MENU = "&Surface and Blind Inlets"
+ALGORITHM_ID = "inletplacement:inletplacement"
+
+
+class InletPlacementPlugin:
+    def __init__(self, iface):
+        self.iface = iface
+        self.provider = None
+        self.action = None
+
+    def initProcessing(self):
+        if self.provider is not None:
+            return
+        self.provider = InletPlacementProvider()
+        QgsApplication.processingRegistry().addProvider(self.provider)
+
+    def initGui(self):
+        self.initProcessing()
+        icon = QIcon(os.path.join(os.path.dirname(__file__), "icon.png"))
+        self.action = QAction(icon, "Surface and blind inlets…", self.iface.mainWindow())
+        self.action.triggered.connect(self.run)
+        self.iface.addPluginToMenu(MENU, self.action)
+        self.iface.addPluginToVectorMenu(TILE_DRAINAGE_MENU, self.action)
+        self.iface.addToolBarIcon(self.action)
+
+    def unload(self):
+        if self.action is not None:
+            self.iface.removePluginMenu(MENU, self.action)
+            self.iface.removePluginVectorMenu(TILE_DRAINAGE_MENU, self.action)
+            self.iface.removeToolBarIcon(self.action)
+            self.action = None
+        if self.provider is not None:
+            QgsApplication.processingRegistry().removeProvider(self.provider)
+            self.provider = None
+
+    def run(self):
+        import processing
+        processing.execAlgorithmDialog(ALGORITHM_ID, {})

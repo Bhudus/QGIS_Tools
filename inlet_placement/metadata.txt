@@ -1,0 +1,22 @@
+[general]
+name=Surface and Blind Inlets
+qgisMinimumVersion=3.22
+supportsQt6=True
+description=Places a surface or blind inlet at the low point of each depression, connects it to the nearest tile with a lead pipe, sizes the inlet and lead, and checks the tile below for the added flow.
+about=For each depression (for example from the Depressions and Laylines plugin) the tool finds, from the DEM, the low point, the pond level, depth and volume, and the direct drainage area. It chooses a surface inlet (riser with an orifice plate) or a blind inlet (gravel trench under a sand filter), sets the design flow from the pond's drawdown time or a surface-water coefficient over the drainage area, and runs a straight lead pipe to the nearest main or submain of a Drainage Network from the Illini layout and design tools, with its grade set from the tile elevation and the minimum cover and its size from Manning's equation. It then follows the network down from each junction and checks every pipe's design flow plus the inlet flows against its capacity, giving the size it would need. Outputs: Inlets (points), Lead pipes (lines with tile Z and ground M) and Tile check (lines). Pure Python + NumPy.
+version=0.1.0
+author=Richard Cooke and Anamelechi Falasy
+email=raccooke@gmail.com
+
+tracker=https://github.com/Bhudus/QGIS_Tools/issues
+repository=https://github.com/Bhudus/QGIS_Tools
+homepage=https://bhudus.github.io/QGIS_Tools/
+
+changelog=0.1.0 - First version: surface and blind inlets at depression low points, lead pipes to the nearest main or submain, inlet and lead sizing, and a capacity check of the tile below.
+
+tags=drainage,tile,subsurface drainage,surface inlet,blind inlet,depressions,ponding,pipe sizing
+category=Vector
+icon=icon.png
+experimental=False
+deprecated=False
+server=False
